@@ -1,0 +1,12 @@
+# QuantMind v4 Dependencies
+# Core
+akshare>=1.18.0       # 股票數據獲取（港股+美股列表擴充）
+psycopg2-binary       # PostgreSQL (optional, can use docker exec psql)
+redis                 # Redis client (optional, can use docker exec redis-cli)
+
+# Data
+pandas>=1.5.0
+numpy>=1.21.0
+
+# Notification
+requests              # HTTP requests (feishu API)

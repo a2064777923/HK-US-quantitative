@@ -1,0 +1,17 @@
+# === QuantMind v4 Crontab ===
+# Install: crontab crontab.txt
+
+# 心跳（每2分鐘）
+*/2 * * * * /root/heartbeat_refresh.sh
+
+# K線更新 + 信號生成（交易時段每30分鐘）
+0,30 9-16 * * 1-5 /usr/bin/python3 -u /root/kline_batch.py >> /tmp/kline_batch.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py >> /tmp/signal_v4.log 2>&1
+
+# 策略執行（交易時段每5分鐘）
+*/5 9-16 * * 1-5 /usr/bin/python3 -u /root/quantmind_strategy_runner.py >> /tmp/quantmind_strategy.log 2>&1
+
+# 收市後全量更新 + 信號重算
+30 16 * * 1-5 /usr/bin/python3 -u /root/kline_batch.py >> /tmp/kline_batch.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py >> /tmp/signal_v4.log 2>&1
+
+# 持倉價格更新（每15分鐘）
+*/15 9-16 * * 1-5 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update.log 2>&1

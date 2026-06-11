@@ -1,0 +1,33 @@
+{
+    "database": {
+        "host": "quantmind-db",
+        "port": 5432,
+        "user": "quantmind",
+        "password": "YOUR_DB_PASSWORD",
+        "dbname": "quantmind"
+    },
+    "redis": {
+        "host": "quantmind-redis",
+        "port": 6379
+    },
+    "api": {
+        "base_url": "https://notopenai.asia/api/v1",
+        "bot_user": "kaitosim",
+        "bot_password": "YOUR_BOT_PASSWORD"
+    },
+    "feishu": {
+        "app_id": "YOUR_FEISHU_APP_ID",
+        "app_secret": "YOUR_FEISHU_APP_SECRET",
+        "chat_id": "YOUR_FEISHU_CHAT_ID"
+    },
+    "portfolio": {
+        "id": 8,
+        "initial_capital": 100000,
+        "max_positions": 10,
+        "position_size_pct": 0.10,
+        "stop_loss_pct": -0.08,
+        "take_profit_pct": 0.15,
+        "min_score_hk": 0.620,
+        "min_score_us": 0.620
+    }
+}
