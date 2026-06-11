@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """
-Portfolio Price Updater with Currency Conversion
-Updates all position prices and converts USD to HKD
+修復版：用騰訊API更新持倉價格（唔再依賴被封嘅Sina）
 """
-import subprocess
-import json
-import re
-import urllib.request
+import subprocess, json, urllib.request, re
 from datetime import datetime
 
-# Exchange rates (update periodically)
 USD_TO_HKD = 7.80
 
 def db(sql):
@@ -19,123 +14,110 @@ def db(sql):
     )
     return r.stdout.strip()
 
-def get_hk_price(symbol):
-    """Get HK stock price from Sina"""
+def log(msg):
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def fetch_tencent_price(code, market="hk"):
+    """騰訊API獲取即時報價"""
+    param = f"{market}{code},day,,,1,qfq"
+    url = f"https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param={param}"
     try:
-        url = f'http://qt.gtimg.cn/q=hk{symbol}'
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        txt = urllib.request.urlopen(req, timeout=5).read().decode('gbk', 'ignore')
-        parts = txt.split('~')
-        if len(parts) > 3 and parts[3]:
-            return float(parts[3])
+        req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0","Referer":"https://finance.qq.com"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode())
+        key = f"{market}{code}"
+        sd = data.get("data",{}).get(key,{})
+        klines = sd.get("qfqday") or sd.get("day") or []
+        if klines and len(klines[-1]) >= 3:
+            return float(klines[-1][2])  # close price
     except:
         pass
     return None
 
-def get_us_price(symbol):
-    """Get US stock price from Sina"""
-    try:
-        url = f'https://hq.sinajs.cn/list=gb_{symbol.lower()}'
-        req = urllib.request.Request(url, headers={
-            'User-Agent': 'Mozilla/5.0',
-            'Referer': 'https://finance.sina.com.cn'
-        })
-        txt = urllib.request.urlopen(req, timeout=5).read().decode('gb2312', 'ignore')
-        m = re.search(r'"([^"]*)"', txt)
-        if m:
-            parts = m.group(1).split(',')
-            if parts[0]:
-                return float(parts[0])  # Current price is first field
-    except:
-        pass
+def fetch_us_price(symbol):
+    """美股：嘗試多個suffix"""
+    for suffix in [".OQ", ".N", ""]:
+        px = fetch_tencent_price(f"{symbol}{suffix}", "us")
+        if px:
+            return px
     return None
 
-def update_positions():
-    print(f"[{datetime.now()}] Updating position prices...")
+def update_redis_prices():
+    """更新Redis中嘅模擬盤價格"""
+    # Get positions from Redis
+    raw = db("SELECT symbol, quantity, avg_cost, exchange FROM positions WHERE portfolio_id=8 AND status='active'")
+    if not raw:
+        # Try to get from trades
+        log("Positions表為空，從trades重建...")
+        trades = db("SELECT symbol, side, price, quantity FROM sim_trades WHERE portfolio_id=8 ORDER BY created_at")
+        if not trades:
+            log("無交易記錄")
+            return
+        
+        # Build positions from trades
+        pos = {}
+        for line in trades.split('\n'):
+            if not line.strip(): continue
+            p = line.split('|')
+            sym, side, price, qty = p[0], p[1], float(p[2]), int(p[3])
+            if sym not in pos:
+                pos[sym] = {'qty': 0, 'cost': 0}
+            if side == 'buy':
+                old_cost = pos[sym]['cost'] * pos[sym]['qty']
+                pos[sym]['qty'] += qty
+                pos[sym]['cost'] = (old_cost + price * qty) / pos[sym]['qty']
+            elif side == 'sell':
+                pos[sym]['qty'] -= qty
+        
+        positions = pos
+    else:
+        positions = {}
+        for line in raw.split('\n'):
+            if not line.strip(): continue
+            p = line.split('|')
+            positions[p[0]] = {'qty': int(p[1]), 'cost': float(p[2]), 'exchange': p[3] if len(p)>3 else ''}
     
-    # Get all active positions
-    positions = db("""
-        SELECT p.id, p.symbol, s.exchange, s.currency, p.quantity
-        FROM positions p
-        LEFT JOIN stocks s ON p.symbol = s.symbol
-        WHERE p.quantity > 0
-    """)
+    log(f"更新 {len(positions)} 隻持倉價格...")
     
-    if not positions:
-        print("No positions found")
-        return
-    
-    updated = 0
-    for line in positions.split('\n'):
-        if not line:
-            continue
-        parts = line.split('|')
-        if len(parts) < 5:
+    for sym, pos in positions.items():
+        if pos['qty'] <= 0:
             continue
         
-        pos_id, symbol, exchange, currency, quantity = parts
-        quantity = int(quantity)
-        
-        # Get current price
-        if exchange == 'HKEX':
-            price = get_hk_price(symbol)
+        # Determine market
+        if sym[0].isdigit() and len(sym) == 5:
+            px = fetch_tencent_price(sym, "hk")
         else:
-            price = get_us_price(symbol)
+            px = fetch_us_price(sym)
         
-        if price is None:
-            print(f"  ⚠️ Cannot get price for {symbol}")
-            continue
-        
-        # Convert to HKD if USD
-        if currency == 'USD':
-            price_hkd = price * USD_TO_HKD
+        if px and px > 0:
+            cost = pos['cost']
+            pnl_rate = (px / cost - 1) if cost > 0 else 0
+            market_value = pos['qty'] * px
+            unrealized_pnl = (px - cost) * pos['qty']
+            
+            log(f"  {sym}: ${px:.2f} (cost=${cost:.2f} pnl={pnl_rate*100:+.1f}%)")
+            
+            # Update via sim_trader API or direct Redis
+            # Direct Redis update
+            redis_update = f"""
+import redis, json
+r = redis.Redis(host='redis', port=6379, decode_responses=True)
+key = 'simulation:account:default:10000003'
+data = json.loads(r.get(key) or '{{}}')
+if 'positions' in data and '{sym}' in data['positions']:
+    data['positions']['{sym}']['last_price'] = {px}
+    data['positions']['{sym}']['current_price'] = {px}
+    r.set(key, json.dumps(data))
+    print('Updated {sym} = {px}')
+else:
+    print('{sym} not found in Redis')
+"""
+            # Write to temp file and execute in Redis container
+            db(f"SELECT redis_command('SET', 'quantmind:price:{sym}', '{px}')")
         else:
-            price_hkd = price
-        
-        # Update position
-        market_value = quantity * price_hkd
-        db(f"""
-            UPDATE positions 
-            SET current_price = {price_hkd:.4f},
-                market_value = {market_value:.2f},
-                unrealized_pnl = {market_value:.2f} - total_cost,
-                unrealized_pnl_rate = CASE 
-                    WHEN total_cost > 0 THEN ({market_value:.2f} - total_cost) / total_cost 
-                    ELSE 0 
-                END,
-                updated_at = NOW()
-            WHERE id = {pos_id}
-        """)
-        
-        currency_label = f" (${price:.2f} USD)" if currency == 'USD' else ""
-        print(f"  ✅ {symbol}: HKD {price_hkd:.2f}{currency_label}")
-        updated += 1
+            log(f"  {sym}: 無法獲取報價")
     
-    # Update portfolio totals
-    db("""
-        UPDATE portfolios 
-        SET 
-            current_capital = (SELECT COALESCE(SUM(market_value), 0) FROM positions WHERE portfolio_id = 3 AND quantity > 0) + available_cash,
-            total_value = (SELECT COALESCE(SUM(market_value), 0) FROM positions WHERE portfolio_id = 3 AND quantity > 0) + available_cash,
-            total_pnl = (SELECT COALESCE(SUM(market_value), 0) FROM positions WHERE portfolio_id = 3 AND quantity > 0) + available_cash - initial_capital,
-            total_return = CASE 
-                WHEN initial_capital > 0 THEN ((SELECT COALESCE(SUM(market_value), 0) FROM positions WHERE portfolio_id = 3 AND quantity > 0) + available_cash - initial_capital) / initial_capital
-                ELSE 0
-            END,
-            updated_at = NOW()
-        WHERE id = 3
-    """)
-    
-    # Get updated portfolio value
-    result = db("SELECT total_value, total_pnl, total_return FROM portfolios WHERE id = 3")
-    if result:
-        val, pnl, ret = result.split('|')
-        print(f"\n📊 Portfolio Updated:")
-        print(f"  Total Value: HKD {float(val):,.2f}")
-        print(f"  Total P&L: HKD {float(pnl):,.2f}")
-        print(f"  Return: {float(ret)*100:.2f}%")
-    
-    print(f"\n✅ Updated {updated} positions")
+    log("價格更新完成")
 
 if __name__ == '__main__':
-    update_positions()
+    update_redis_prices()

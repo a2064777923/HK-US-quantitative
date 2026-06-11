@@ -47,35 +47,33 @@ def get_token():
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read())["access_token"]
 
+def tencent_price(symbol, market="hk"):
+    """騰訊API獲取報價（替代被封嘅Sina）"""
+    for suffix in ([""] if market=="hk" else [".OQ", ".N", ""]):
+        param = f"{market}{symbol}{suffix},day,,,1,qfq"
+        url = f"https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param={param}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0","Referer":"https://finance.qq.com"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read().decode())
+            key = f"{market}{symbol}{suffix}"
+            sd = data.get("data",{}).get(key,{})
+            klines = sd.get("qfqday") or sd.get("day") or []
+            if klines and len(klines[-1]) >= 3:
+                px = float(klines[-1][2])
+                if px > 0:
+                    return {"price": px, "name": symbol, "change_pct": 0}
+        except:
+            continue
+    return None
+
 def sina_us_price(symbol):
-    try:
-        url = f"https://hq.sinajs.cn/list=gb_{symbol.lower()}"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            raw = r.read().decode("gbk")
-        m = re.search(r'"([^"]*)"', raw)
-        if not m: return None
-        f = m.group(1).split(",")
-        px = float(f[1]) if f[1] else 0
-        if px <= 0: return None
-        return {"price": px, "name": f[0], "change_pct": float(f[2]) if f[2] else 0}
-    except:
-        return None
+    return tencent_price(symbol, "us")
 
 def sina_hk_price(symbol):
-    try:
-        url = f"https://hq.sinajs.cn/list=rt_hk{symbol}"
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            raw = r.read().decode("gbk")
-        m = re.search(r'"([^"]*)"', raw)
-        if not m: return None
-        f = m.group(1).split(",")
-        px = float(f[6]) if f[6] else 0
-        if px <= 0: return None
-        return {"price": px, "name": f[1], "change_pct": float(f[8]) if f[8] else 0}
-    except:
-        return None
+    return tencent_price(symbol, "hk")
+
+
 
 def place_order(token, symbol, side, quantity, order_type="market", price=None):
     body = {"portfolio_id": PORTFOLIO_ID, "symbol": symbol, "side": side,
@@ -139,56 +137,128 @@ def log(msg):
     print(f"[{ts}] {msg}")
 
 def get_signal_quality(symbol):
-    """Read technical details from quality JSONB"""
+    """Read technical details + signal from quality JSONB"""
     raw = db_query(f"""
-        SELECT quality FROM engine_signal_scores 
+        SELECT quality, signal_side, fusion_score FROM engine_signal_scores 
         WHERE trade_date = (SELECT max(trade_date) FROM engine_signal_scores) 
-        AND symbol = '{symbol}' AND signal_side = 'BUY'
+        AND symbol = '{symbol}'
         ORDER BY fusion_score DESC LIMIT 1
     """)
     if raw:
         try:
-            return json.loads(raw)
+            parts = raw.split('|')
+            q = json.loads(parts[0]) if parts[0] else {}
+            q['signal_side'] = parts[1] if len(parts) > 1 else '?'
+            try:
+                q['fusion_score'] = round(float(parts[2]), 3) if len(parts) > 2 else '?'
+            except:
+                q['fusion_score'] = '?'
+            return q
         except:
             pass
     return {}
 
-def build_signal_notification(market_label, new_orders, stop_events, signals, cash, total_asset, pos_count, total_return):
-    """Build a rich notification with technical reasoning"""
+def build_signal_notification(market_label, new_orders, stop_events, signals, cash, total_asset, pos_count, total_return, positions=None):
+    """Build a comprehensive v4 report with signal analysis for all positions"""
     ts = datetime.now().strftime("%H:%M")
     lines = []
     
-    # Header
+    # === 1. Header ===
+    has_action = bool(new_orders or stop_events)
+    if has_action:
+        lines.append(f"📊 {market_label}策略報告 ({ts})")
+    else:
+        lines.append(f"📊 {market_label}持倉監控 ({ts})")
+    lines.append("")
+    
+    # === 2. New orders executed ===
     if new_orders:
-        lines.append(f"🚀 {market_label}交易執行 ({ts})")
-        lines.append("")
+        lines.append("### 🚀 新下單")
         for o in new_orders:
             sym = o['symbol']
-            side_emoji = "🟢" if o['side'] == 'buy' else "🔴"
             q = get_signal_quality(sym)
             reasons = q.get('reasons', [])
             rsi = q.get('rsi', '?')
-            ma5 = q.get('ma5', '?')
-            ma20 = q.get('ma20', '?')
-            mom = q.get('momentum_5d', '?')
-            price_now = q.get('price', o.get('price', 0))
+            op = q.get('order_prices', {})
             
-            lines.append(f"{side_emoji} {sym} {o.get('name','')} x{o['quantity']}股 @ ${o.get('price',0):.2f}")
+            lines.append(f"🟢 {sym} {o.get('name','')} x{o['quantity']}股 @ ${o.get('price',0):.2f}")
             if reasons:
-                lines.append(f"   觸發原因: {', '.join(reasons)}")
-            lines.append(f"   RSI={rsi} | MA5={ma5} MA20={ma20} | 5日動量={mom}%")
-            lines.append(f"   現價=${price_now}")
+                lines.append(f"   原因: {', '.join(reasons[:4])}")
+            if op:
+                lines.append(f"   📌 止損${op.get('stop_loss','?')} | 止盈${op.get('take_profit','?')} | 風報比{op.get('rr_ratio','?')}")
             lines.append("")
     
+    # === 3. Stop events ===
     if stop_events:
-        if not new_orders:
-            lines.append(f"⚠️ {market_label}止損止盈 ({ts})")
-        lines.append("")
+        lines.append("### ⚠️ 止損止盈觸發")
         for ev in stop_events:
             emoji = "🛑" if ev['type'] == 'stop_loss' else "🎯"
-            lines.append(f"{emoji} {ev['symbol']}: {ev['pnl']*100:+.1f}% → {'止損' if ev['type']=='stop_loss' else '止盈'}成交")
+            tag = '止損' if ev['type']=='stop_loss' else '止盈'
+            lines.append(f"{emoji} {ev['symbol']}: {ev['pnl']*100:+.1f}% → {tag}成交")
+        lines.append("")
     
-    # Account summary (compact)
+    # === 4. Position signal analysis (v4) ===
+    if positions:
+        lines.append("### 📋 持倉信號狀態")
+        for sym, pos in sorted(positions.items()):
+            cost = float(pos.get("cost_price", 0))
+            current = float(pos.get("last_price", 0))
+            qty = float(pos.get("volume", 0))
+            pnl = (current / cost - 1) * 100 if cost > 0 else 0
+            
+            # Get v4 signal
+            q = get_signal_quality(sym)
+            signal_side = q.get('signal_side', '?')
+            fusion_score = q.get('fusion_score', '?')
+            reasons = q.get('reasons', [])
+            risk_flags = q.get('risk_flags', [])
+            op = q.get('order_prices', {})
+            
+            # Emoji based on signal
+            if signal_side == 'BUY':
+                sig_emoji = '🟢'
+            elif signal_side == 'SELL':
+                sig_emoji = '🔴'
+            else:
+                sig_emoji = '⚪'
+            
+            pnl_emoji = '📈' if pnl >= 0 else '📉'
+            
+            lines.append(f"{sig_emoji} {sym} {qty:.0f}股 成本${cost:.2f} 現價${current:.2f} {pnl_emoji}{pnl:+.1f}%")
+            lines.append(f"   信號: {signal_side} (score={fusion_score})")
+            if reasons:
+                lines.append(f"   分析: {', '.join(reasons[:3])}")
+            if risk_flags:
+                lines.append(f"   ⚠️ {', '.join(risk_flags)}")
+            if signal_side == 'SELL' and op:
+                lines.append(f"   📌 建議止損: ${op.get('stop_loss','?')}")
+            elif signal_side == 'BUY' and op:
+                lines.append(f"   📌 加倉位: ${op.get('entry_price','?')} | 止損: ${op.get('stop_loss','?')}")
+            lines.append("")
+    
+    # === 5. Top BUY signals (not held) ===
+    if signals:
+        lines.append("### 🎯 TOP BUY 信號")
+        held = set(positions.keys()) if positions else set()
+        new_signals = [s for s in signals if s['symbol'] not in held][:5]
+        if new_signals:
+            for s in new_signals:
+                q = get_signal_quality(s['symbol'])
+                reasons = q.get('reasons', [])
+                op = q.get('order_prices', {})
+                pred = q.get('prediction', {})
+                
+                lines.append(f"🟢 {s['symbol']} {s.get('name','')} score={s.get('score',0):.3f} ${q.get('price','?')}")
+                if reasons:
+                    lines.append(f"   {', '.join(reasons[:3])}")
+                if op:
+                    lines.append(f"   📌 買${op.get('entry_price','?')} 止損${op.get('stop_loss','?')} 止盈${op.get('take_profit','?')} 風報比{op.get('rr_ratio','?')}")
+                lines.append("")
+        else:
+            lines.append("現有持倉已覆蓋所有BUY信號，無新候選")
+            lines.append("")
+    
+    # === 6. Account summary ===
     lines.append(f"💰 現金{cash:,.0f} | 資產{total_asset:,.0f} | {pos_count}倉 | 回報{total_return:+.1f}%")
     
     return "\n".join(lines)
@@ -221,6 +291,28 @@ def run_strategy():
     positions = account.get("positions", {})
     pos_count = len(positions)
     
+    # ★ 用騰訊API覆蓋舊價格
+    refreshed = 0
+    for sym, pos in positions.items():
+        if sym[0].isdigit() and len(sym) == 5:
+            q = tencent_price(sym, "hk")
+        else:
+            q = tencent_price(sym, "us")
+        if q and q["price"] > 0:
+            old_price = float(pos.get("last_price", 0))
+            pos["last_price"] = q["price"]
+            if old_price > 0 and abs(q["price"] - old_price) / old_price > 0.001:
+                refreshed += 1
+    
+    # 重新計算total_asset
+    total_asset = cash
+    for sym, pos in positions.items():
+        qty = float(pos.get("volume", 0))
+        price = float(pos.get("last_price", 0))
+        total_asset += qty * price
+    
+    if refreshed > 0:
+        log(f"🔄 已用騰訊API刷新 {refreshed} 隻價格")
     log(f"💰 現金: {cash:,.2f} | 資產: {total_asset:,.2f} | 持倉: {pos_count}")
     
     metrics = {"cash": cash, "total_asset": total_asset, "positions": pos_count, "total_return": (total_asset / 100000 - 1) * 100, "timestamp": int(time.time()), "market": market_mode}
@@ -333,8 +425,22 @@ def run_strategy():
     # 最終狀態
     account = get_account(token)
     cash = float(account.get("cash", 0))
-    total_asset = float(account.get("total_asset", 0))
     positions = account.get("positions", {})
+    
+    # ★ 再次用騰訊API刷新價格（第二次get_account會覆蓋）
+    for sym, pos in positions.items():
+        if sym[0].isdigit() and len(sym) == 5:
+            q = tencent_price(sym, "hk")
+        else:
+            q = tencent_price(sym, "us")
+        if q and q["price"] > 0:
+            pos["last_price"] = q["price"]
+    
+    total_asset = cash
+    for sym, pos in positions.items():
+        qty = float(pos.get("volume", 0))
+        price = float(pos.get("last_price", 0))
+        total_asset += qty * price
     total_return = (total_asset / 100000 - 1) * 100
     
     log(f"{'='*50}")
@@ -366,14 +472,23 @@ def run_strategy():
         should_notify = True
         notify_reason = "position_change"
     
-    if should_notify:
-        msg = build_signal_notification(market_label, new_orders, stop_events, signals, cash, total_asset, len(positions), total_return)
+    # Always build the full report
+    msg = build_signal_notification(market_label, new_orders, stop_events, signals, cash, total_asset, len(positions), total_return, positions)
+    
+    # Send if: has action OR first run of the day OR position changed
+    import hashlib
+    msg_hash = hashlib.md5(msg.encode()).hexdigest()[:8]
+    last_msg_hash = state.get("last_msg_hash", "")
+    
+    if should_notify or msg_hash != last_msg_hash:
+        should_notify = True
         try:
             send_feishu_message(msg)
             log(f"📤 已通知飛書 ({notify_reason})")
         except Exception as e:
             log(f"⚠️ 飛書通知失敗: {e}")
         state[state_key] = datetime.now().isoformat()
+        state["last_msg_hash"] = msg_hash
     else:
         log("🔇 無新事件，唔通知")
     
