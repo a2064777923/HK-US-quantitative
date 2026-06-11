@@ -28,7 +28,7 @@ def db_batch(sql_file):
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
 
-def fetch_kline(code, market="hk", count=60):
+def fetch_kline(code, market="hk", count=2000):
     param = f"{market}{code},day,,,{count},qfq"
     url = f"https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param={param}"
     try:

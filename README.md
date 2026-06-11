@@ -1,144 +1,128 @@
-# QuantMind v4 — 港美股量化交易系統
+# HK-US Quantitative Trading System
 
-全自動量化交易系統，支持港股+美股，整合技術面、消息面、大市環境多維度分析。
+港股+美股量化交易系統 — 信號引擎、組合回測、模擬交易、飛書通知
 
-## 架構
+## 📊 回測結果摘要
+
+### 現實版回測（固定$1萬/筆、唔複利、2021-2026）
+| 指標 | 數值 |
+|------|------|
+| 初始資金 | $100,000 |
+| 最終資金 | $335,814 |
+| 總回報 | 235.8% |
+| 年化回報 | **42.4%** |
+| MaxDD | **12.4%** |
+| Sharpe | **1.09** |
+| 交易筆數 | 1,232 |
+| 勝率 | 44.2% |
+| 盈虧比 | 2.4:1 |
+| 期望值 | +2.11%/筆 |
+
+### 每年表現
+| 年份 | 交易 | 港股/美股 | 勝率 | P&L |
+|------|------|----------|------|-----|
+| 2021 | 173 | 158/15 | 46% | +$31,765 |
+| 2022 | 251 | 230/21 | 41% | +$38,875 |
+| 2023 | 249 | 228/21 | 42% | +$40,577 |
+| 2024 | 233 | 208/25 | 45% | +$58,552 |
+| 2025 | 223 | 209/14 | 43% | +$19,379 |
+| 2026 | 103 | 92/11 | 52% | +$46,668 |
+
+### 純美股組合回測（64年，1962-2026）
+| 指標 | 數值 |
+|------|------|
+| CAGR | 19.1% |
+| MaxDD | 13.5% |
+| Sharpe | 1.55 |
+| Calmar | 1.41 |
+
+## 🏗️ 系統架構
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    QuantMind v4                          │
-├─────────────┬─────────────┬──────────────┬──────────────┤
-│ K線數據層    │ 信號分析層   │ 策略執行層    │ 通知層       │
-│             │             │              │              │
-│ kline_batch │ signal_v4   │ strategy_run │ feishu_notify│
-│ (騰訊API)   │ (5大因子)    │ (自動下單)    │ (飛書推送)   │
-├─────────────┴─────────────┴──────────────┴──────────────┤
-│                    PostgreSQL + Redis                    │
-└─────────────────────────────────────────────────────────┘
+├── backtest/
+│   ├── backtest_trades.py          # 單股回測
+│   ├── segment_backtest.py         # 分段回測（熊市/震盪/牛市）
+│   ├── portfolio_backtest_combined.py  # 港股+美股組合回測（複利版）
+│   └── portfolio_backtest_realistic.py # 現實版回測（固定倉位）
+├── scripts/
+│   ├── signal_engine_v4.py         # 信號引擎v4（RSI/MACD/ATR/布林/動量）
+│   ├── kline_batch.py              # K線批量更新（騰訊API）
+│   ├── generate_signals.py         # 信號生成
+│   ├── quantmind_strategy_runner.py # 策略執行器
+│   ├── quantmind_sim_trader.py     # 模擬交易
+│   ├── feishu_notify.py            # 飛書通知
+│   └── quantmind_daily_pipeline.py # 每日數據流水線
+├── config/
+│   ├── config.template.json        # 配置模板
+│   └── crontab.txt                 # 定時任務
+├── docs/
+│   └── scoring_logic.md            # 評分邏輯文檔
+└── results/
+    ├── portfolio_bt_combined_summary.json
+    ├── portfolio_bt_realistic_summary.json
+    └── segment_backtest_results.json
 ```
 
-## 核心文件
+## 📈 信號引擎 v4
 
-| 文件 | 功能 | 說明 |
-|------|------|------|
-| `scripts/signal_engine_v4.py` | 信號引擎 v4 | 多維度分析：技術面+支撐阻力+掛單價+小時預測 |
-| `scripts/kline_batch.py` | K線批量更新 | 騰訊財經API，批量寫入，支持港股+美股 |
-| `scripts/quantmind_strategy_runner.py` | 策略執行 | 自動止損止盈+信號驅動下單+飛書通知 |
-| `scripts/feishu_notify.py` | 飛書通知 | 發送交易信號和訂單通知到飛書群 |
-| `scripts/expand_hk_us.py` | 股票池擴充 | 用akshare獲取港股+美股完整列表 |
-| `scripts/update_portfolio_prices.py` | 價格更新 | 更新持倉現價 |
-| `scripts/heartbeat_refresh.sh` | 心跳 | 保持策略狀態活躍 |
-| `scripts/quantmind_sim_trader.py` | 模擬交易 | 模擬訂單執行 |
-| `scripts/quantmind_daily_pipeline.py` | 每日管線 | K線更新+特徵生成+模型推理 |
-| `scripts/generate_signals.py` | 信號生成(舊) | v2版，已被v4取代 |
+### 評分維度（-1 到 +1）
+1. **趨勢 (Trend)**: 多頭/空頭排列、均線斜率
+2. **動量 (Momentum)**: RSI、MACD柱狀圖
+3. **結構 (Structure)**: 布林帶位置
+4. **成交量 (Volume)**: 量比、放量突破
 
-## 信號引擎 v4 — 評分邏輯
+### 買賣門檻
+- **BUY**: score >= 0.65
+- **SELL**: score <= 0.35
+- **止損**: Chandelier Trailing Stop (ATR × 2)
 
-### 5大評分因子（總分 0~1）
+### 動態倉位管理
+- 單股倉位: 3%-15%（按信號強度調整）
+- 波動率調整: ATR越高倉位越小
+- 最多同時持倉: 10-16隻
+- 冷卻期: 止損後3日唔再買同一隻
 
-| 因子 | 權重 | 計算方式 |
-|------|------|---------|
-| **趨勢** | 30% | MA5/10/20排列 + MA20斜率 |
-| **動量** | 25% | RSI(14) + MACD(12/26/9) + 5日動量 |
-| **結構** | 20% | 布林帶(20,2σ)位置 + ATR波動率 |
-| **量能** | 15% | 20日均量比 + 量價配合 |
-| **位置** | 10% | 60日價格分位 |
+## 📊 數據覆蓋
 
-### 信號判定
-- **BUY**: score ≥ 0.62（且趨勢不能強空頭）
-- **SELL**: score ≤ 0.38
-- **HOLD**: 0.38 < score < 0.62
+| 市場 | 股票數 | 歷史數據 |
+|------|--------|---------|
+| 港股 | 242隻 | 2018-2026 (2000日) |
+| 美股 | 32隻 | 1962-2026 (16000+日) |
 
-### 硬規則（安全網）
-- 強空頭（趨勢 ≤ -0.6）→ 強制壓分到 0.45 以下，禁止 BUY
-- MACD + RSI 雙重確認：MACD<0 且 RSI<40 → 壓分到 0.48 以下
+## 🚀 部署
 
-### 掛單價計算
-- **買入價**: 第一支撐位，或現價回調 0.5×ATR（最多等3%回調）
-- **止損價**: 第二支撐位，或入場價 - 2×ATR（最多虧8%）
-- **止盈價**: 第一阻力位，或入場價 + 3×ATR
-- **風險回報比**: reward/risk，< 1.5 標記為低質量信號
-
-### 小時級預測
-- 基於日均波動率 ÷ 6.5（交易小時數）
-- 結合MA趨勢方向作為drift
-- 預測未來 1-4 小時價格區間
-
-### 支撐阻力計算
-- 近20日高低點
-- Classic Pivot Points
-- MA5/10/20 作為動態支撐阻力
-- 布林帶上下軌
-
-## 數據源
-
-| 數據 | 來源 | 頻率 |
-|------|------|------|
-| 港股K線 | 騰訊財經 proxy.finance.qq.com | 30分鐘 |
-| 美股K線 | 騰訊財經 proxy.finance.qq.com | 30分鐘 |
-| A股市場環境 | 悟道MCP (東方財富) | 實時 |
-| 消息面 | 財联社快讯 + 全網熱榜 | 實時 |
-| 基本面 | 悟道MCP (財務摘要+估值) | 日級 |
-
-## 自動化排程 (Crontab)
-
-```cron
-# 心跳（每2分鐘）
-*/2 * * * * /root/heartbeat_refresh.sh
-
-# K線更新 + 信號生成（交易時段每30分鐘）
-0,30 9-16 * * 1-5 python3 /root/kline_batch.py && python3 /root/signal_engine_v4.py
-
-# 策略執行（交易時段每5分鐘）
-*/5 9-16 * * 1-5 python3 /root/quantmind_strategy_runner.py
-
-# 收市後全量更新
-30 16 * * 1-5 python3 /root/kline_batch.py && python3 /root/signal_engine_v4.py
-
-# 持倉價格更新（每15分鐘）
-*/15 9-16 * * 1-5 python3 /root/update_portfolio_prices.py
-```
-
-## 環境要求
-
-- Python 3.10+
-- PostgreSQL (Docker: quantmind-db)
-- Redis (Docker: quantmind-redis)
-- akshare (股票池擴充用)
-- 飛書 App (通知用)
-
-## 部署
-
+### 依賴
 ```bash
-# 1. 上傳腳本到服務器
-scp scripts/*.py root@your-server:/root/
-scp scripts/*.sh root@your-server:/root/
-
-# 2. 安裝依賴
-pip install akshare --break-system-packages
-
-# 3. 配置飛書 (修改 feishu_notify.py 中的 APP_ID/SECRET/CHAT_ID)
-
-# 4. 設置 crontab
-crontab crontab.txt
-
-# 5. 首次運行：擴充股票池 + 更新K線
-python3 /root/expand_hk_us.py
-python3 /root/kline_batch.py
-python3 /root/signal_engine_v4.py
+pip install -r requirements.txt
 ```
 
-## 策略參數
+### 數據更新
+```bash
+# K線批量更新（每30分鐘）
+python3 scripts/kline_batch.py
 
-```python
-MAX_POSITIONS = 10          # 最大持倉數
-POSITION_SIZE_PCT = 0.10    # 每倉佔總資產 10%
-MIN_SCORE_HK = 0.620        # 港股 BUY 門檻
-MIN_SCORE_US = 0.620        # 美股 BUY 門檻
-STOP_LOSS_PCT = -0.08       # 止損 -8%
-TAKE_PROFIT_PCT = 0.15      # 止盈 +15%
+# 信號生成
+python3 scripts/generate_signals.py
+
+# 策略執行
+python3 scripts/quantmind_strategy_runner.py
 ```
 
-## 風險聲明
+### 定時任務
+參考 `config/crontab.txt`
 
-本系統僅供研究學習，模擬交易不涉及真實資金。量化策略存在過擬合風險，歷史表現不代表未來收益。
+## ⚠️ 風險提示
+
+1. 回測結果唔代表未來表現
+2. 港股數據只有8年，樣本偏短
+3. 美股長期數據有幸存者偏差（只揀咗最後嘅赢家）
+4. 實際交易有滑點、流動性、衝擊成本等問題
+5. 建議先用模擬盤驗證至少3個月
+
+## 📝 優化方向
+
+1. **提高港股BUY門檻** — 港股勝率偏低（43%），可試0.70
+2. **市場情緒過濾** — 大市跌時減少開倉
+3. **分鐘級回測** — 用分鐘數據做更精確嘅入場/出場
+4. **行業輪動** — 按行業/概念過濾信號
+5. **風險平價** — 按波動率分配倉位而非固定金額

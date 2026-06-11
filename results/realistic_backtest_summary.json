@@ -1,0 +1,29 @@
+{
+  "summary": {
+    "initial_capital": 100000,
+    "final_equity": 335814,
+    "total_return_pct": 235.8,
+    "annualized_return_pct": 42.4,
+    "max_drawdown_pct": 12.4,
+    "sharpe_ratio": 1.09,
+    "total_trades": 1232,
+    "win_rate_pct": 44.2,
+    "profit_factor": 2.4,
+    "expected_value_pct": 2.11,
+    "avg_pnl_per_trade": 191,
+    "period": "2021-01-04 ~ 2026-06-11",
+    "stocks": {"hk": 242, "us": 32, "total": 274}
+  },
+  "yearly": {
+    "2021": {"trades": 173, "hk": 158, "us": 15, "win_rate": 46, "pnl": 31765},
+    "2022": {"trades": 251, "hk": 230, "us": 21, "win_rate": 41, "pnl": 38875},
+    "2023": {"trades": 249, "hk": 228, "us": 21, "win_rate": 42, "pnl": 40577},
+    "2024": {"trades": 233, "hk": 208, "us": 25, "win_rate": 45, "pnl": 58552},
+    "2025": {"trades": 223, "hk": 209, "us": 14, "win_rate": 43, "pnl": 19379},
+    "2026": {"trades": 103, "hk": 92, "us": 11, "win_rate": 52, "pnl": 46668}
+  },
+  "market_breakdown": {
+    "hk": {"trades": 1125, "win_rate": 43, "pnl": 189088},
+    "us": {"trades": 107, "win_rate": 58, "pnl": 46726}
+  }
+}

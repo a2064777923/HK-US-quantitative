@@ -1,0 +1,21 @@
+{
+  "summary": {
+    "initial_capital": 100000,
+    "final_nav": 3733214728,
+    "total_return_pct": 3733114.7,
+    "cagr_pct": 17.7,
+    "max_drawdown_pct": 33.5,
+    "sharpe_ratio": 0.95,
+    "sortino_ratio": 0.92,
+    "calmar_ratio": 0.53,
+    "total_trades": 5027,
+    "win_rate_pct": 49.3,
+    "profit_factor": 2.7,
+    "expected_value_pct": 2.83,
+    "max_concurrent_positions": 16,
+    "avg_positions": 3.9,
+    "max_consecutive_losses": 18,
+    "period": "1962-01-02 ~ 2026-06-11 (64.7 years)",
+    "stocks": {"hk": 242, "us": 32, "total": 274}
+  }
+}
