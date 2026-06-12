@@ -3,18 +3,259 @@
 信號引擎 v4 — 全面多維度分析
 技術面 + 消息面 + 大市環境 + 基本面 + 價格預測 + 掛單價
 """
-import subprocess, json, math, urllib.request, time
+import argparse, subprocess, json, math, urllib.request, time, os, sys
 from datetime import datetime, timedelta
 
-def db(sql):
+TENANT_ID = os.environ.get("QM_TENANT_ID", "default")
+USER_ID = os.environ.get("QM_USER_ID", "10000002")
+MODEL_VERSION = "signal_v4"
+FEATURE_VERSION = "v4_full"
+MODEL_NAME = "technical_signal_engine"
+DAILY_SIGNAL_READY_TIME = os.environ.get("SIGNAL_V4_DAILY_SIGNAL_READY_TIME", "16:15")
+ALLOW_INTRADAY_DAILY_SIGNAL = os.environ.get("SIGNAL_V4_ALLOW_INTRADAY_DAILY", "0") == "1"
+DB_ERRORS = []
+_COLUMN_CACHE = {}
+
+def db(sql, timeout=30):
     r = subprocess.run(
         ['docker', 'exec', 'quantmind-db', 'psql', '-U', 'quantmind', '-d', 'quantmind', '-t', '-A', '-c', sql],
-        capture_output=True, text=True, timeout=30
+        capture_output=True, text=True, timeout=timeout
     )
+    if r.returncode != 0:
+        err = r.stderr.strip()
+        DB_ERRORS.append(err)
+        print(f"[DB] SQL failed: {err}", flush=True)
     return r.stdout.strip()
 
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+def sql_quote(value):
+    return str(value).replace("'", "''")
+
+def jsonb_literal(value):
+    return sql_quote(json.dumps(value, ensure_ascii=False, default=str))
+
+def parse_yyyymmdd(value):
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+def parse_hhmm_minutes(value):
+    try:
+        hour, minute = str(value).split(":", 1)
+        return int(hour) * 60 + int(minute)
+    except (TypeError, ValueError):
+        return 16 * 60 + 15
+
+def minutes_since_midnight(value):
+    return value.hour * 60 + value.minute
+
+def daily_signal_write_block(trade_date, now=None):
+    if ALLOW_INTRADAY_DAILY_SIGNAL:
+        return False, ""
+    now = now or datetime.now()
+    parsed_date = parse_yyyymmdd(trade_date)
+    if not parsed_date or parsed_date != now.date():
+        return False, ""
+    ready_minutes = parse_hhmm_minutes(DAILY_SIGNAL_READY_TIME)
+    if minutes_since_midnight(now) < ready_minutes:
+        return True, f"current_session_before_daily_signal_ready_time_{DAILY_SIGNAL_READY_TIME}"
+    return False, ""
+
+def table_columns(table):
+    if table in _COLUMN_CACHE:
+        return _COLUMN_CACHE[table]
+    raw = db(f"""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = '{sql_quote(table)}'
+    """)
+    cols = {line.strip() for line in raw.splitlines() if line.strip()}
+    _COLUMN_CACHE[table] = cols
+    return cols
+
+def first_existing(table, candidates):
+    cols = table_columns(table)
+    for candidate in candidates:
+        if candidate in cols:
+            return candidate
+    return None
+
+def latest_kline_date():
+    raw = db("""
+        SELECT max(k.timestamp::date)
+        FROM klines k
+        JOIN stocks s ON k.symbol = s.symbol
+        WHERE k.interval = 'day'
+        AND s.is_active = true
+        AND s.exchange IN ('HKEX','NASDAQ','NYSE')
+    """)
+    return raw.strip() if raw else ""
+
+def run_id_for(trade_date):
+    return f"signal_v4_{trade_date.replace('-', '')}"
+
+def feature_run_count_columns():
+    return {
+        "expected": first_existing("engine_feature_runs", ("expected_count", "expected_symbols")),
+        "ready": first_existing("engine_feature_runs", ("ready_count", "ready_symbols")),
+        "missing": first_existing("engine_feature_runs", ("missing_count", "missing_symbols")),
+    }
+
+def ensure_feature_run(run_id, trade_date, expected_count):
+    quality = {
+        "engine": "signal_engine_v4",
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "trade_date_source": "max_active_hk_us_kline_date",
+    }
+    count_cols = feature_run_count_columns()
+    expected_col = count_cols["expected"]
+    ready_col = count_cols["ready"]
+    missing_col = count_cols["missing"]
+
+    columns = [
+        "run_id", "tenant_id", "user_id", "trade_date", "model_name", "model_version",
+        "feature_version", "feature_dim", "status", "source", "quality",
+    ]
+    values = [
+        f"'{sql_quote(run_id)}'",
+        f"'{sql_quote(TENANT_ID)}'",
+        f"'{sql_quote(USER_ID)}'",
+        f"'{sql_quote(trade_date)}'",
+        f"'{MODEL_NAME}'",
+        f"'{MODEL_VERSION}'",
+        f"'{FEATURE_VERSION}'",
+        "52",
+        "'feature_ready'",
+        "'signal_engine_v4'",
+        f"'{jsonb_literal(quality)}'::jsonb",
+    ]
+    updates = [
+        "status = EXCLUDED.status",
+        "source = EXCLUDED.source",
+        "quality = EXCLUDED.quality",
+    ]
+    for col, value in (
+        (expected_col, expected_count),
+        (ready_col, 0),
+        (missing_col, expected_count),
+    ):
+        if col:
+            columns.append(col)
+            values.append(str(value))
+            updates.append(f"{col} = EXCLUDED.{col}")
+
+    db(f"""
+        INSERT INTO engine_feature_runs ({', '.join(columns)})
+        VALUES ({', '.join(values)})
+        ON CONFLICT (run_id) DO UPDATE SET
+            {', '.join(updates)}
+    """)
+
+def finalize_feature_run(run_id, expected_count, ready_count, side_counts):
+    missing_count = max(expected_count - ready_count, 0)
+    quality = {
+        "engine": "signal_engine_v4",
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "ready_count": ready_count,
+        "missing_count": missing_count,
+        "side_counts": side_counts,
+    }
+    count_cols = feature_run_count_columns()
+    ready_col = count_cols["ready"]
+    missing_col = count_cols["missing"]
+    assignments = [
+        "status = 'signal_ready'",
+        f"quality = '{jsonb_literal(quality)}'::jsonb",
+    ]
+    if ready_col:
+        assignments.append(f"{ready_col} = {ready_count}")
+    if missing_col:
+        assignments.append(f"{missing_col} = {missing_count}")
+    db(f"""
+        UPDATE engine_feature_runs
+        SET {', '.join(assignments)}
+        WHERE run_id = '{sql_quote(run_id)}'
+    """)
+
+def upsert_signal_score(result, trade_date, run_id, quality):
+    quality_json = jsonb_literal(quality)
+    db(f"""
+        INSERT INTO engine_signal_scores (
+            run_id, tenant_id, user_id, trade_date, symbol, model_version,
+            feature_version, fusion_score, signal_side, quality, expected_price
+        )
+        VALUES (
+            '{sql_quote(run_id)}', '{sql_quote(TENANT_ID)}', '{sql_quote(USER_ID)}',
+            '{sql_quote(trade_date)}', '{sql_quote(result['symbol'])}',
+            '{MODEL_VERSION}', '{FEATURE_VERSION}', {result['score']},
+            '{result['side']}', '{quality_json}'::jsonb, {result['price']}
+        )
+        ON CONFLICT (
+            tenant_id, user_id, trade_date, symbol, model_version, feature_version, run_id
+        ) DO UPDATE SET
+            fusion_score = EXCLUDED.fusion_score,
+            signal_side = EXCLUDED.signal_side,
+            quality = EXCLUDED.quality,
+            expected_price = EXCLUDED.expected_price
+    """)
+
+def candidate_stocks_for_date(trade_date):
+    return db(f"""
+        SELECT k.symbol, s.exchange FROM klines k
+        JOIN stocks s ON k.symbol = s.symbol
+        WHERE k.interval = 'day' AND s.is_active = true
+        AND s.exchange IN ('HKEX','NASDAQ','NYSE')
+        GROUP BY k.symbol, s.exchange
+        HAVING count(*) >= 30 AND max(k.timestamp::date) = '{sql_quote(trade_date)}'::date
+        ORDER BY k.symbol
+    """)
+
+def parse_stock_rows(raw):
+    stocks = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("|")
+        if len(parts) >= 2:
+            stocks.append({"symbol": parts[0], "exchange": parts[1]})
+    return stocks
+
+def build_preflight_payload():
+    DB_ERRORS.clear()
+    _COLUMN_CACHE.clear()
+    trade_date = latest_kline_date()
+    run_id = run_id_for(trade_date) if trade_date else ""
+    raw_stocks = candidate_stocks_for_date(trade_date) if trade_date else ""
+    stocks = parse_stock_rows(raw_stocks)
+    write_blocked, block_reason = daily_signal_write_block(trade_date) if trade_date else (False, "")
+    count_cols = feature_run_count_columns()
+    signal_cols = table_columns("engine_signal_scores")
+    feature_cols = table_columns("engine_feature_runs")
+    status = "FAIL" if DB_ERRORS or not trade_date or not stocks else "OK"
+    if status == "OK" and write_blocked:
+        status = "WARN"
+    return {
+        "status": status,
+        "trade_date": trade_date,
+        "run_id": run_id,
+        "candidate_count": len(stocks),
+        "write_blocked": write_blocked,
+        "block_reason": block_reason,
+        "daily_signal_ready_time": DAILY_SIGNAL_READY_TIME,
+        "sample_symbols": stocks[:10],
+        "feature_run_count_columns": count_cols,
+        "schema_checks": {
+            "engine_feature_runs_has_run_id": "run_id" in feature_cols,
+            "engine_feature_runs_has_status": "status" in feature_cols,
+            "engine_signal_scores_has_run_id": "run_id" in signal_cols,
+            "engine_signal_scores_has_quality": "quality" in signal_cols,
+        },
+        "db_errors": list(DB_ERRORS),
+        "writes_database": False,
+    }
 
 # ═══════════════════════════════════════════
 # 技術指標計算（v3同款）
@@ -450,28 +691,37 @@ def analyze_stock(symbol, exchange):
     }
 
 def run():
+    DB_ERRORS.clear()
     log("=" * 60)
     log("信號引擎 v4 — 全面多維度分析")
-    
-    today = datetime.now().strftime('%Y-%m-%d')
-    
-    stocks = db("""
-        SELECT k.symbol, s.exchange FROM klines k 
-        JOIN stocks s ON k.symbol = s.symbol
-        WHERE k.interval = 'day' AND s.is_active = true
-        AND s.exchange IN ('HKEX','NASDAQ','NYSE')
-        GROUP BY k.symbol, s.exchange HAVING count(*) >= 30
-        ORDER BY k.symbol
-    """)
+
+    trade_date = latest_kline_date()
+    if not trade_date:
+        log("❌ 無法取得最新K線日期")
+        return False
+    run_id = run_id_for(trade_date)
+    log(f"trade_date={trade_date} run_id={run_id}")
+    write_blocked, block_reason = daily_signal_write_block(trade_date)
+    if write_blocked:
+        log(f"⏸️ 跳過盤中日線信號寫入: {block_reason}")
+        log("   K線更新可以繼續；signal_v4 daily run 需等收市後完整日K。")
+        return True
+
+    stocks = candidate_stocks_for_date(trade_date)
     
     if not stocks:
-        log("❌ 無數據")
-        return
+        log(f"❌ {trade_date} 無足夠K線數據")
+        return False
     
     total = len([l for l in stocks.split('\n') if l.strip()])
     log(f"分析 {total} 隻股票...")
+    ensure_feature_run(run_id, trade_date, total)
+    if DB_ERRORS:
+        log("❌ 建立feature run失敗，停止寫入信號")
+        return False
     
     results = {'BUY': [], 'SELL': [], 'HOLD': []}
+    processed = 0
     
     for line in stocks.split('\n'):
         if not line.strip(): continue
@@ -492,22 +742,26 @@ def run():
             'order_prices': result['order_prices'],
             'prediction': result['prediction'],
             'risk_flags': result['risk_flags'],
+            'price': result['price'],
+            'exchange': result['exchange'],
+            'trade_date': trade_date,
+            'run_id': run_id,
         }
-        quality_json = json.dumps(quality, ensure_ascii=False, default=str).replace("'", "''")
-        db(f"""
-            UPDATE engine_signal_scores 
-            SET fusion_score = {result['score']}, signal_side = '{result['side']}',
-                quality = '{quality_json}'::jsonb, expected_price = {result['price']},
-                model_version = 'signal_v4', feature_version = 'v4_full'
-            WHERE trade_date = (SELECT max(trade_date) FROM engine_signal_scores) 
-            AND symbol = '{symbol}'
-        """)
+        upsert_signal_score(result, trade_date, run_id, quality)
+        if DB_ERRORS:
+            log(f"❌ 寫入 {symbol} 信號失敗，停止本輪run")
+            return False
+        processed += 1
     
     results['BUY'].sort(key=lambda x: x['score'], reverse=True)
     results['SELL'].sort(key=lambda x: x['score'])
-    
+    finalize_feature_run(run_id, total, processed, {k: len(v) for k, v in results.items()})
+    if DB_ERRORS:
+        log("❌ finalize feature run失敗")
+        return False
+
     log(f"\n{'='*60}")
-    log(f"📊 分析完成: {total} 隻")
+    log(f"📊 分析完成: {processed}/{total} 隻")
     log(f"   🟢 BUY: {len(results['BUY'])} | ⚪ HOLD: {len(results['HOLD'])} | 🔴 SELL: {len(results['SELL'])}")
     
     log(f"\n── TOP BUY 信號（含掛單價）──")
@@ -521,13 +775,42 @@ def run():
             log(f"    📌 建議買入: ${op.get('entry_price','?')} | 止損: ${op.get('stop_loss','?')} | 止盈: ${op.get('take_profit','?')} | 風險回報: {op.get('rr_ratio','?')}")
         if pred:
             preds = pred.get("predictions", [])
-            if preds and len(preds) > 2:
-                log(f"    📈 小時預測: {pred_trend} | 4h區間: ${preds[3]["low"]}~${preds[3]["high"]}")
+            if preds and len(preds) > 3:
+                log(f"    📈 小時預測: {pred_trend} | 4h區間: ${preds[3]['low']}~${preds[3]['high']}")
         if s['risk_flags']:
             log(f"    ⚠️ 風險: {', '.join(s['risk_flags'])}")
         log("")
     
-    log(f"✅ 信號已更新 (v4)")
+    log(f"✅ 信號已更新 (v4) run_id={run_id}")
+    return True
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--preflight", action="store_true", help="validate DB/schema/date inputs without writing")
+    parser.add_argument("--json", action="store_true", help="emit JSON for --preflight")
+    return parser.parse_args()
+
+def main():
+    args = parse_args()
+    if args.preflight:
+        payload = build_preflight_payload()
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(
+                f"signal_engine_v4 preflight: {payload['status']} "
+                f"trade_date={payload['trade_date'] or 'none'} "
+                f"run_id={payload['run_id'] or 'none'} "
+                f"candidate_count={payload['candidate_count']} "
+                f"write_blocked={payload['write_blocked']} "
+                f"count_columns={payload['feature_run_count_columns']}"
+            )
+            if payload["block_reason"]:
+                print("block_reason=" + payload["block_reason"])
+            if payload["db_errors"]:
+                print("db_errors=" + "; ".join(payload["db_errors"]))
+        return 0 if payload["status"] == "OK" else 2
+    return 0 if run() else 1
 
 if __name__ == '__main__':
-    run()
+    sys.exit(main())

@@ -30,6 +30,10 @@ def fetch_tencent_kline(symbol, market="hk", days=10):
     except Exception as e:
         return []
 
+def valid_ohlc(open_p, close_p, high_p, low_p):
+    values = (open_p, close_p, high_p, low_p)
+    return all(v is not None and v > 0 for v in values) and high_p >= low_p and low_p <= open_p <= high_p and low_p <= close_p <= high_p
+
 def update_klines():
     """Fetch and store latest klines for all stocks"""
     print(f"[{datetime.now()}] Step 1: 更新K線數據...")
@@ -68,15 +72,31 @@ def update_klines():
             if len(k) >= 6:
                 dt, open_p, close_p, high_p, low_p, vol = k[0], k[1], k[2], k[3], k[4], k[5]
                 try:
+                    open_float = float(open_p)
+                    close_float = float(close_p)
+                    high_float = float(high_p)
+                    low_float = float(low_p)
+                    if not valid_ohlc(open_float, close_float, high_float, low_float):
+                        print(f"  跳過異常K線 {sym} {dt}: o={open_p} c={close_p} h={high_p} l={low_p}")
+                        continue
                     vol_float = float(vol) if vol else 0
-                    amount = float(close_p) * vol_float if close_p and vol_float else 0
+                    amount = close_float * vol_float if close_p and vol_float else 0
                     change_pct = 0
-                    if float(open_p) > 0:
-                        change_pct = (float(close_p) - float(open_p)) / float(open_p) * 100
+                    if open_float > 0:
+                        change_pct = (close_float - open_float) / open_float * 100
                     
                     sql = f"""INSERT INTO klines (symbol, interval, timestamp, open_price, high_price, low_price, close_price, volume, amount, change_percent, data_source, created_at)
                               VALUES ('{sym}', 'day', '{dt}', {open_p}, {high_p}, {low_p}, {close_p}, {vol_float}, {amount}, {change_pct:.4f}, 'tencent_hk', NOW())
-                              ON CONFLICT DO NOTHING;"""
+                              ON CONFLICT (symbol, interval, timestamp) DO UPDATE SET
+                                  open_price = EXCLUDED.open_price,
+                                  high_price = EXCLUDED.high_price,
+                                  low_price = EXCLUDED.low_price,
+                                  close_price = EXCLUDED.close_price,
+                                  volume = EXCLUDED.volume,
+                                  amount = EXCLUDED.amount,
+                                  change_percent = EXCLUDED.change_percent,
+                                  data_source = EXCLUDED.data_source,
+                                  created_at = NOW();"""
                     run_remote(sql)
                 except Exception as e:
                     pass

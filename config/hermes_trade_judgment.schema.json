@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/a2064777923/HK-US-quantitative/hermes_trade_judgment.schema.json",
+  "title": "Hermes Trade Judgment",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "packet_id",
+    "signal_id",
+    "decision",
+    "confidence",
+    "reviewed_at",
+    "supporting_factors",
+    "opposing_factors",
+    "risk_notes"
+  ],
+  "properties": {
+    "schema": {
+      "const": "hermes_trade_judgment_v1"
+    },
+    "signal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packet_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Copy from hermes_signal_review_packet_v1.packet_id."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["approve", "reject", "reduce", "hold"]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "reviewed_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "reviewer": {
+      "type": "string"
+    },
+    "expiry_minutes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "max_quantity": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Required when decision is reduce."
+    },
+    "supporting_factors": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1
+    },
+    "opposing_factors": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1
+    },
+    "risk_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "minItems": 1
+    },
+    "market_context": {
+      "type": "object",
+      "description": "Optional snapshot or summary of market_context_report used by Hermes during review."
+    },
+    "market_regime_exception": {
+      "type": "boolean",
+      "description": "Set true only when approving or reducing a new BUY despite risk_off market_context."
+    },
+    "market_regime_exception_reason": {
+      "type": "string",
+      "minLength": 20,
+      "description": "Specific reason for overriding risk_off breadth context."
+    },
+    "portfolio_context": {
+      "type": "object"
+    },
+    "strategy_evidence": {
+      "type": "object",
+      "description": "Optional snapshot or summary of rt_signal_outcome_report used by Hermes during review."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"decision": {"const": "reduce"}}
+      },
+      "then": {
+        "required": ["max_quantity"]
+      }
+    },
+    {
+      "if": {
+        "properties": {"market_regime_exception": {"const": true}}
+      },
+      "then": {
+        "required": ["market_regime_exception_reason"]
+      }
+    }
+  ]
+}

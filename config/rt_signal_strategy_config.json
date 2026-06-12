@@ -1,0 +1,23 @@
+{
+  "schema": "rt_signal_strategy_config_v1",
+  "version": "v5-compatible-default-20260612",
+  "description": "Default realtime v5 strategy config. Values match the previous hard-coded behavior.",
+  "signal_cooldown_seconds": 1800,
+  "volume_anomaly_ratio": 3.0,
+  "confirmation_thresholds": {
+    "BUY": {
+      "min_full_score": 0.25
+    },
+    "SELL": {
+      "max_full_score": -0.25
+    }
+  },
+  "risk_model": {
+    "atr_stop_multiple": 2.0,
+    "atr_take_profit_multiple": 3.0
+  },
+  "emission": {
+    "emit_unconfirmed_directional_as_watch": true
+  },
+  "trigger_overrides": {}
+}

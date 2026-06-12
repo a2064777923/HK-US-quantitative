@@ -7,8 +7,9 @@
 # K線更新 + 信號生成（交易時段每30分鐘）
 0,30 9-16 * * 1-5 /usr/bin/python3 -u /root/kline_batch.py >> /tmp/kline_batch.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py >> /tmp/signal_v4.log 2>&1
 
-# 策略執行（交易時段每5分鐘）
-*/5 9-16 * * 1-5 /usr/bin/python3 -u /root/quantmind_strategy_runner.py >> /tmp/quantmind_strategy.log 2>&1
+# Legacy策略監控（交易時段每5分鐘）
+# 默認只管理已有倉位/止損止盈；新開倉需顯式設 QM_STRATEGY_ALLOW_NEW_POSITIONS=1。
+*/5 9-16 * * 1-5 QM_STRATEGY_ALLOW_NEW_POSITIONS=0 /usr/bin/python3 -u /root/quantmind_strategy_runner.py >> /tmp/quantmind_strategy.log 2>&1
 
 # 收市後全量更新 + 信號重算
 30 16 * * 1-5 /usr/bin/python3 -u /root/kline_batch.py >> /tmp/kline_batch.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py >> /tmp/signal_v4.log 2>&1

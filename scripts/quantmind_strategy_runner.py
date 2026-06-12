@@ -5,7 +5,7 @@ QuantMind Strategy Runner v2 — 修復通知問題
 - 通知包含技術指標同觸發原因
 - 止損止盈都會通知
 """
-import json, urllib.request, re, time, os, sys, math, subprocess
+import json, urllib.request, re, time, os, sys, math, subprocess, hashlib
 try:
     from feishu_notify import send_feishu_message, notify_orders
 except: pass
@@ -26,6 +26,10 @@ MIN_SCORE_HK = 0.620
 MIN_SCORE_US = 0.620
 STOP_LOSS_PCT = -0.08
 TAKE_PROFIT_PCT = 0.15
+USD_TO_HKD = 7.80
+MIN_RR_RATIO = float(os.environ.get("QM_STRATEGY_MIN_RR_RATIO", "1.5"))
+BLOCKING_RISK_FLAG_KEYWORDS = ("風險回報比偏低",)
+NEW_ENTRY_ENV_VAR = "QM_STRATEGY_ALLOW_NEW_POSITIONS"
 
 LOT_SIZES_HK = {
     "00880": 1000, "09922": 1000, "00867": 500, "00288": 500,
@@ -136,13 +140,91 @@ def log(msg):
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] {msg}")
 
+def is_hk_symbol(symbol):
+    return symbol[:1].isdigit() and len(symbol) == 5
+
+def position_value_hkd(symbol, quantity, price):
+    value = quantity * price
+    return value if is_hk_symbol(symbol) else value * USD_TO_HKD
+
+def stable_hash(value):
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return hashlib.md5(payload.encode()).hexdigest()
+
+def parse_quality(value):
+    if not value:
+        return {}
+    try:
+        loaded = json.loads(value)
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+def quality_rr_ratio(quality):
+    order_prices = quality.get("order_prices") if isinstance(quality, dict) else {}
+    if not isinstance(order_prices, dict):
+        return None
+    try:
+        return float(order_prices.get("rr_ratio"))
+    except (TypeError, ValueError):
+        return None
+
+def quality_risk_flags(quality):
+    flags = quality.get("risk_flags") if isinstance(quality, dict) else []
+    return flags if isinstance(flags, list) else []
+
+def signal_quality_gate(quality):
+    reasons = []
+    rr_ratio = quality_rr_ratio(quality)
+    flags = quality_risk_flags(quality)
+    if rr_ratio is None:
+        reasons.append("missing_rr_ratio")
+    elif rr_ratio < MIN_RR_RATIO:
+        reasons.append(f"rr_ratio_below_{MIN_RR_RATIO:g}")
+    for flag in flags:
+        text = str(flag)
+        if any(keyword in text for keyword in BLOCKING_RISK_FLAG_KEYWORDS):
+            reasons.append(text)
+    return not reasons, reasons, rr_ratio, flags
+
+def legacy_new_entries_enabled(env=None):
+    env = env if env is not None else os.environ
+    return env.get(NEW_ENTRY_ENV_VAR, "0") == "1"
+
+def select_new_entry_candidates(signals, positions, max_positions=MAX_POSITIONS, allow_new_entries=None):
+    if allow_new_entries is None:
+        allow_new_entries = legacy_new_entries_enabled()
+    if not allow_new_entries:
+        return []
+    held_symbols = set(positions.keys())
+    candidates = [s for s in signals if s["symbol"] not in held_symbols]
+    available_slots = max_positions - len(positions)
+    return candidates[:max(available_slots, 0)]
+
+def expected_signal_date(market_mode):
+    hkt = datetime.now(timezone(timedelta(hours=8)))
+    if market_mode == "US" and hkt.hour < 4:
+        return (hkt.date() - timedelta(days=1)).isoformat()
+    return hkt.date().isoformat()
+
+def get_latest_signal_date(stock_filter):
+    raw = db_query(f"""
+        SELECT max(trade_date)
+        FROM engine_signal_scores
+        WHERE model_version = 'signal_v4'
+        AND feature_version = 'v4_full'
+        AND symbol {stock_filter}
+    """)
+    return raw.strip() if raw else ""
+
 def get_signal_quality(symbol):
     """Read technical details + signal from quality JSONB"""
     raw = db_query(f"""
         SELECT quality, signal_side, fusion_score FROM engine_signal_scores 
-        WHERE trade_date = (SELECT max(trade_date) FROM engine_signal_scores) 
-        AND symbol = '{symbol}'
-        ORDER BY fusion_score DESC LIMIT 1
+        WHERE symbol = '{symbol}'
+        AND model_version = 'signal_v4'
+        AND feature_version = 'v4_full'
+        ORDER BY trade_date DESC, fusion_score DESC LIMIT 1
     """)
     if raw:
         try:
@@ -294,7 +376,7 @@ def run_strategy():
     # ★ 用騰訊API覆蓋舊價格
     refreshed = 0
     for sym, pos in positions.items():
-        if sym[0].isdigit() and len(sym) == 5:
+        if is_hk_symbol(sym):
             q = tencent_price(sym, "hk")
         else:
             q = tencent_price(sym, "us")
@@ -309,7 +391,7 @@ def run_strategy():
     for sym, pos in positions.items():
         qty = float(pos.get("volume", 0))
         price = float(pos.get("last_price", 0))
-        total_asset += qty * price
+        total_asset += position_value_hkd(sym, qty, price)
     
     if refreshed > 0:
         log(f"🔄 已用騰訊API刷新 {refreshed} 隻價格")
@@ -348,33 +430,57 @@ def run_strategy():
     else:
         us_list = ",".join(f"'{s}'" for s in US_STOCKS)
         stock_filter = f"NOT IN ({us_list})"
-    
-    sql = f"""
-        SELECT e.symbol, COALESCE(s.name, e.symbol), e.fusion_score 
-        FROM engine_signal_scores e LEFT JOIN stocks s ON s.symbol = e.symbol 
-        WHERE e.trade_date = (SELECT max(trade_date) FROM engine_signal_scores) 
-        AND e.signal_side = 'BUY' AND e.symbol {stock_filter}
-        AND e.fusion_score > {min_score}
-        ORDER BY e.fusion_score DESC LIMIT 10
-    """
-    raw = db_query(sql)
-    
+
     signals = []
-    for line in raw.split("\n"):
-        if not line.strip(): continue
-        parts = line.split("|")
-        if len(parts) >= 3:
-            signals.append({"symbol": parts[0], "name": parts[1], "score": float(parts[2])})
+    expected_date = expected_signal_date(market_mode)
+    latest_signal_date = get_latest_signal_date(stock_filter)
+    if not latest_signal_date or latest_signal_date < expected_date:
+        log(f"⚠️ {market_label}信號過期: latest={latest_signal_date or 'none'} expected>={expected_date}，跳過新開倉")
+    else:
+        sql = f"""
+            SELECT e.symbol, COALESCE(s.name, e.symbol), e.fusion_score, e.quality::text
+            FROM engine_signal_scores e LEFT JOIN stocks s ON s.symbol = e.symbol
+            WHERE e.trade_date = '{latest_signal_date}'
+            AND e.model_version = 'signal_v4'
+            AND e.feature_version = 'v4_full'
+            AND e.signal_side = 'BUY' AND e.symbol {stock_filter}
+            AND e.fusion_score > {min_score}
+            ORDER BY e.fusion_score DESC LIMIT 10
+        """
+        raw = db_query(sql)
+
+        for line in raw.split("\n"):
+            if not line.strip(): continue
+            parts = line.split("|")
+            if len(parts) >= 4:
+                quality = parse_quality(parts[3])
+                ok, gate_reasons, rr_ratio, risk_flags = signal_quality_gate(quality)
+                if not ok:
+                    log(
+                        f"  ⛔ {parts[0]} score={float(parts[2]):.4f} "
+                        f"rr={rr_ratio if rr_ratio is not None else '?'} "
+                        f"risk_gate={','.join(gate_reasons)}"
+                    )
+                    continue
+                signals.append(
+                    {
+                        "symbol": parts[0],
+                        "name": parts[1],
+                        "score": float(parts[2]),
+                        "rr_ratio": rr_ratio,
+                        "risk_flags": risk_flags[:4],
+                    }
+                )
     
     log(f"📊 {market_label} BUY 信號: {len(signals)} 隻")
     for s in signals:
-        log(f"   {s['symbol']} {s['name']} score={s['score']:.4f}")
+        log(f"   {s['symbol']} {s['name']} score={s['score']:.4f} rr={s.get('rr_ratio', '?')}")
     
     # 新增買入
-    held_symbols = set(positions.keys())
-    candidates = [s for s in signals if s["symbol"] not in held_symbols]
-    available_slots = MAX_POSITIONS - pos_count
-    candidates = candidates[:max(available_slots, 0)]
+    allow_new_entries = legacy_new_entries_enabled()
+    if not allow_new_entries:
+        log(f"🔒 舊策略 runner 新開倉已禁用；需 {NEW_ENTRY_ENV_VAR}=1 才會買入新標的")
+    candidates = select_new_entry_candidates(signals, positions, allow_new_entries=allow_new_entries)
     
     new_orders = []
     if not candidates:
@@ -390,7 +496,7 @@ def run_strategy():
             px = quote["price"]
             target_size = total_asset * POSITION_SIZE_PCT
             if is_us:
-                qty = int(target_size / (px * 7.8))
+                qty = int(target_size / (px * USD_TO_HKD))
                 if qty < 1: qty = 1
             else:
                 lot = LOT_SIZES_HK.get(sym, 1000)
@@ -429,7 +535,7 @@ def run_strategy():
     
     # ★ 再次用騰訊API刷新價格（第二次get_account會覆蓋）
     for sym, pos in positions.items():
-        if sym[0].isdigit() and len(sym) == 5:
+        if is_hk_symbol(sym):
             q = tencent_price(sym, "hk")
         else:
             q = tencent_price(sym, "us")
@@ -440,7 +546,7 @@ def run_strategy():
     for sym, pos in positions.items():
         qty = float(pos.get("volume", 0))
         price = float(pos.get("last_price", 0))
-        total_asset += qty * price
+        total_asset += position_value_hkd(sym, qty, price)
     total_return = (total_asset / 100000 - 1) * 100
     
     log(f"{'='*50}")
@@ -456,7 +562,7 @@ def run_strategy():
     state_key = f"last_notify_{market_mode}"
     state_positions_key = f"positions_{market_mode}"
     
-    current_pos_hash = hash(json.dumps(sorted(positions.keys())))
+    current_pos_hash = stable_hash(sorted(positions.keys()))
     last_pos_hash = state.get(state_positions_key, None)
     
     should_notify = False
@@ -476,7 +582,6 @@ def run_strategy():
     msg = build_signal_notification(market_label, new_orders, stop_events, signals, cash, total_asset, len(positions), total_return, positions)
     
     # Send if: has action OR first run of the day OR position changed
-    import hashlib
     msg_hash = hashlib.md5(msg.encode()).hexdigest()[:8]
     last_msg_hash = state.get("last_msg_hash", "")
     

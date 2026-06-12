@@ -6,7 +6,7 @@
 - 觸發時先跑完整多因子分析
 - 即時發送通知（寫入文件，由外部腳本推送）
 """
-import subprocess, json, time, os, sys, math, urllib.request
+import hashlib, subprocess, json, time, os, sys, math, re, urllib.request
 from datetime import datetime, timedelta
 from collections import defaultdict
 from threading import Thread, Lock
@@ -16,7 +16,12 @@ POLL_INTERVAL = 3       # 每3秒拉一次報價
 FULL_SCAN_INTERVAL = 30 # 每30秒做一次全量條件檢查
 SIGNAL_COOLDOWN = 1800  # 同一信號30分鐘內唔重複觸發
 ALERT_FILE = "/tmp/rt_signal_alert.json"
+ALERT_QUEUE_FILE = "/tmp/rt_signal_alerts.jsonl"
 STATE_FILE = "/tmp/rt_signal_state.json"
+WATCHLIST_FILE = os.environ.get("RT_SIGNAL_WATCHLIST_FILE", "/root/rt_signal_watchlist.json")
+STRATEGY_CONFIG_FILE = os.environ.get("RT_SIGNAL_STRATEGY_CONFIG_FILE", "/root/rt_signal_strategy_config.json")
+MIN_VOLUME_SESSION_FRACTION = 0.05
+VOLUME_ANOMALY_RATIO = 3.0
 
 # 股票池 — 港股+美股
 HK_WATCHLIST = [
@@ -33,6 +38,322 @@ US_WATCHLIST = [
     "PDD","NOK","ARAY","BABA","JD","NIO","LI","BIDU","NTES","V","JPM",
     "BAC","GS","JNJ","UNH","PFE","INTC","CRM","ADBE","XPEV","ZH","BILI","IQ",
 ]
+
+def default_strategy_config():
+    return {
+        "schema": "rt_signal_strategy_config_v1",
+        "version": "default-v5-compatible",
+        "description": "Default realtime v5 strategy config matching legacy hard-coded behavior.",
+        "signal_cooldown_seconds": SIGNAL_COOLDOWN,
+        "volume_anomaly_ratio": VOLUME_ANOMALY_RATIO,
+        "confirmation_thresholds": {
+            "BUY": {"min_full_score": 0.25},
+            "SELL": {"max_full_score": -0.25}
+        },
+        "risk_model": {
+            "atr_stop_multiple": 2.0,
+            "atr_take_profit_multiple": 3.0
+        },
+        "emission": {
+            "emit_unconfirmed_directional_as_watch": True
+        },
+        "trigger_overrides": {}
+    }
+
+def now_iso():
+    return datetime.now().isoformat(timespec="seconds")
+
+def as_float(value, default=None):
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+def as_int(value, default=None):
+    try:
+        if value in (None, ""):
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+def as_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "y", "on"):
+        return True
+    if text in ("0", "false", "no", "n", "off"):
+        return False
+    return default
+
+def normalize_symbol_list(value):
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = re.split(r"[\s,;]+", value)
+    elif isinstance(value, (list, tuple)):
+        raw_items = value
+    else:
+        return []
+
+    symbols = []
+    seen = set()
+    for item in raw_items:
+        symbol = str(item).strip().upper()
+        if not symbol or symbol in seen:
+            continue
+        seen.add(symbol)
+        symbols.append(symbol)
+    return symbols
+
+def symbols_from_watchlist_payload(payload, market):
+    if not isinstance(payload, dict):
+        return []
+    candidates = [
+        payload.get(market),
+        payload.get(market.lower()),
+        payload.get(f"{market}_WATCHLIST"),
+        payload.get(f"{market.lower()}_watchlist"),
+    ]
+    for parent_key in ("markets", "watchlists"):
+        parent = payload.get(parent_key)
+        if isinstance(parent, dict):
+            item = parent.get(market) or parent.get(market.lower())
+            if isinstance(item, dict):
+                candidates.append(item.get("symbols"))
+            else:
+                candidates.append(item)
+    for candidate in candidates:
+        symbols = normalize_symbol_list(candidate)
+        if symbols:
+            return symbols
+    return []
+
+def load_watchlist_file(path):
+    if not path:
+        return {}, ["watchlist_file_not_configured"]
+    if not os.path.exists(path):
+        return {}, [f"watchlist_file_missing:{path}"]
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as exc:
+        return {}, [f"watchlist_file_invalid:{exc}"]
+    return {
+        "HK": symbols_from_watchlist_payload(payload, "HK"),
+        "US": symbols_from_watchlist_payload(payload, "US"),
+    }, []
+
+def watchlist_digest(watchlists):
+    seed = {
+        "HK": watchlists.get("HK", []),
+        "US": watchlists.get("US", []),
+    }
+    return hashlib.sha256(json.dumps(seed, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+def strategy_config_digest(config):
+    seed = {
+        "signal_cooldown_seconds": config.get("signal_cooldown_seconds"),
+        "volume_anomaly_ratio": config.get("volume_anomaly_ratio"),
+        "confirmation_thresholds": config.get("confirmation_thresholds"),
+        "risk_model": config.get("risk_model"),
+        "emission": config.get("emission"),
+        "trigger_overrides": config.get("trigger_overrides"),
+    }
+    return hashlib.sha256(json.dumps(seed, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+def merge_strategy_config(base, override):
+    merged = json.loads(json.dumps(base))
+    if not isinstance(override, dict):
+        return merged
+    for key in ("version", "description"):
+        if key in override:
+            merged[key] = override[key]
+    for key in ("signal_cooldown_seconds", "volume_anomaly_ratio"):
+        if key in override:
+            merged[key] = override[key]
+    for key in ("confirmation_thresholds", "risk_model", "emission", "trigger_overrides"):
+        if isinstance(override.get(key), dict):
+            merged.setdefault(key, {})
+            for sub_key, value in override[key].items():
+                if isinstance(value, dict) and isinstance(merged[key].get(sub_key), dict):
+                    merged[key][sub_key].update(value)
+                else:
+                    merged[key][sub_key] = value
+    return merged
+
+def normalize_strategy_config(config):
+    config = merge_strategy_config(default_strategy_config(), config)
+    warnings = []
+    cooldown = as_int(config.get("signal_cooldown_seconds"), SIGNAL_COOLDOWN)
+    if cooldown is None or cooldown <= 0:
+        warnings.append("invalid_signal_cooldown_seconds_using_default")
+        cooldown = SIGNAL_COOLDOWN
+    config["signal_cooldown_seconds"] = cooldown
+
+    volume_ratio = as_float(config.get("volume_anomaly_ratio"), VOLUME_ANOMALY_RATIO)
+    if volume_ratio is None or volume_ratio <= 0:
+        warnings.append("invalid_volume_anomaly_ratio_using_default")
+        volume_ratio = VOLUME_ANOMALY_RATIO
+    config["volume_anomaly_ratio"] = volume_ratio
+
+    thresholds = config.setdefault("confirmation_thresholds", {})
+    buy = thresholds.setdefault("BUY", {})
+    sell = thresholds.setdefault("SELL", {})
+    buy["min_full_score"] = as_float(buy.get("min_full_score"), 0.25)
+    sell["max_full_score"] = as_float(sell.get("max_full_score"), -0.25)
+
+    risk = config.setdefault("risk_model", {})
+    risk["atr_stop_multiple"] = as_float(risk.get("atr_stop_multiple"), 2.0)
+    risk["atr_take_profit_multiple"] = as_float(risk.get("atr_take_profit_multiple"), 3.0)
+    if risk["atr_stop_multiple"] is None or risk["atr_stop_multiple"] <= 0:
+        warnings.append("invalid_atr_stop_multiple_using_default")
+        risk["atr_stop_multiple"] = 2.0
+    if risk["atr_take_profit_multiple"] is None or risk["atr_take_profit_multiple"] <= 0:
+        warnings.append("invalid_atr_take_profit_multiple_using_default")
+        risk["atr_take_profit_multiple"] = 3.0
+
+    emission = config.setdefault("emission", {})
+    emission["emit_unconfirmed_directional_as_watch"] = as_bool(
+        emission.get("emit_unconfirmed_directional_as_watch"),
+        True,
+    )
+
+    overrides = config.setdefault("trigger_overrides", {})
+    for key, override in list(overrides.items()):
+        if not isinstance(override, dict):
+            warnings.append(f"invalid_trigger_override:{key}")
+            overrides.pop(key, None)
+            continue
+        if "min_full_score" in override:
+            override["min_full_score"] = as_float(override.get("min_full_score"))
+        if "max_full_score" in override:
+            override["max_full_score"] = as_float(override.get("max_full_score"))
+        if "cooldown_seconds" in override:
+            override["cooldown_seconds"] = as_int(override.get("cooldown_seconds"))
+    config["config_id"] = strategy_config_digest(config)
+    return config, warnings
+
+def load_strategy_config(env=None, file_path=None):
+    env = env if env is not None else os.environ
+    file_path = file_path if file_path is not None else env.get("RT_SIGNAL_STRATEGY_CONFIG_FILE", STRATEGY_CONFIG_FILE)
+    config = default_strategy_config()
+    source = "fallback_default"
+    warnings = []
+    if file_path and os.path.exists(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                config = merge_strategy_config(config, loaded)
+                source = "file"
+            else:
+                warnings.append(f"strategy_config_file_invalid:{file_path}")
+        except Exception as exc:
+            warnings.append(f"strategy_config_file_invalid:{exc}")
+    else:
+        warnings.append(f"strategy_config_file_missing:{file_path}")
+
+    env_buy = env.get("RT_SIGNAL_BUY_MIN_FULL_SCORE")
+    env_sell = env.get("RT_SIGNAL_SELL_MAX_FULL_SCORE")
+    env_volume = env.get("RT_SIGNAL_VOLUME_ANOMALY_RATIO")
+    env_cooldown = env.get("RT_SIGNAL_COOLDOWN_SECONDS")
+    env_emit_unconfirmed = env.get("RT_SIGNAL_EMIT_UNCONFIRMED_DIRECTIONAL_AS_WATCH")
+    if env_buy is not None:
+        config.setdefault("confirmation_thresholds", {}).setdefault("BUY", {})["min_full_score"] = env_buy
+        source = "env"
+    if env_sell is not None:
+        config.setdefault("confirmation_thresholds", {}).setdefault("SELL", {})["max_full_score"] = env_sell
+        source = "env"
+    if env_volume is not None:
+        config["volume_anomaly_ratio"] = env_volume
+        source = "env"
+    if env_cooldown is not None:
+        config["signal_cooldown_seconds"] = env_cooldown
+        source = "env"
+    if env_emit_unconfirmed is not None:
+        config.setdefault("emission", {})["emit_unconfirmed_directional_as_watch"] = env_emit_unconfirmed
+        source = "env"
+
+    config, normalize_warnings = normalize_strategy_config(config)
+    warnings.extend(normalize_warnings)
+    context = {
+        "schema": "rt_signal_strategy_config_runtime_v1",
+        "strategy_config_id": config.get("config_id"),
+        "loaded_at": now_iso(),
+        "source": source,
+        "source_file": file_path,
+        "version": config.get("version"),
+        "warnings": warnings,
+    }
+    return config, context
+
+def load_watchlists(env=None, file_path=None):
+    env = env if env is not None else os.environ
+    file_path = file_path if file_path is not None else env.get("RT_SIGNAL_WATCHLIST_FILE", WATCHLIST_FILE)
+    watchlists = {"HK": list(HK_WATCHLIST), "US": list(US_WATCHLIST)}
+    sources = {"HK": "fallback_hardcoded", "US": "fallback_hardcoded"}
+    warnings = []
+
+    file_watchlists, file_warnings = load_watchlist_file(file_path)
+    warnings.extend(file_warnings)
+    for market in ("HK", "US"):
+        symbols = file_watchlists.get(market) or []
+        if symbols:
+            watchlists[market] = symbols
+            sources[market] = "file"
+        elif not file_warnings:
+            warnings.append(f"watchlist_file_missing_market:{market}")
+
+    for market, env_key in (("HK", "RT_SIGNAL_HK_WATCHLIST"), ("US", "RT_SIGNAL_US_WATCHLIST")):
+        if env_key not in env:
+            continue
+        symbols = normalize_symbol_list(env.get(env_key))
+        if symbols:
+            watchlists[market] = symbols
+            sources[market] = "env"
+        else:
+            warnings.append(f"watchlist_env_empty:{env_key}")
+
+    context = {
+        "schema": "rt_signal_watchlist_runtime_v1",
+        "watchlist_id": watchlist_digest(watchlists),
+        "loaded_at": now_iso(),
+        "source_file": file_path,
+        "markets": {
+            market: {
+                "source": sources[market],
+                "count": len(watchlists[market]),
+                "sample": watchlists[market][:10],
+            }
+            for market in ("HK", "US")
+        },
+        "warnings": warnings,
+    }
+    return watchlists["HK"], watchlists["US"], context
+
+def alert_watchlist_metadata(context, market):
+    context = context or {}
+    market = str(market or "").upper()
+    info = ((context.get("markets") or {}).get(market) or {})
+    return {
+        "watchlist_id": context.get("watchlist_id"),
+        "watchlist_source": info.get("source"),
+        "watchlist_count": info.get("count"),
+    }
+
+def alert_strategy_metadata(context):
+    context = context or {}
+    return {
+        "strategy_config_id": context.get("strategy_config_id"),
+        "strategy_config_source": context.get("source"),
+        "strategy_config_version": context.get("version"),
+    }
 
 # ========== 數據層 ==========
 def db(sql):
@@ -70,6 +391,7 @@ def fetch_hk_quotes(symbols):
                     "amount": float(parts[37]) if parts[37] else 0,  # 萬元
                     "change_pct": float(parts[32]) if parts[32] else 0,
                     "time": parts[30],
+                    "market": "HK",
                 }
             except (ValueError, IndexError):
                 continue
@@ -102,12 +424,86 @@ def fetch_us_quotes(symbols):
                     "amount": float(parts[37]) if parts[37] else 0,
                     "change_pct": float(parts[32]) if parts[32] else 0,
                     "time": parts[30],
+                    "market": "US",
                 }
             except (ValueError, IndexError):
                 continue
         return results
     except:
         return {}
+
+def parse_quote_datetime(value):
+    if not value:
+        return None
+    value = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%H:%M:%S"):
+        try:
+            parsed = datetime.strptime(value, fmt)
+            if fmt == "%H:%M:%S":
+                today = datetime.now()
+                parsed = parsed.replace(year=today.year, month=today.month, day=today.day)
+            return parsed
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+def session_elapsed_minutes(market, dt):
+    """Return elapsed regular-session minutes for quote-local time."""
+    if not dt:
+        return None
+    t = dt.hour * 60 + dt.minute + dt.second / 60
+    market = str(market or "").upper()
+    if market == "HK":
+        if t < 570:
+            return 0
+        if t <= 720:
+            return t - 570
+        if t < 780:
+            return 150
+        if t <= 960:
+            return 150 + (t - 780)
+        return 330
+    if market == "US":
+        if t < 570:
+            return 0
+        if t <= 960:
+            return t - 570
+        return 390
+    return None
+
+def regular_session_minutes(market):
+    market = str(market or "").upper()
+    if market == "HK":
+        return 330
+    if market == "US":
+        return 390
+    return None
+
+def cumulative_volume_ratio(quote_volume, avg_daily_volume, market, quote_time=None):
+    """Compare cumulative intraday volume with expected cumulative daily volume."""
+    try:
+        quote_volume = float(quote_volume)
+        avg_daily_volume = float(avg_daily_volume)
+    except (TypeError, ValueError):
+        return None
+    if quote_volume <= 0 or avg_daily_volume <= 0:
+        return None
+
+    dt = parse_quote_datetime(quote_time) or datetime.now()
+    elapsed = session_elapsed_minutes(market, dt)
+    session_minutes = regular_session_minutes(market)
+    if elapsed is None or session_minutes is None:
+        return None
+    if elapsed <= 0:
+        return None
+    fraction = max(min(elapsed / session_minutes, 1.0), MIN_VOLUME_SESSION_FRACTION)
+    expected_cumulative = avg_daily_volume * fraction
+    if expected_cumulative <= 0:
+        return None
+    return quote_volume / expected_cumulative
 
 # ========== 增量指標計算 ==========
 class IncrementalIndicators:
@@ -133,6 +529,11 @@ class IncrementalIndicators:
         self.ema_fast = None
         self.ema_slow = None
         self.atr_14 = None
+        self.rt_close = None
+        self.rt_high = None
+        self.rt_low = None
+        self.rt_volume = None
+        self.rt_updated_at = None
         self.loaded = False
 
     def load_history(self, days=100):
@@ -221,17 +622,87 @@ class IncrementalIndicators:
             self.atr_14 = sum(trs) / len(trs)
 
     def update_realtime(self, price, high, low, volume):
-        """用實時價格更新（唔修改最後一根K線，而係加一個虛擬數據點）"""
-        # 暫時用實時價格更新，下次K線更新時會被真實數據替換
-        if self.closes:
-            self._update(price, high, low, volume)
+        """用一根臨時日內bar更新指標，唔污染歷史日線序列。"""
+        if not self.closes:
+            return
+        self.rt_close = price
+        self.rt_high = max(high or price, price)
+        self.rt_low = min(low or price, price)
+        self.rt_volume = volume
+        self.rt_updated_at = datetime.now().isoformat(timespec="seconds")
+        self._recalculate_realtime_indicators()
+
+    def _series(self):
+        """返回歷史日線 + 當前臨時bar；不修改持久歷史序列。"""
+        if self.rt_close is None:
+            return self.closes, self.highs, self.lows, self.volumes
+        return (
+            self.closes + [self.rt_close],
+            self.highs + [self.rt_high],
+            self.lows + [self.rt_low],
+            self.volumes + [self.rt_volume or 0],
+        )
+
+    def _recalculate_realtime_indicators(self):
+        """從歷史+臨時bar重算展示/觸發用指標，避免每次tick append造成漂移。"""
+        closes, highs, lows, volumes = self._series()
+        n = len(closes)
+        if n == 0:
+            return
+
+        if n >= 5: self.ma5 = sum(closes[-5:]) / 5
+        if n >= 10: self.ma10 = sum(closes[-10:]) / 10
+        if n >= 20:
+            self.ma20 = sum(closes[-20:]) / 20
+            w = closes[-20:]
+            std = (sum((x - self.ma20)**2 for x in w) / 20) ** 0.5
+            self.bb_upper = self.ma20 + 2 * std
+            self.bb_mid = self.ma20
+            self.bb_lower = self.ma20 - 2 * std
+
+        if n >= 15:
+            deltas = [closes[i] - closes[i-1] for i in range(1, n)]
+            gains = [max(d, 0) for d in deltas]
+            losses = [max(-d, 0) for d in deltas]
+            avg_gain = sum(gains[:14]) / 14
+            avg_loss = sum(losses[:14]) / 14
+            for i in range(14, len(gains)):
+                avg_gain = (avg_gain * 13 + gains[i]) / 14
+                avg_loss = (avg_loss * 13 + losses[i]) / 14
+            self.rsi_14 = 100 - (100 / (1 + avg_gain / avg_loss)) if avg_loss > 0 else 100
+
+            trs = []
+            for i in range(max(1, n-14), n):
+                tr = max(
+                    highs[i] - lows[i],
+                    abs(highs[i] - closes[i-1]),
+                    abs(lows[i] - closes[i-1])
+                )
+                trs.append(tr)
+            self.atr_14 = sum(trs) / len(trs) if trs else None
+
+        if n >= 2:
+            def ema(data, period):
+                k = 2 / (period + 1)
+                out = [data[0]]
+                for value in data[1:]:
+                    out.append(value * k + out[-1] * (1 - k))
+                return out
+            ema_fast = ema(closes, 12)
+            ema_slow = ema(closes, 26)
+            macd_line = [ema_fast[i] - ema_slow[i] for i in range(n)]
+            signal_line = ema(macd_line, 9)
+            self.macd_dif = macd_line[-1]
+            self.macd_dea = signal_line[-1]
+            self.macd_hist = self.macd_dif - self.macd_dea
 
     def get_score(self):
         """計算多因子分數 (-1 to +1)"""
-        if not self.closes or len(self.closes) < 30:
+        closes, highs, lows, volumes = self._series()
+        if not closes or len(closes) < 30:
             return None, []
 
-        c = self.closes[-1]
+        c = closes[-1]
         score = 0
         reasons = []
 
@@ -276,18 +747,18 @@ class IncrementalIndicators:
                 score -= 0.2; reasons.append("觸及布林上軌")
 
         # 成交量
-        if len(self.volumes) >= 20:
-            avg_vol = sum(self.volumes[-20:]) / 20
+        if len(volumes) >= 20:
+            avg_vol = sum(volumes[-20:]) / 20
             if avg_vol > 0:
-                vr = self.volumes[-1] / avg_vol
+                vr = volumes[-1] / avg_vol
                 if vr > 2.0:
                     score += 0.2; reasons.append(f"放量{vr:.1f}倍")
-                elif vr > 1.5 and c > self.closes[-2]:
+                elif vr > 1.5 and c > closes[-2]:
                     score += 0.1
 
         # 動量
-        if len(self.closes) >= 5:
-            mom = (c / self.closes[-5] - 1) * 100
+        if len(closes) >= 5:
+            mom = (c / closes[-5] - 1) * 100
             if abs(mom) > 5:
                 tag = "上升" if mom > 0 else "下降"
                 reasons.append(f"5日動量{mom:+.1f}%")
@@ -298,9 +769,65 @@ class IncrementalIndicators:
 # ========== 條件觸發器 ==========
 class TriggerEngine:
     """條件觸發器 — 只有滿足條件先觸發完整分析"""
-    def __init__(self):
+    def __init__(self, watchlist_context=None, strategy_config=None, strategy_context=None):
         self.alerts = []
         self.cooldowns = {}  # key -> last_trigger_time
+        self.watchlist_context = watchlist_context or {}
+        self.strategy_config, default_context = load_strategy_config(env={}, file_path="")
+        if strategy_config is not None:
+            self.strategy_config, _warnings = normalize_strategy_config(strategy_config)
+            default_context = {
+                "schema": "rt_signal_strategy_config_runtime_v1",
+                "strategy_config_id": self.strategy_config.get("config_id"),
+                "loaded_at": now_iso(),
+                "source": "inline",
+                "source_file": "",
+                "version": self.strategy_config.get("version"),
+                "warnings": [],
+            }
+        self.strategy_context = strategy_context or default_context
+
+    def trigger_key(self, signal_type, trigger_name):
+        return f"{str(signal_type or '').upper()}:{trigger_name or 'UNKNOWN'}"
+
+    def trigger_override(self, signal_type, trigger_name):
+        overrides = self.strategy_config.get("trigger_overrides") or {}
+        return overrides.get(self.trigger_key(signal_type, trigger_name)) or overrides.get(trigger_name) or {}
+
+    def trigger_enabled(self, signal_type, trigger_name):
+        override = self.trigger_override(signal_type, trigger_name)
+        return override.get("enabled", True) is not False
+
+    def trigger_cooldown_seconds(self, signal_type, trigger_name):
+        override = self.trigger_override(signal_type, trigger_name)
+        cooldown = as_int(override.get("cooldown_seconds"), self.strategy_config.get("signal_cooldown_seconds"))
+        return cooldown if cooldown and cooldown > 0 else SIGNAL_COOLDOWN
+
+    def volume_anomaly_ratio(self):
+        return as_float(self.strategy_config.get("volume_anomaly_ratio"), VOLUME_ANOMALY_RATIO) or VOLUME_ANOMALY_RATIO
+
+    def risk_multiple(self, key, default):
+        return as_float((self.strategy_config.get("risk_model") or {}).get(key), default) or default
+
+    def emit_unconfirmed_directional_as_watch(self):
+        return as_bool(
+            (self.strategy_config.get("emission") or {}).get("emit_unconfirmed_directional_as_watch"),
+            True,
+        )
+
+    def is_confirmed(self, signal_type, trigger_name, full_score):
+        signal_type = str(signal_type or "").upper()
+        if signal_type not in ("BUY", "SELL"):
+            return True
+        if full_score is None:
+            return False
+        thresholds = self.strategy_config.get("confirmation_thresholds") or {}
+        override = self.trigger_override(signal_type, trigger_name)
+        if signal_type == "BUY":
+            threshold = as_float(override.get("min_full_score"), as_float((thresholds.get("BUY") or {}).get("min_full_score"), 0.25))
+            return full_score >= threshold
+        threshold = as_float(override.get("max_full_score"), as_float((thresholds.get("SELL") or {}).get("max_full_score"), -0.25))
+        return full_score <= threshold
 
     def check(self, symbol, indicators, quote):
         """檢查所有觸發條件"""
@@ -313,6 +840,7 @@ class TriggerEngine:
 
         now = time.time()
         triggered = []
+        full_score, full_reasons = indicators.get_score()
 
         # 1. RSI 極端值
         if indicators.rsi_14 is not None:
@@ -347,9 +875,13 @@ class TriggerEngine:
         if len(indicators.volumes) >= 20:
             avg_vol = sum(indicators.volumes[-20:]) / 20
             if avg_vol > 0 and quote.get("volume", 0) > 0:
-                # 用實時成交量同歷史均量比較
-                vol_ratio = quote["volume"] / (avg_vol / 240) if avg_vol > 0 else 0  # 粗略估算
-                if vol_ratio > 3:
+                vol_ratio = cumulative_volume_ratio(
+                    quote.get("volume"),
+                    avg_vol,
+                    quote.get("market"),
+                    quote.get("time"),
+                )
+                if vol_ratio is not None and vol_ratio > self.volume_anomaly_ratio():
                     triggered.append(("成交量異動", f"量比={vol_ratio:.1f}", "WATCH"))
 
         # 5. 大幅波動
@@ -359,42 +891,85 @@ class TriggerEngine:
 
         # 冷卻期檢查 + 觸發
         for trigger_name, detail, signal_type in triggered:
+            if not self.trigger_enabled(signal_type, trigger_name):
+                continue
             key = f"{symbol}_{trigger_name}_{datetime.now().strftime('%Y%m%d')}"
-            if key in self.cooldowns and now - self.cooldowns[key] < SIGNAL_COOLDOWN:
+            cooldown_seconds = self.trigger_cooldown_seconds(signal_type, trigger_name)
+            if key in self.cooldowns and now - self.cooldowns[key] < cooldown_seconds:
                 continue
             self.cooldowns[key] = now
             
             # 計算入場/止盈/止損 (基於ATR)
             atr = indicators.atr_14 if indicators.atr_14 else c * 0.02  # 默認2%
+            stop_multiple = self.risk_multiple("atr_stop_multiple", 2.0)
+            take_profit_multiple = self.risk_multiple("atr_take_profit_multiple", 3.0)
             
+            confirmed = self.is_confirmed(signal_type, trigger_name, full_score)
+            candidate_entry_price = round(c, 2)
             if signal_type == "BUY":
-                entry_price = round(c, 2)
-                stop_loss = round(c - 2 * atr, 2)  # 2倍ATR止損
-                take_profit = round(c + 3 * atr, 2)  # 3倍ATR止盈 (1.5:1風險回報)
-                rr_ratio = round(3 * atr / (2 * atr), 2) if atr > 0 else 1.5
+                candidate_stop_loss = round(c - stop_multiple * atr, 2)
+                candidate_take_profit = round(c + take_profit_multiple * atr, 2)
+                candidate_rr_ratio = round(take_profit_multiple * atr / (stop_multiple * atr), 2) if atr > 0 and stop_multiple > 0 else 1.5
             elif signal_type == "SELL":
-                entry_price = round(c, 2)
-                stop_loss = round(c + 2 * atr, 2)  # 2倍ATR止損
-                take_profit = round(c - 3 * atr, 2)  # 3倍ATR止盈
-                rr_ratio = round(3 * atr / (2 * atr), 2) if atr > 0 else 1.5
-            else:  # WATCH
+                candidate_stop_loss = round(c + stop_multiple * atr, 2)
+                candidate_take_profit = round(c - take_profit_multiple * atr, 2)
+                candidate_rr_ratio = round(take_profit_multiple * atr / (stop_multiple * atr), 2) if atr > 0 and stop_multiple > 0 else 1.5
+            else:
+                candidate_stop_loss = None
+                candidate_take_profit = None
+                candidate_rr_ratio = None
+
+            emitted_signal_type = signal_type
+            suppressed_directional_reason = None
+            if (
+                signal_type in ("BUY", "SELL")
+                and not confirmed
+                and self.emit_unconfirmed_directional_as_watch()
+            ):
+                emitted_signal_type = "WATCH"
+                suppressed_directional_reason = "unconfirmed_directional"
+
+            if emitted_signal_type in ("BUY", "SELL"):
+                entry_price = candidate_entry_price
+                stop_loss = candidate_stop_loss
+                take_profit = candidate_take_profit
+                rr_ratio = candidate_rr_ratio
+            else:
                 entry_price = round(c, 2)
                 stop_loss = None
                 take_profit = None
                 rr_ratio = None
             
+            market = quote.get("market", "")
             self.alerts.append({
+                "signal_id": f"{datetime.now().strftime('%Y%m%d')}:{symbol}:{trigger_name}:{emitted_signal_type}:{int(now // SIGNAL_COOLDOWN)}",
+                "source": "rt_signal_engine_v5",
                 "symbol": symbol,
+                "market": market,
+                **alert_watchlist_metadata(self.watchlist_context, market),
+                **alert_strategy_metadata(self.strategy_context),
                 "trigger": trigger_name,
                 "detail": detail,
-                "signal_type": signal_type,
+                "signal_type": emitted_signal_type,
+                "candidate_signal_type": signal_type,
+                "suppressed_directional_reason": suppressed_directional_reason,
+                "execution_candidate": emitted_signal_type in ("BUY", "SELL") and confirmed,
+                "confirmed": confirmed,
+                "full_score": round(full_score, 3) if full_score is not None else None,
+                "full_reasons": full_reasons[:5],
                 "price": c,
                 "change_pct": quote.get("change_pct", 0),
+                "quote_time": quote.get("time", ""),
                 "time": datetime.now().strftime("%H:%M:%S"),
+                "generated_at": datetime.now().isoformat(timespec="seconds"),
                 "entry_price": entry_price,
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
                 "rr_ratio": rr_ratio,
+                "candidate_entry_price": candidate_entry_price,
+                "candidate_stop_loss": candidate_stop_loss,
+                "candidate_take_profit": candidate_take_profit,
+                "candidate_rr_ratio": candidate_rr_ratio,
                 "atr": round(atr, 3),
             })
 
@@ -416,19 +991,38 @@ def save_state(state):
         json.dump(state, f)
 
 def send_alert(alerts):
-    """寫入alert文件，由外部腳本推送"""
-    with open(ALERT_FILE, "w") as f:
+    """寫入最新alert文件，同時追加到事件隊列供Hermes無損消費。"""
+    tmp = ALERT_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(alerts, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, ALERT_FILE)
+    with open(ALERT_QUEUE_FILE, "a", encoding="utf-8") as f:
+        for alert in alerts:
+            f.write(json.dumps(alert, ensure_ascii=False) + "\n")
 
 def main():
+    hk_watchlist, us_watchlist, watchlist_context = load_watchlists()
+    strategy_config, strategy_context = load_strategy_config()
     log("=" * 60)
     log("實時信號引擎 v5.0 啟動")
-    log(f"港股: {len(HK_WATCHLIST)}隻 | 美股: {len(US_WATCHLIST)}隻")
+    log(
+        f"港股: {len(hk_watchlist)}隻 ({watchlist_context['markets']['HK']['source']}) | "
+        f"美股: {len(us_watchlist)}隻 ({watchlist_context['markets']['US']['source']}) | "
+        f"watchlist_id={watchlist_context['watchlist_id']}"
+    )
+    log(
+        f"strategy_config_id={strategy_context['strategy_config_id']} "
+        f"({strategy_context['source']}, version={strategy_context.get('version')})"
+    )
+    for warning in watchlist_context.get("warnings") or []:
+        log(f"watchlist warning: {warning}")
+    for warning in strategy_context.get("warnings") or []:
+        log(f"strategy config warning: {warning}")
     log("=" * 60)
 
     # 初始化指標
     indicators = {}
-    all_symbols = [(s, "HK") for s in HK_WATCHLIST] + [(s, "US") for s in US_WATCHLIST]
+    all_symbols = [(s, "HK") for s in hk_watchlist] + [(s, "US") for s in us_watchlist]
 
     log("載入歷史K線...")
     for sym, market in all_symbols:
@@ -437,7 +1031,11 @@ def main():
         indicators[sym] = ind
     log(f"載入完成: {len(indicators)}隻股票")
 
-    trigger = TriggerEngine()
+    trigger = TriggerEngine(
+        watchlist_context=watchlist_context,
+        strategy_config=strategy_config,
+        strategy_context=strategy_context,
+    )
     state = load_state()
     trigger.cooldowns = state.get("cooldowns", {})
 
@@ -467,9 +1065,9 @@ def main():
         hk_quotes = {}
         us_quotes = {}
         if hk_open:
-            hk_quotes = fetch_hk_quotes(HK_WATCHLIST)
+            hk_quotes = fetch_hk_quotes(hk_watchlist)
         if us_open:
-            us_quotes = fetch_us_quotes(US_WATCHLIST)
+            us_quotes = fetch_us_quotes(us_watchlist)
 
         all_quotes = {**hk_quotes, **us_quotes}
 

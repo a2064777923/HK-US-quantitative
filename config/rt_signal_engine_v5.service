@@ -1,0 +1,17 @@
+[Unit]
+Description=QuantMind realtime signal engine v5
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root
+ExecStart=/usr/bin/python3 -u /root/rt_signal_engine_v5.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+Environment=RT_SIGNAL_WATCHLIST_FILE=/root/rt_signal_watchlist.json
+Environment=RT_SIGNAL_STRATEGY_CONFIG_FILE=/root/rt_signal_strategy_config.json
+
+[Install]
+WantedBy=multi-user.target
