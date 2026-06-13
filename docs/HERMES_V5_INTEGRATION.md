@@ -1,6 +1,6 @@
 # Hermes v5 Integration
 
-**Updated:** 2026-06-13
+**Updated:** 2026-06-14
 
 This document explains how to connect the realtime v5 signal path without breaking the existing QuantMind jobs or the separate simulation trading system.
 
@@ -54,6 +54,7 @@ Improvements:
 - Volume anomaly WATCH alerts and the v5 `full_score` volume factor compare cumulative intraday volume with expected cumulative daily volume based on elapsed HK/US session minutes. Quote timestamps with compact vendor formats such as `YYYYMMDDHHMMSS` and `YYYYMMDDHHMM` are parsed directly, and timezone-aware ISO timestamps such as `...Z` are converted to the quote market's local session time before elapsed minutes are calculated. If the quote timestamp is missing or unparseable, v5 now skips the volume anomaly/factor instead of falling back to server clock time. This avoids stale one-minute/daily-volume mismatches and keeps confirmation scoring aligned with the alert's volume-anomaly definition.
 - The v5 `full_score` volume factor is directional. Heavy volume on an uptick adds confirmation, while heavy volume on a downtick subtracts confirmation with `full_reasons` such as `放量下跌...`; flat heavy volume is not treated as automatic BUY support. This prevents selloff volume from helping oversold BUY candidates pass confirmation and is additive for Hermes readers because the alert schema is unchanged.
 - The `5日動量...` `full_reasons` item now contributes signed confirmation to `full_score`: positive 5-day momentum adds modest confirmation and negative 5-day momentum subtracts it. This keeps the human/Hermes explanation aligned with the actual threshold calculation without changing alert fields, order intake, simulation state, or execution mode.
+- v5 no longer truncates `full_reasons` before writing the alert payload. Hermes receives the complete list of score-affecting explanations under the existing `full_reasons` field, so newly added factors such as directional volume and 5-day momentum cannot be hidden behind earlier reasons. This is a no-loss integration change: the field name and type stay the same, order intake still treats it as a list, and execution eligibility remains governed by `signal_type`, `confirmed`, `execution_candidate`, and risk geometry.
 
 ### Hermes bridge
 

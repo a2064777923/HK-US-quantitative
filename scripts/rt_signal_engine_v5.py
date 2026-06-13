@@ -1433,7 +1433,7 @@ class TriggerEngine:
                 "risk_geometry_valid": risk_geometry_valid,
                 "risk_geometry_reason": risk_geometry_reason,
                 "full_score": round(full_score, 3) if full_score is not None else None,
-                "full_reasons": full_reasons[:5],
+                "full_reasons": full_reasons,
                 "price": c,
                 "change_pct": quote.get("change_pct", 0),
                 "quote_time": quote.get("time", ""),

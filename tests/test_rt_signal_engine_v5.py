@@ -10,7 +10,7 @@ from scripts import rt_signal_engine_v5 as rt
 
 
 class FakeIndicators:
-    def __init__(self, avg_volume=1000, score=0.0):
+    def __init__(self, avg_volume=1000, score=0.0, reasons=None):
         self.closes = [100] * 30
         self.highs = [101] * 30
         self.lows = [99] * 30
@@ -23,9 +23,10 @@ class FakeIndicators:
         self.ma20 = 100
         self.atr_14 = 1
         self.score = score
+        self.reasons = reasons or []
 
     def get_score(self, quote_context=None):
-        return self.score, []
+        return self.score, self.reasons
 
 
 class RtSignalEngineV5Tests(unittest.TestCase):
@@ -256,6 +257,34 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIn("5日動量+6.0%", up_reasons)
         self.assertEqual(down_score, -0.2)
         self.assertIn("5日動量-6.0%", down_reasons)
+
+    def test_alert_preserves_all_full_score_reasons_for_hermes(self):
+        reasons = [
+            "多頭排列",
+            "RSI超賣(25)",
+            "MACD金叉+正值",
+            "觸及布林下軌",
+            "放量上漲3.5倍",
+            "5日動量+6.0%",
+        ]
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8, reasons=reasons)
+        indicators.rsi_14 = 20
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertEqual(alert["full_reasons"], reasons)
 
     def test_signal_readiness_requires_full_multifactor_history(self):
         indicators = FakeIndicators(score=0.8)
