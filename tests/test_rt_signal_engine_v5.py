@@ -12,6 +12,8 @@ from scripts import rt_signal_engine_v5 as rt
 class FakeIndicators:
     def __init__(self, avg_volume=1000, score=0.0):
         self.closes = [100] * 30
+        self.highs = [101] * 30
+        self.lows = [99] * 30
         self.volumes = [avg_volume] * 30
         self.rsi_14 = None
         self.bb_upper = None
@@ -213,16 +215,52 @@ class RtSignalEngineV5Tests(unittest.TestCase):
     def test_signal_readiness_requires_full_multifactor_history(self):
         indicators = FakeIndicators(score=0.8)
         indicators.closes = [100] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
+        indicators.highs = [101] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
+        indicators.lows = [99] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
+        indicators.volumes = [1000] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
 
         self.assertFalse(rt.indicator_signal_ready(indicators))
 
         indicators.closes.append(100)
+        indicators.highs.append(101)
+        indicators.lows.append(99)
+        indicators.volumes.append(1000)
         self.assertTrue(rt.indicator_signal_ready(indicators))
+
+    def test_signal_readiness_rejects_misaligned_daily_ohlcv_history(self):
+        indicators = FakeIndicators(score=0.8)
+        indicators.lows = indicators.lows[:-1]
+
+        self.assertEqual(rt.indicator_history_bar_count(indicators), rt.MIN_SIGNAL_HISTORY_BARS - 1)
+        self.assertFalse(rt.indicator_signal_ready(indicators))
+
+    def test_trigger_check_ignores_misaligned_daily_ohlcv_history(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.highs = indicators.highs[:-1]
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertEqual(engine.alerts, [])
 
     def test_trigger_check_ignores_insufficient_multifactor_history(self):
         engine = rt.TriggerEngine()
         indicators = FakeIndicators(score=0.8)
         indicators.closes = [100] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
+        indicators.highs = [101] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
+        indicators.lows = [99] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
+        indicators.volumes = [1000] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
         indicators.rsi_14 = 20
 
         engine.check(

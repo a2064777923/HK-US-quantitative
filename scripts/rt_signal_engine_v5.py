@@ -929,12 +929,26 @@ class IncrementalIndicators:
         return max(-1, min(1, score)), reasons
 
 
+def indicator_history_lengths(indicators):
+    lengths = {}
+    for name in ("closes", "highs", "lows", "volumes"):
+        series = getattr(indicators, name, None)
+        if not isinstance(series, list):
+            return {}
+        lengths[name] = len(series)
+    return lengths
+
 def indicator_history_bar_count(indicators):
-    closes = getattr(indicators, "closes", None)
-    return len(closes) if isinstance(closes, list) else 0
+    lengths = indicator_history_lengths(indicators)
+    return min(lengths.values()) if lengths else 0
 
 def indicator_signal_ready(indicators):
-    return indicator_history_bar_count(indicators) >= MIN_SIGNAL_HISTORY_BARS
+    lengths = indicator_history_lengths(indicators)
+    return (
+        len(lengths) == 4
+        and len(set(lengths.values())) == 1
+        and lengths["closes"] >= MIN_SIGNAL_HISTORY_BARS
+    )
 
 
 # ========== 條件觸發器 ==========
