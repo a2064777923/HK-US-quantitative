@@ -7,9 +7,14 @@
 - 即時發送通知（寫入文件，由外部腳本推送）
 """
 import hashlib, subprocess, json, time, os, sys, math, re, urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from threading import Thread, Lock
+
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - Python versions without zoneinfo
+    ZoneInfo = None
 
 # ========== 配置 ==========
 POLL_INTERVAL = 3       # 每3秒拉一次報價
@@ -566,18 +571,43 @@ def hk_regular_session_open_hkt(dt):
     minute = dt.hour * 60 + dt.minute + dt.second / 60
     return 570 <= minute <= 720 or 780 <= minute <= 960
 
-def us_regular_session_open_hkt(dt):
-    """Approximate US regular session in HKT, handling the midnight weekday rollover."""
+def nth_weekday_of_month(year, month, weekday, nth):
+    day = datetime(year, month, 1)
+    offset = (weekday - day.weekday()) % 7
+    return day + timedelta(days=offset + 7 * (nth - 1))
+
+def us_dst_active_for_utc(value):
+    if not value:
+        return False
+    utc_value = value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    year = utc_value.year
+    start_local = nth_weekday_of_month(year, 3, 6, 2).replace(hour=2, minute=0, second=0, microsecond=0)
+    end_local = nth_weekday_of_month(year, 11, 6, 1).replace(hour=2, minute=0, second=0, microsecond=0)
+    start_utc = start_local.replace(tzinfo=timezone(timedelta(hours=-5))).astimezone(timezone.utc)
+    end_utc = end_local.replace(tzinfo=timezone(timedelta(hours=-4))).astimezone(timezone.utc)
+    return start_utc <= utc_value < end_utc
+
+def us_eastern_datetime_from_hkt(dt):
     if not dt:
+        return None
+    hkt = timezone(timedelta(hours=8))
+    hkt_value = dt.astimezone(hkt) if getattr(dt, "tzinfo", None) else dt.replace(tzinfo=hkt)
+    utc_value = hkt_value.astimezone(timezone.utc)
+    if ZoneInfo:
+        try:
+            return utc_value.astimezone(ZoneInfo("America/New_York"))
+        except Exception:
+            pass
+    offset = -4 if us_dst_active_for_utc(utc_value) else -5
+    return utc_value.astimezone(timezone(timedelta(hours=offset)))
+
+def us_regular_session_open_hkt(dt):
+    """Return US regular-session state for an HKT timestamp, with DST-aware NY conversion."""
+    eastern = us_eastern_datetime_from_hkt(dt)
+    if not eastern or eastern.weekday() >= 5:
         return False
-    minute = dt.hour * 60 + dt.minute + dt.second / 60
-    if minute >= 1290:
-        session_day = dt
-    elif minute <= 240:
-        session_day = dt - timedelta(days=1)
-    else:
-        return False
-    return session_day.weekday() < 5
+    minute = eastern.hour * 60 + eastern.minute + eastern.second / 60
+    return 570 <= minute <= 960
 
 def market_open_flags_hkt(dt=None):
     dt = dt or datetime.now()

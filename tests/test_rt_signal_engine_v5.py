@@ -508,6 +508,19 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertFalse(hk_open)
         self.assertFalse(us_open)
 
+    def test_us_market_open_flags_follow_dst_and_standard_time_in_hkt(self):
+        # June is US daylight time: 09:30-16:00 ET maps to 21:30-04:00 HKT.
+        self.assertFalse(rt.market_open_flags_hkt(datetime(2026, 6, 15, 21, 29))[1])
+        self.assertTrue(rt.market_open_flags_hkt(datetime(2026, 6, 15, 21, 30))[1])
+        self.assertTrue(rt.market_open_flags_hkt(datetime(2026, 6, 16, 3, 59))[1])
+        self.assertFalse(rt.market_open_flags_hkt(datetime(2026, 6, 16, 4, 1))[1])
+
+        # January is US standard time: 09:30-16:00 ET maps to 22:30-05:00 HKT.
+        self.assertFalse(rt.market_open_flags_hkt(datetime(2026, 1, 5, 22, 29))[1])
+        self.assertTrue(rt.market_open_flags_hkt(datetime(2026, 1, 5, 22, 30))[1])
+        self.assertTrue(rt.market_open_flags_hkt(datetime(2026, 1, 6, 4, 59))[1])
+        self.assertFalse(rt.market_open_flags_hkt(datetime(2026, 1, 6, 5, 1))[1])
+
     def test_volume_watch_not_triggered_by_normal_cumulative_volume(self):
         engine = rt.TriggerEngine()
         indicators = FakeIndicators(avg_volume=1000)
