@@ -473,9 +473,14 @@ def normalize_quote(quote):
 
     high = as_float(quote.get("high"), price)
     low = as_float(quote.get("low"), price)
+    prev_close = as_float(quote.get("prev_close"))
     volume = as_float(quote.get("volume"), 0) or 0
     amount = as_float(quote.get("amount"), 0) or 0
-    change_pct = as_float(quote.get("change_pct"), 0) or 0
+    change_pct = as_float(quote.get("change_pct"))
+    if change_pct is None and prev_close is not None and prev_close > 0:
+        change_pct = (price / prev_close - 1.0) * 100.0
+    if change_pct is None:
+        change_pct = 0
     if high <= 0:
         high = price
     if low <= 0:
@@ -491,6 +496,7 @@ def normalize_quote(quote):
             "price": price,
             "high": max(high, price),
             "low": min(low, price),
+            "prev_close": prev_close if prev_close is not None and prev_close > 0 else 0,
             "volume": volume,
             "amount": amount,
             "change_pct": change_pct,

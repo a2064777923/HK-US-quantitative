@@ -344,6 +344,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
                 "price": "100",
                 "high": "nan",
                 "low": -5,
+                "prev_close": "nan",
                 "volume": -10,
                 "amount": -1,
                 "change_pct": "nan",
@@ -355,9 +356,51 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(quote["price"], 100)
         self.assertEqual(quote["high"], 100)
         self.assertEqual(quote["low"], 100)
+        self.assertEqual(quote["prev_close"], 0)
         self.assertEqual(quote["volume"], 0)
         self.assertEqual(quote["amount"], 0)
         self.assertEqual(quote["change_pct"], 0)
+
+    def test_quote_normalization_derives_change_pct_from_prev_close(self):
+        quote, reason = rt.normalize_quote(
+            {
+                "price": "110",
+                "high": "111",
+                "low": "109",
+                "prev_close": "100",
+                "change_pct": "",
+                "market": "US",
+            }
+        )
+
+        self.assertIsNone(reason)
+        self.assertEqual(quote["prev_close"], 100)
+        self.assertAlmostEqual(quote["change_pct"], 10.0)
+
+    def test_trigger_check_uses_derived_change_pct_for_large_move(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.0)
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 110,
+                "high": 111,
+                "low": 109,
+                "prev_close": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+            },
+        )
+
+        self.assertEqual(len(engine.alerts), 1)
+        self.assertEqual(engine.alerts[0]["trigger"], "急漲")
+        self.assertAlmostEqual(engine.alerts[0]["change_pct"], 10.0)
 
     def test_send_alert_writes_latest_file_and_append_only_queue(self):
         alerts = [
