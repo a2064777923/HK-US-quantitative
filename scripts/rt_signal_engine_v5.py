@@ -1172,11 +1172,7 @@ class TriggerEngine:
         for trigger_name, detail, signal_type in triggered:
             if not self.trigger_enabled(signal_type, trigger_name):
                 continue
-            key = self.alert_cooldown_key(symbol, signal_type, trigger_name)
             cooldown_seconds = self.trigger_cooldown_seconds(signal_type, trigger_name)
-            if key in self.cooldowns and now - self.cooldowns[key] < cooldown_seconds:
-                continue
-            self.cooldowns[key] = now
             
             # 計算入場/止盈/止損 (基於ATR)
             atr = as_float(indicators.atr_14)
@@ -1224,6 +1220,11 @@ class TriggerEngine:
             if signal_type in ("BUY", "SELL") and not risk_geometry_valid:
                 emitted_signal_type = "WATCH"
                 suppressed_directional_reason = risk_geometry_reason
+
+            key = self.alert_cooldown_key(symbol, emitted_signal_type, trigger_name)
+            if key in self.cooldowns and now - self.cooldowns[key] < cooldown_seconds:
+                continue
+            self.cooldowns[key] = now
 
             if emitted_signal_type in ("BUY", "SELL"):
                 entry_price = candidate_entry_price

@@ -909,6 +909,37 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertFalse(ma5_alert["execution_candidate"])
         self.assertIsNotNone(ma5_alert["stop_loss"])
 
+    def test_unconfirmed_watch_does_not_cool_down_later_confirmed_directional(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "trigger_overrides": {
+                    "BUY:站上MA5": {"min_full_score": 0.6},
+                },
+            }
+        )
+        indicators = FakeIndicators(score=0.3)
+        quote = {
+            "price": 101,
+            "volume": 700,
+            "market": "US",
+            "time": "2026-06-11 14:00:00",
+            "change_pct": 0,
+        }
+
+        with patch.object(rt.time, "time", side_effect=[1_000_000, 1_000_060]):
+            engine.check("AAPL", indicators, quote)
+            indicators.score = 0.8
+            engine.check("AAPL", indicators, quote)
+
+        ma5_alerts = [item for item in engine.alerts if item["trigger"] == "站上MA5"]
+        self.assertEqual(len(ma5_alerts), 2)
+        self.assertEqual(ma5_alerts[0]["signal_type"], "WATCH")
+        self.assertEqual(ma5_alerts[0]["suppressed_directional_reason"], "unconfirmed_directional")
+        self.assertFalse(ma5_alerts[0]["execution_candidate"])
+        self.assertEqual(ma5_alerts[1]["signal_type"], "BUY")
+        self.assertTrue(ma5_alerts[1]["confirmed"])
+        self.assertTrue(ma5_alerts[1]["execution_candidate"])
+
     def test_nonfinite_score_and_atr_do_not_enter_alert_json(self):
         engine = rt.TriggerEngine()
         indicators = FakeIndicators(score=float("nan"))
