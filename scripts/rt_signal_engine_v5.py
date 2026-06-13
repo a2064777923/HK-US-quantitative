@@ -424,6 +424,15 @@ def alert_strategy_metadata(context):
         "strategy_config_version": context.get("version"),
     }
 
+def alert_timeframe_metadata():
+    return {
+        "timeframe_scope": "completed_daily_ohlcv_with_realtime_quote",
+        "primary_timeframe": "1d",
+        "realtime_input": "single_quote_temporary_bar",
+        "intraday_minute_bars_used": False,
+        "intraday_evidence_policy": "external_read_only_context_only",
+    }
+
 # ========== 數據層 ==========
 def db(sql):
     try:
@@ -1349,6 +1358,7 @@ class TriggerEngine:
                 "market": market,
                 **alert_watchlist_metadata(self.watchlist_context, market),
                 **alert_strategy_metadata(self.strategy_context),
+                **alert_timeframe_metadata(),
                 "trigger": trigger_name,
                 "detail": detail,
                 "signal_type": emitted_signal_type,
@@ -1356,7 +1366,11 @@ class TriggerEngine:
                 "trigger_review_mode": trigger_review_mode or None,
                 "strategy_policy_shadow_only": trigger_shadow_only,
                 "suppressed_directional_reason": suppressed_directional_reason,
-                "execution_candidate": emitted_signal_type in ("BUY", "SELL") and confirmed,
+                "execution_candidate": (
+                    emitted_signal_type in ("BUY", "SELL")
+                    and confirmed
+                    and risk_geometry_valid
+                ),
                 "confirmed": confirmed,
                 "risk_geometry_valid": risk_geometry_valid,
                 "risk_geometry_reason": risk_geometry_reason,

@@ -806,6 +806,29 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(engine.alerts[0]["watchlist_source"], "file")
         self.assertEqual(engine.alerts[0]["watchlist_count"], 2)
 
+    def test_trigger_alert_declares_timeframe_scope(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(avg_volume=1000)
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 4000,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = engine.alerts[0]
+        self.assertEqual(alert["timeframe_scope"], "completed_daily_ohlcv_with_realtime_quote")
+        self.assertEqual(alert["primary_timeframe"], "1d")
+        self.assertEqual(alert["realtime_input"], "single_quote_temporary_bar")
+        self.assertFalse(alert["intraday_minute_bars_used"])
+        self.assertEqual(alert["intraday_evidence_policy"], "external_read_only_context_only")
+
     def test_load_strategy_config_from_json_file(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "strategy.json"
