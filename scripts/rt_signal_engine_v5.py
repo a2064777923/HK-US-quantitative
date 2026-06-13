@@ -217,6 +217,23 @@ def merge_strategy_config(base, override):
                     merged[key][sub_key] = value
     return merged
 
+def normalize_global_score_threshold(value, default, warning_code, warnings):
+    threshold = as_float(value)
+    if threshold is None or threshold < -1 or threshold > 1:
+        warnings.append(warning_code)
+        return default
+    return threshold
+
+def normalize_override_score_threshold(override, key, field, warnings):
+    if field not in override:
+        return
+    threshold = as_float(override.get(field))
+    if threshold is None or threshold < -1 or threshold > 1:
+        warnings.append(f"invalid_trigger_{field}:{key}")
+        override.pop(field, None)
+        return
+    override[field] = threshold
+
 def normalize_strategy_config(config):
     config = merge_strategy_config(default_strategy_config(), config)
     warnings = []
@@ -235,8 +252,18 @@ def normalize_strategy_config(config):
     thresholds = config.setdefault("confirmation_thresholds", {})
     buy = thresholds.setdefault("BUY", {})
     sell = thresholds.setdefault("SELL", {})
-    buy["min_full_score"] = as_float(buy.get("min_full_score"), 0.25)
-    sell["max_full_score"] = as_float(sell.get("max_full_score"), -0.25)
+    buy["min_full_score"] = normalize_global_score_threshold(
+        buy.get("min_full_score"),
+        0.25,
+        "invalid_buy_min_full_score_using_default",
+        warnings,
+    )
+    sell["max_full_score"] = normalize_global_score_threshold(
+        sell.get("max_full_score"),
+        -0.25,
+        "invalid_sell_max_full_score_using_default",
+        warnings,
+    )
 
     risk = config.setdefault("risk_model", {})
     risk["atr_stop_multiple"] = as_float(risk.get("atr_stop_multiple"), 2.0)
@@ -264,10 +291,8 @@ def normalize_strategy_config(config):
             warnings.append(f"invalid_trigger_override:{key}")
             overrides.pop(key, None)
             continue
-        if "min_full_score" in override:
-            override["min_full_score"] = as_float(override.get("min_full_score"))
-        if "max_full_score" in override:
-            override["max_full_score"] = as_float(override.get("max_full_score"))
+        normalize_override_score_threshold(override, key, "min_full_score", warnings)
+        normalize_override_score_threshold(override, key, "max_full_score", warnings)
         if "cooldown_seconds" in override:
             override["cooldown_seconds"] = as_int(override.get("cooldown_seconds"))
     config["config_id"] = strategy_config_digest(config)

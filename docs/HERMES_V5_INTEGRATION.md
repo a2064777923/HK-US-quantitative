@@ -1670,6 +1670,7 @@ The default config matches the previous hard-coded behavior:
 
 - `BUY` confirmed when `full_score >= 0.25`;
 - `SELL` confirmed when `full_score <= -0.25`;
+- `full_score` confirmation thresholds must stay inside the engine score domain `[-1, 1]`; invalid global thresholds fall back to defaults and invalid per-trigger threshold overrides are ignored, so a config typo cannot make every directional trigger confirmed.
 - volume anomaly ratio threshold `3.0`;
 - signal cooldown `1800` seconds;
 - ATR stop/take-profit multiples `2.0` and `3.0`;

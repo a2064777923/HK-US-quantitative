@@ -835,6 +835,36 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(config["risk_model"]["min_rr_ratio"], 1.2)
         self.assertIn("invalid_min_rr_ratio_using_default", warnings)
 
+    def test_strategy_config_normalizes_confirmation_threshold_bounds(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "confirmation_thresholds": {
+                    "BUY": {"min_full_score": -2},
+                    "SELL": {"max_full_score": 2},
+                }
+            }
+        )
+
+        self.assertEqual(config["confirmation_thresholds"]["BUY"]["min_full_score"], 0.25)
+        self.assertEqual(config["confirmation_thresholds"]["SELL"]["max_full_score"], -0.25)
+        self.assertIn("invalid_buy_min_full_score_using_default", warnings)
+        self.assertIn("invalid_sell_max_full_score_using_default", warnings)
+
+    def test_strategy_config_drops_out_of_range_trigger_threshold_override(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "trigger_overrides": {
+                    "BUY:站上MA5": {"min_full_score": -2},
+                    "SELL:跌破MA5": {"max_full_score": 2},
+                }
+            }
+        )
+
+        self.assertNotIn("min_full_score", config["trigger_overrides"]["BUY:站上MA5"])
+        self.assertNotIn("max_full_score", config["trigger_overrides"]["SELL:跌破MA5"])
+        self.assertIn("invalid_trigger_min_full_score:BUY:站上MA5", warnings)
+        self.assertIn("invalid_trigger_max_full_score:SELL:跌破MA5", warnings)
+
     def test_strategy_config_can_disable_trigger(self):
         engine = rt.TriggerEngine(
             strategy_config={
@@ -896,6 +926,34 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIsNotNone(ma5_alert["candidate_stop_loss"])
         self.assertEqual(ma5_alert["strategy_config_id"], "strategy-test")
         self.assertEqual(ma5_alert["strategy_config_source"], "inline")
+
+    def test_invalid_trigger_threshold_override_does_not_confirm_weak_signal(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "trigger_overrides": {
+                    "BUY:站上MA5": {"min_full_score": -2},
+                }
+            }
+        )
+        indicators = FakeIndicators(score=0.0)
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 101,
+                "volume": 700,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        ma5_alert = [item for item in engine.alerts if item["trigger"] == "站上MA5"][0]
+        self.assertFalse(ma5_alert["confirmed"])
+        self.assertEqual(ma5_alert["signal_type"], "WATCH")
+        self.assertEqual(ma5_alert["suppressed_directional_reason"], "unconfirmed_directional")
+        self.assertFalse(ma5_alert["execution_candidate"])
 
     def test_strategy_config_shadow_only_emits_watch_for_confirmed_directional(self):
         engine = rt.TriggerEngine(
