@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -209,6 +210,23 @@ class RtSignalEngineV5Tests(unittest.TestCase):
 
         self.assertAlmostEqual(ratio, 700 / (1000 * (270 / 390)), places=4)
         self.assertLess(ratio, 2)
+
+    def test_market_open_flags_handle_us_overnight_hkt_weekday_rollover(self):
+        hk_open, us_open = rt.market_open_flags_hkt(datetime(2026, 6, 13, 3, 59))
+        self.assertFalse(hk_open)
+        self.assertTrue(us_open)
+
+        hk_open, us_open = rt.market_open_flags_hkt(datetime(2026, 6, 15, 1, 0))
+        self.assertFalse(hk_open)
+        self.assertFalse(us_open)
+
+        hk_open, us_open = rt.market_open_flags_hkt(datetime(2026, 6, 15, 21, 30))
+        self.assertFalse(hk_open)
+        self.assertTrue(us_open)
+
+        hk_open, us_open = rt.market_open_flags_hkt(datetime(2026, 6, 14, 22, 0))
+        self.assertFalse(hk_open)
+        self.assertFalse(us_open)
 
     def test_volume_watch_not_triggered_by_normal_cumulative_volume(self):
         engine = rt.TriggerEngine()

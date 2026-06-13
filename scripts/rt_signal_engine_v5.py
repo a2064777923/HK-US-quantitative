@@ -520,6 +520,29 @@ def regular_session_minutes(market):
         return 390
     return None
 
+def hk_regular_session_open_hkt(dt):
+    if not dt or dt.weekday() >= 5:
+        return False
+    minute = dt.hour * 60 + dt.minute + dt.second / 60
+    return 570 <= minute <= 720 or 780 <= minute <= 960
+
+def us_regular_session_open_hkt(dt):
+    """Approximate US regular session in HKT, handling the midnight weekday rollover."""
+    if not dt:
+        return False
+    minute = dt.hour * 60 + dt.minute + dt.second / 60
+    if minute >= 1290:
+        session_day = dt
+    elif minute <= 240:
+        session_day = dt - timedelta(days=1)
+    else:
+        return False
+    return session_day.weekday() < 5
+
+def market_open_flags_hkt(dt=None):
+    dt = dt or datetime.now()
+    return hk_regular_session_open_hkt(dt), us_regular_session_open_hkt(dt)
+
 def cumulative_volume_ratio(quote_volume, avg_daily_volume, market, quote_time=None):
     """Compare cumulative intraday volume with expected cumulative daily volume."""
     quote_volume = as_float(quote_volume)
@@ -1189,12 +1212,7 @@ def main():
 
         # 判斷交易時間
         dt = datetime.now()
-        weekday = dt.weekday()
-        h, m = dt.hour, dt.minute
-        t = h * 60 + m
-
-        hk_open = weekday < 5 and (570 <= t <= 720 or 780 <= t <= 960)  # 9:30-12:00, 13:00-16:00
-        us_open = weekday < 5 and (t >= 1290 or t <= 240)  # 21:30-04:00 (next day)
+        hk_open, us_open = market_open_flags_hkt(dt)
 
         if not hk_open and not us_open:
             if cycle % 100 == 0:
