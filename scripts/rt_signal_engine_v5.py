@@ -1054,9 +1054,12 @@ class IncrementalIndicators:
         # 成交量
         vr = self.score_volume_ratio(volumes, quote_context=quote_context)
         if vr is not None:
-            if vr > 2.0:
-                score += 0.2; reasons.append(f"放量{vr:.1f}倍")
-            elif vr > 1.5 and c > closes[-2]:
+            prior_close = closes[-2] if len(closes) >= 2 else None
+            if vr > 2.0 and prior_close is not None and c > prior_close:
+                score += 0.2; reasons.append(f"放量上漲{vr:.1f}倍")
+            elif vr > 2.0 and prior_close is not None and c < prior_close:
+                score -= 0.2; reasons.append(f"放量下跌{vr:.1f}倍")
+            elif vr > 1.5 and prior_close is not None and c > prior_close:
                 score += 0.1
 
         # 動量

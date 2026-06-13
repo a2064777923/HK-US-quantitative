@@ -212,6 +212,33 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIsNotNone(score_without_context)
         self.assertIsNotNone(score_with_context)
 
+    def test_volume_score_supports_up_volume_not_down_volume(self):
+        up = rt.IncrementalIndicators("AAPL")
+        down = rt.IncrementalIndicators("AAPL")
+        for ind in (up, down):
+            ind.closes = [100] * 30
+            ind.highs = [101] * 30
+            ind.lows = [99] * 30
+            ind.volumes = [1000] * 30
+
+        up.rt_close = 101
+        up.rt_high = 101
+        up.rt_low = 100
+        up.rt_volume = 500
+        down.rt_close = 99
+        down.rt_high = 100
+        down.rt_low = 99
+        down.rt_volume = 500
+
+        quote_context = {"market": "US", "time": "2026-06-11 10:00:00"}
+        up_score, up_reasons = up.get_score(quote_context)
+        down_score, down_reasons = down.get_score(quote_context)
+
+        self.assertEqual(up_score, 0.2)
+        self.assertTrue(any(reason.startswith("放量上漲") for reason in up_reasons))
+        self.assertEqual(down_score, -0.2)
+        self.assertTrue(any(reason.startswith("放量下跌") for reason in down_reasons))
+
     def test_signal_readiness_requires_full_multifactor_history(self):
         indicators = FakeIndicators(score=0.8)
         indicators.closes = [100] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
