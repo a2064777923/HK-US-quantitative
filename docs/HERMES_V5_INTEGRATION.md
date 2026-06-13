@@ -1628,6 +1628,7 @@ Runtime behavior:
 - env overrides give only the overridden market `watchlist_source=env`;
 - missing or invalid config falls back to the built-in list and logs a warning;
 - watchlist symbols are market-validated before scanning: HK accepts five-digit stock codes, and US accepts common uppercase ticker forms such as `AAPL` or `BRK.B`; rejected symbols are omitted and recorded in runtime warnings;
+- the same symbol contract is enforced again when v5 loads daily history from `klines`, and the history loader normalizes `days` to a positive integer before building the read-only query;
 - every new alert carries `watchlist_id`, `watchlist_source`, and `watchlist_count`.
 
 `alert_quality_report.py` now summarizes `by_watchlist_source` and recommends restarting v5 with a configured watchlist when directional alerts are missing watchlist metadata. Older alerts in `/tmp/rt_signal_alerts.jsonl` will naturally show `missing` until enough new v5 alerts are produced after restart.

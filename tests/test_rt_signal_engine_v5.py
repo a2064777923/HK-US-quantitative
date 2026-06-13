@@ -73,6 +73,32 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIn("FROM daily_bar ORDER BY trade_date DESC LIMIT 2", normalized)
         self.assertEqual(ind.closes[-2:], [100.0, 101.0])
 
+    def test_load_history_rejects_invalid_symbol_without_db_query(self):
+        ind = rt.IncrementalIndicators("AAPL';DROP")
+
+        with patch.object(rt, "db") as fake_db:
+            loaded = ind.load_history(days=2)
+
+        self.assertFalse(loaded)
+        self.assertFalse(ind.loaded)
+        fake_db.assert_not_called()
+
+    def test_load_history_normalizes_symbol_and_days(self):
+        captured = {}
+
+        def fake_db(sql):
+            captured["sql"] = sql
+            return "101|102|100|1100"
+
+        ind = rt.IncrementalIndicators("aapl")
+        with patch.object(rt, "db", side_effect=fake_db):
+            loaded = ind.load_history(days="-5")
+
+        normalized = " ".join(captured["sql"].split())
+        self.assertTrue(loaded)
+        self.assertIn("WHERE symbol='AAPL' AND interval='day'", normalized)
+        self.assertIn("LIMIT 100", normalized)
+
     def test_realtime_score_volume_uses_session_adjusted_cumulative_ratio(self):
         ind = rt.IncrementalIndicators("AAPL")
         for _ in range(30):

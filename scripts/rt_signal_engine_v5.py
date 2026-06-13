@@ -625,6 +625,13 @@ class IncrementalIndicators:
 
     def load_history(self, days=100):
         """從DB載入歷史K線"""
+        query_symbol = str(self.symbol or "").upper()
+        if not valid_watchlist_symbol(query_symbol):
+            self.loaded = False
+            return False
+        days = as_int(days, 100)
+        if days is None or days <= 0:
+            days = 100
         raw = db(
             f"""
             WITH daily_bar AS (
@@ -632,7 +639,7 @@ class IncrementalIndicators:
                        timestamp::date AS trade_date,
                        close_price, high_price, low_price, volume
                 FROM klines
-                WHERE symbol='{self.symbol}' AND interval='day'
+                WHERE symbol='{query_symbol}' AND interval='day'
                 ORDER BY timestamp::date, timestamp DESC
             )
             SELECT close_price, high_price, low_price, volume
@@ -653,6 +660,7 @@ class IncrementalIndicators:
         for c, h, l, v in rows:
             self._update(c, h, l, v)
         self.loaded = True
+        return True
 
     def _update(self, close, high, low, volume):
         """增量更新一個數據點"""
