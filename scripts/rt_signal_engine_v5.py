@@ -592,6 +592,19 @@ def cumulative_volume_ratio(quote_volume, avg_daily_volume, market, quote_time=N
         return None
     return quote_volume / expected_cumulative
 
+def normalize_daily_bar(close, high, low, volume):
+    close = as_float(close)
+    high = as_float(high)
+    low = as_float(low)
+    volume = as_float(volume)
+    if close is None or high is None or low is None or volume is None:
+        return None
+    if close <= 0 or high <= 0 or low <= 0 or volume < 0:
+        return None
+    if high < low or close > high or close < low:
+        return None
+    return close, high, low, volume
+
 # ========== 增量指標計算 ==========
 class IncrementalIndicators:
     """每隻股票嘅增量指標 — 只更新最新數據點"""
@@ -652,10 +665,9 @@ class IncrementalIndicators:
             if not line.strip(): continue
             p = line.split("|")
             if len(p) >= 4:
-                try:
-                    rows.append((float(p[0]), float(p[1]), float(p[2]), float(p[3])))
-                except:
-                    continue
+                row = normalize_daily_bar(p[0], p[1], p[2], p[3])
+                if row is not None:
+                    rows.append(row)
         rows.reverse()
         for c, h, l, v in rows:
             self._update(c, h, l, v)

@@ -99,6 +99,30 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIn("WHERE symbol='AAPL' AND interval='day'", normalized)
         self.assertIn("LIMIT 100", normalized)
 
+    def test_load_history_skips_invalid_daily_bars(self):
+        def fake_db(sql):
+            return "\n".join(
+                [
+                    "101|102|100|1100",
+                    "100|99|101|1000",
+                    "NaN|103|99|1000",
+                    "0|101|99|1000",
+                    "99|101|100|1000",
+                    "98|100|97|-1",
+                    "97|99|96|900",
+                ]
+            )
+
+        ind = rt.IncrementalIndicators("AAPL")
+        with patch.object(rt, "db", side_effect=fake_db):
+            loaded = ind.load_history(days=10)
+
+        self.assertTrue(loaded)
+        self.assertEqual(ind.closes, [97.0, 101.0])
+        self.assertEqual(ind.highs, [99.0, 102.0])
+        self.assertEqual(ind.lows, [96.0, 100.0])
+        self.assertEqual(ind.volumes, [900.0, 1100.0])
+
     def test_realtime_score_volume_uses_session_adjusted_cumulative_ratio(self):
         ind = rt.IncrementalIndicators("AAPL")
         for _ in range(30):
