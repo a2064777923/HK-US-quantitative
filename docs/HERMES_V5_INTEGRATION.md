@@ -1672,6 +1672,8 @@ For downgraded unconfirmed directional candidates:
 
 This reduces same-symbol BUY/SELL queue conflicts without losing diagnostic visibility. Set `RT_SIGNAL_EMIT_UNCONFIRMED_DIRECTIONAL_AS_WATCH=0` only for explicit research runs where operators want old-style unconfirmed directional rows.
 
+For trigger overrides with `review_mode=shadow_only_pending_sample`, v5 also emits directional BUY/SELL triggers as `WATCH` even when the full-score threshold is confirmed. The alert keeps `candidate_signal_type`, `candidate_*` risk fields, `trigger_review_mode`, and `strategy_policy_shadow_only=true`, but `execution_candidate=false` and executable stop/take-profit fields stay empty. This lets Hermes and the learning reports continue collecting evidence without allowing a trigger that strategy review placed back into shadow mode to flow into execution review as a trade candidate.
+
 `alert_quality_report.py` summarizes `by_strategy_config_source` and recommends restarting v5 with configured strategy metadata when scanned directional alerts are missing these fields. Older queue entries naturally show `missing` until new alerts are produced after restart.
 
 Server rollout on 2026-06-12:
@@ -3611,10 +3613,11 @@ Important behavior:
 - it never overwrites the live strategy config;
 - proposal output has `manual_review_required=true` and `auto_applied=false`;
 - promotion requires the separate hash-confirmed `strategy_config_promote.py` flow and an explicit restart request.
+- after a promoted config is loaded by `rt_signal_engine_v5.py`, `review_mode=shadow_only_pending_sample` is enforced as WATCH-only output: the original BUY/SELL stays in `candidate_signal_type`, `execution_candidate=false`, and Hermes receives the evidence for review without a directional trade candidate.
 
 Simulation-performance integration is additive and lossless for v5:
 
-- `proposed_config` remains a normalized `rt_signal_strategy_config_v1` object, so `rt_signal_engine_v5.py` does not need to understand the extra review fields;
+- `proposed_config` remains a normalized `rt_signal_strategy_config_v1` object. Older review consumers can ignore unknown trigger fields, while v5 uses `review_mode` to enforce shadow-only trigger policies without changing order intake, DB rows, watchlists, crontab, or execution mode;
 - proposal output now includes `simulation_performance_context` with effective `status`, raw `report_status`, compact portfolio/trade summary, `reason_codes`, recommendations, `remediation_plan.proposal_hash`, remediation `action_ids`, and `freshness`;
 - proposal output also includes `execution_readiness_context` and `strategy_learning_context`. These are compact read-only summaries and do not change alert generation by themselves;
 - `status=FAIL` adds `promotion_blockers[].code=simulation_performance_fail_blocks_strategy_promotion` and sets `promotion.blocked=true`;

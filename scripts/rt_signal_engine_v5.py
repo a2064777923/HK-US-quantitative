@@ -798,6 +798,13 @@ class TriggerEngine:
         override = self.trigger_override(signal_type, trigger_name)
         return override.get("enabled", True) is not False
 
+    def trigger_review_mode(self, signal_type, trigger_name):
+        override = self.trigger_override(signal_type, trigger_name)
+        return str(override.get("review_mode") or "").strip().lower()
+
+    def trigger_shadow_only(self, signal_type, trigger_name):
+        return self.trigger_review_mode(signal_type, trigger_name).startswith("shadow_only")
+
     def trigger_cooldown_seconds(self, signal_type, trigger_name):
         override = self.trigger_override(signal_type, trigger_name)
         cooldown = as_int(override.get("cooldown_seconds"), self.strategy_config.get("signal_cooldown_seconds"))
@@ -921,10 +928,16 @@ class TriggerEngine:
 
             emitted_signal_type = signal_type
             suppressed_directional_reason = None
+            trigger_review_mode = self.trigger_review_mode(signal_type, trigger_name)
+            trigger_shadow_only = self.trigger_shadow_only(signal_type, trigger_name)
+            if signal_type in ("BUY", "SELL") and trigger_shadow_only:
+                emitted_signal_type = "WATCH"
+                suppressed_directional_reason = "strategy_review_shadow_only"
             if (
                 signal_type in ("BUY", "SELL")
                 and not confirmed
                 and self.emit_unconfirmed_directional_as_watch()
+                and emitted_signal_type in ("BUY", "SELL")
             ):
                 emitted_signal_type = "WATCH"
                 suppressed_directional_reason = "unconfirmed_directional"
@@ -952,6 +965,8 @@ class TriggerEngine:
                 "detail": detail,
                 "signal_type": emitted_signal_type,
                 "candidate_signal_type": signal_type,
+                "trigger_review_mode": trigger_review_mode or None,
+                "strategy_policy_shadow_only": trigger_shadow_only,
                 "suppressed_directional_reason": suppressed_directional_reason,
                 "execution_candidate": emitted_signal_type in ("BUY", "SELL") and confirmed,
                 "confirmed": confirmed,

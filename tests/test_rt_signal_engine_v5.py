@@ -274,6 +274,42 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(ma5_alert["strategy_config_id"], "strategy-test")
         self.assertEqual(ma5_alert["strategy_config_source"], "inline")
 
+    def test_strategy_config_shadow_only_emits_watch_for_confirmed_directional(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+                "trigger_overrides": {
+                    "BUY:站上MA5": {"review_mode": "shadow_only_pending_sample"},
+                },
+            }
+        )
+        indicators = FakeIndicators(score=0.8)
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 101,
+                "volume": 700,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        ma5_alert = [item for item in engine.alerts if item["trigger"] == "站上MA5"][0]
+        self.assertTrue(ma5_alert["confirmed"])
+        self.assertEqual(ma5_alert["signal_type"], "WATCH")
+        self.assertEqual(ma5_alert["candidate_signal_type"], "BUY")
+        self.assertEqual(ma5_alert["trigger_review_mode"], "shadow_only_pending_sample")
+        self.assertTrue(ma5_alert["strategy_policy_shadow_only"])
+        self.assertEqual(ma5_alert["suppressed_directional_reason"], "strategy_review_shadow_only")
+        self.assertFalse(ma5_alert["execution_candidate"])
+        self.assertIsNone(ma5_alert["stop_loss"])
+        self.assertIsNone(ma5_alert["take_profit"])
+        self.assertIsNotNone(ma5_alert["candidate_stop_loss"])
+        self.assertIsNotNone(ma5_alert["candidate_take_profit"])
+
     def test_strategy_config_can_preserve_unconfirmed_directional_for_research(self):
         engine = rt.TriggerEngine(
             strategy_config={
