@@ -748,6 +748,8 @@ RT_ALERT_EXECUTION_MODE=legacy-sim RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3
 
 This is compatible with the previous bridge behavior, but it is not alert-specific execution. It triggers the existing `quantmind_sim_trader.py`, which reads DB signals independently. Prefer `alert-dry-run` and then `alert-sim` for v5.
 
+`quantmind_sim_trader.py` is now fail-closed by default. Even if `legacy-sim` is selected, the legacy trader exits before login, signal reads, or order submission unless `QM_LEGACY_SIM_TRADER_ENABLE=1` is present in the runtime environment. API credentials must also come from `QM_LEGACY_SIM_API_USER`/`QM_LEGACY_SIM_API_PASSWORD` or the standard `QM_API_USER`/`QM_API_PASSWORD`; the script has no code-level credential fallback. This keeps the compatibility path available for reviewed testing while preventing accidental untraceable simulation orders.
+
 ## Rollback
 
 To roll back v5 without touching existing jobs:
@@ -1299,6 +1301,13 @@ Legacy strategy runner new-entry gate on 2026-06-12:
 - Server backup before deployment: `/root/quantmind_backup_20260612_123929_legacy_runner_new_entry_gate`.
 - Server `py_compile` passed for `/root/quantmind_strategy_runner.py`.
 - Server smoke imported the runner without contacting API/DB and confirmed default new-entry gate is disabled, explicit `QM_STRATEGY_ALLOW_NEW_POSITIONS=1` enables it, and candidate selection returns no new orders when disabled.
+
+Legacy standalone simulation trader gate:
+
+- `quantmind_sim_trader.py` now defaults to disabled and requires `QM_LEGACY_SIM_TRADER_ENABLE=1`.
+- It reads API credentials only from environment variables and does not carry a source-code credential fallback.
+- The portfolio id is configurable through `QM_LEGACY_SIM_PORTFOLIO_ID`, falling back to `QM_SIM_PORTFOLIO_ID` and then portfolio `8`.
+- This does not change the v5 `notify`, `alert-dry-run`, or `alert-sim` path. It only prevents the old DB-signal compatibility trader from creating simulation orders outside the v5/Hermes/intake lineage by accident.
 
 Daily full-day signal gate rollout on 2026-06-12:
 

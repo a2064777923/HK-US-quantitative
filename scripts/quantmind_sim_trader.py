@@ -6,16 +6,35 @@ QuantMind P5 模擬交易引擎
 import json, urllib.request, sys, os
 from datetime import datetime
 
-API_BASE = "https://notopenai.asia/api/v1"
-PORTFOLIO_ID = 5  # 快斗量化模拟盘
+API_BASE = os.environ.get("QM_API_BASE", "https://notopenai.asia/api/v1").rstrip("/")
+PORTFOLIO_ID = int(os.environ.get("QM_LEGACY_SIM_PORTFOLIO_ID", os.environ.get("QM_SIM_PORTFOLIO_ID", "8")))
+ENABLE_ENV_VAR = "QM_LEGACY_SIM_TRADER_ENABLE"
+API_USER_ENV_VAR = "QM_LEGACY_SIM_API_USER"
+API_PASSWORD_ENV_VAR = "QM_LEGACY_SIM_API_PASSWORD"
 MAX_POSITIONS = 10  # 最多持倉數
 POSITION_SIZE_PCT = 0.08  # 每倉佔比 8%
 MIN_SCORE = 0.04  # 最低 fusion_score 門檻
 COMMISSION_RATE = 0.0003  # 佣金 0.03%
 STAMP_DUTY_RATE = 0.001  # 印花稅 0.1% (港股賣出)
 
+def legacy_sim_trader_enabled(env=None):
+    env = env if env is not None else os.environ
+    return env.get(ENABLE_ENV_VAR, "0") == "1"
+
+def legacy_api_credentials(env=None):
+    env = env if env is not None else os.environ
+    user = env.get(API_USER_ENV_VAR) or env.get("QM_API_USER") or ""
+    password = env.get(API_PASSWORD_ENV_VAR) or env.get("QM_API_PASSWORD") or ""
+    return user, password
+
 def get_token():
-    login_data = json.dumps({"username": "admin", "password": "admin123"}).encode()
+    username, password = legacy_api_credentials()
+    if not username or not password:
+        raise RuntimeError(
+            f"missing API credentials; set {API_USER_ENV_VAR}/{API_PASSWORD_ENV_VAR} "
+            "or QM_API_USER/QM_API_PASSWORD"
+        )
+    login_data = json.dumps({"username": username, "password": password}).encode()
     req = urllib.request.Request(
         f"{API_BASE}/auth/login",
         data=login_data,
@@ -107,6 +126,12 @@ def submit_order(token, symbol, side, quantity, price=None):
 def run():
     print(f"[{datetime.now()}] P5 模擬交易引擎啟動")
     print("=" * 50)
+
+    if not legacy_sim_trader_enabled():
+        print(
+            f"  🔒 legacy sim trader disabled; set {ENABLE_ENV_VAR}=1 only for reviewed compatibility runs"
+        )
+        return
     
     # 1. Get token
     try:

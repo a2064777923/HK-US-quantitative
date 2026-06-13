@@ -188,5 +188,7 @@
 * * * * * /bin/bash -lc "cd /root && [ -f /root/.quantmind_env ] && . /root/.quantmind_env; /usr/bin/python3 /root/hermes_review_packet.py --output /tmp/hermes_signal_review_packet.json >> /tmp/hermes_review_packet.log 2>&1"
 
 # Compatibility mode: preserves old bridge behavior by running quantmind_sim_trader.py
-# after actionable alerts. Keep disabled until Hermes confirms this is desired.
+# after actionable alerts. The legacy trader itself is disabled unless
+# QM_LEGACY_SIM_TRADER_ENABLE=1 and API credentials are present in the environment.
+# Keep disabled until Hermes confirms this non-alert-specific path is desired.
 # * * * * * RT_ALERT_EXECUTION_MODE=legacy-sim RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py
