@@ -480,12 +480,31 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             datetime(2026, 6, 11, 14, 0, 0),
         )
 
+    def test_parse_quote_datetime_only_uses_time_only_when_explicit(self):
+        self.assertIsNone(rt.parse_quote_datetime("14:00:00"))
+
+        parsed = rt.parse_quote_datetime("14:00:00", assume_today_for_time_only=True)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual((parsed.hour, parsed.minute, parsed.second), (14, 0, 0))
+
     def test_cumulative_volume_ratio_uses_compact_quote_timestamp(self):
         ratio = rt.cumulative_volume_ratio(
             quote_volume=700,
             avg_daily_volume=1000,
             market="US",
             quote_time="20260611140000",
+        )
+
+        self.assertAlmostEqual(ratio, 700 / (1000 * (270 / 390)), places=4)
+        self.assertLess(ratio, 2)
+
+    def test_cumulative_volume_ratio_allows_time_only_for_elapsed_session(self):
+        ratio = rt.cumulative_volume_ratio(
+            quote_volume=700,
+            avg_daily_volume=1000,
+            market="US",
+            quote_time="14:00:00",
         )
 
         self.assertAlmostEqual(ratio, 700 / (1000 * (270 / 390)), places=4)
@@ -519,6 +538,15 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         )
         self.assertEqual(
             rt.alert_signal_date(None, generated_at=datetime(2026, 6, 12, 1, 0, 0)),
+            "20260612",
+        )
+
+    def test_alert_signal_date_does_not_use_time_only_quote_timestamp(self):
+        self.assertEqual(
+            rt.alert_signal_date(
+                "14:00:00",
+                generated_at=datetime(2026, 6, 12, 1, 0, 0),
+            ),
             "20260612",
         )
 

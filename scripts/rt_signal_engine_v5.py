@@ -553,7 +553,7 @@ def normalize_quote(quote):
     )
     return normalized, None
 
-def parse_quote_datetime(value):
+def parse_quote_datetime(value, assume_today_for_time_only=False):
     if not value:
         return None
     value = str(value).strip()
@@ -562,16 +562,18 @@ def parse_quote_datetime(value):
         "%Y/%m/%d %H:%M:%S",
         "%Y%m%d%H%M%S",
         "%Y%m%d%H%M",
-        "%H:%M:%S",
     ):
         try:
-            parsed = datetime.strptime(value, fmt)
-            if fmt == "%H:%M:%S":
-                today = datetime.now()
-                parsed = parsed.replace(year=today.year, month=today.month, day=today.day)
-            return parsed
+            return datetime.strptime(value, fmt)
         except ValueError:
             continue
+    if assume_today_for_time_only:
+        try:
+            parsed = datetime.strptime(value, "%H:%M:%S")
+            today = datetime.now()
+            return parsed.replace(year=today.year, month=today.month, day=today.day)
+        except ValueError:
+            pass
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
     except Exception:
@@ -666,7 +668,7 @@ def cumulative_volume_ratio(quote_volume, avg_daily_volume, market, quote_time=N
     if quote_volume <= 0 or avg_daily_volume <= 0:
         return None
 
-    dt = parse_quote_datetime(quote_time)
+    dt = parse_quote_datetime(quote_time, assume_today_for_time_only=True)
     if not dt:
         return None
     elapsed = session_elapsed_minutes(market, dt)
