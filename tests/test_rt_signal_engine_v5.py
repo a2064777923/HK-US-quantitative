@@ -539,6 +539,17 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertAlmostEqual(ratio, 700 / (1000 * (270 / 390)), places=4)
         self.assertLess(ratio, 2)
 
+    def test_cumulative_volume_ratio_converts_aware_timestamp_to_market_time(self):
+        ratio = rt.cumulative_volume_ratio(
+            quote_volume=700,
+            avg_daily_volume=1000,
+            market="US",
+            quote_time="2026-06-11T14:00:00Z",
+        )
+
+        self.assertAlmostEqual(ratio, 700 / (1000 * (30 / 390)), places=4)
+        self.assertGreater(ratio, 9)
+
     def test_cumulative_volume_ratio_allows_time_only_for_elapsed_session(self):
         ratio = rt.cumulative_volume_ratio(
             quote_volume=700,

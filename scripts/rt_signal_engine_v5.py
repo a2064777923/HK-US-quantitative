@@ -581,7 +581,7 @@ def quote_time_text(value):
             pass
     return str(value).strip()
 
-def parse_quote_datetime(value, assume_today_for_time_only=False):
+def parse_quote_datetime(value, assume_today_for_time_only=False, market=None):
     if not value:
         return None
     value = str(value).strip()
@@ -603,7 +603,12 @@ def parse_quote_datetime(value, assume_today_for_time_only=False):
         except ValueError:
             pass
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None and market:
+            tz = timezone_for_market(market, reference=parsed)
+            if tz is not None:
+                return parsed.astimezone(tz).replace(tzinfo=None)
+        return parsed.replace(tzinfo=None)
     except Exception:
         return None
 
@@ -637,6 +642,23 @@ def regular_session_minutes(market):
         return 330
     if market == "US":
         return 390
+    return None
+
+def timezone_for_market(market, reference=None):
+    market = str(market or "").upper()
+    if ZoneInfo:
+        try:
+            if market == "US":
+                return ZoneInfo("America/New_York")
+            if market == "HK":
+                return ZoneInfo("Asia/Hong_Kong")
+        except Exception:
+            pass
+    if market == "HK":
+        return timezone(timedelta(hours=8))
+    if market == "US":
+        offset = -4 if reference is not None and us_dst_active_for_utc(reference) else -5
+        return timezone(timedelta(hours=offset))
     return None
 
 def hk_regular_session_open_hkt(dt):
@@ -696,7 +718,7 @@ def cumulative_volume_ratio(quote_volume, avg_daily_volume, market, quote_time=N
     if quote_volume <= 0 or avg_daily_volume <= 0:
         return None
 
-    dt = parse_quote_datetime(quote_time, assume_today_for_time_only=True)
+    dt = parse_quote_datetime(quote_time, assume_today_for_time_only=True, market=market)
     if not dt:
         return None
     elapsed = session_elapsed_minutes(market, dt)
