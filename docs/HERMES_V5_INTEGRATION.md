@@ -37,6 +37,7 @@ Improvements:
 - HK/US scan gating now uses HKT-aware session helpers. The US overnight window maps 00:00-04:00 HKT to the previous US trading weekday, so Friday US regular trading is not skipped during Saturday early HKT and Sunday/Monday early HKT is not mistaken for a live US session.
 - Signal cooldown keys are symbol/type/trigger based rather than HKT-calendar-date based. This keeps one US overnight session from re-emitting the same technical trigger just because Hong Kong local time crossed midnight.
 - `signal_id` buckets use the actual trigger cooldown seconds, including per-trigger overrides, so a valid alert emitted after a shorter configured cooldown does not collide with the previous alert in event-store, order-intake, or outcome deduplication.
+- Alert output is strict JSON. Non-finite internal values such as NaN/inf `full_score` or ATR are normalized before alert construction, and `send_alert()` refuses to write non-standard JSON tokens to the latest alert file or append-only queue.
 - Volume anomaly WATCH alerts and the v5 `full_score` volume factor compare cumulative intraday volume with expected cumulative daily volume based on elapsed HK/US session minutes. This avoids stale one-minute/daily-volume mismatches and keeps confirmation scoring aligned with the alert's volume-anomaly definition.
 
 ### Hermes bridge

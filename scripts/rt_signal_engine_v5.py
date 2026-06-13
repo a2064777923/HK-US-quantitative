@@ -995,6 +995,8 @@ class TriggerEngine:
         now = time.time()
         triggered = []
         full_score, full_reasons = indicators.get_score(quote)
+        full_score = as_float(full_score)
+        full_reasons = full_reasons if isinstance(full_reasons, list) else []
 
         # 1. RSI 極端值
         if indicators.rsi_14 is not None:
@@ -1055,7 +1057,9 @@ class TriggerEngine:
             self.cooldowns[key] = now
             
             # 計算入場/止盈/止損 (基於ATR)
-            atr = indicators.atr_14 if indicators.atr_14 else c * 0.02  # 默認2%
+            atr = as_float(indicators.atr_14)
+            if atr is None or atr <= 0:
+                atr = c * 0.02  # 默認2%
             stop_multiple = self.risk_multiple("atr_stop_multiple", 2.0)
             take_profit_multiple = self.risk_multiple("atr_take_profit_multiple", 3.0)
             
@@ -1173,12 +1177,20 @@ def save_state(state):
 def send_alert(alerts):
     """寫入最新alert文件，同時追加到事件隊列供Hermes無損消費。"""
     tmp = ALERT_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(alerts, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, ALERT_FILE)
+    try:
+        with open(tmp, "w") as f:
+            json.dump(alerts, f, ensure_ascii=False, indent=2, allow_nan=False)
+        os.replace(tmp, ALERT_FILE)
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        raise
     with open(ALERT_QUEUE_FILE, "a", encoding="utf-8") as f:
         for alert in alerts:
-            f.write(json.dumps(alert, ensure_ascii=False) + "\n")
+            f.write(json.dumps(alert, ensure_ascii=False, allow_nan=False) + "\n")
 
 def main():
     hk_watchlist, us_watchlist, watchlist_context = load_watchlists()

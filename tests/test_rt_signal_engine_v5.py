@@ -200,6 +200,18 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             self.assertEqual(latest_payload, [alerts[0]])
             self.assertEqual([item["signal_id"] for item in queue_lines], ["a1", "a2", "a1"])
 
+    def test_send_alert_rejects_non_standard_nan_json(self):
+        with tempfile.TemporaryDirectory() as td:
+            latest = str(Path(td) / "latest.json")
+            queue = str(Path(td) / "queue.jsonl")
+
+            with patch.object(rt, "ALERT_FILE", latest), patch.object(rt, "ALERT_QUEUE_FILE", queue):
+                with self.assertRaises(ValueError):
+                    rt.send_alert([{"signal_id": "bad", "price": float("nan")}])
+
+            self.assertFalse(Path(latest).exists())
+            self.assertFalse(Path(queue).exists())
+
     def test_cumulative_volume_ratio_uses_elapsed_session_fraction(self):
         ratio = rt.cumulative_volume_ratio(
             quote_volume=700,
@@ -526,6 +538,33 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIsNone(ma5_alert["suppressed_directional_reason"])
         self.assertFalse(ma5_alert["execution_candidate"])
         self.assertIsNotNone(ma5_alert["stop_loss"])
+
+    def test_nonfinite_score_and_atr_do_not_enter_alert_json(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=float("nan"))
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+        indicators.atr_14 = float("nan")
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-13 03:59:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertIsNone(alert["full_score"])
+        self.assertEqual(alert["atr"], 2.0)
+        json.dumps(alert, allow_nan=False)
 
     def test_cooldown_key_is_independent_of_hkt_calendar_date(self):
         engine = rt.TriggerEngine()
