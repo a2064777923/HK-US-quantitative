@@ -20,6 +20,7 @@ ALERT_QUEUE_FILE = "/tmp/rt_signal_alerts.jsonl"
 STATE_FILE = "/tmp/rt_signal_state.json"
 WATCHLIST_FILE = os.environ.get("RT_SIGNAL_WATCHLIST_FILE", "/root/rt_signal_watchlist.json")
 STRATEGY_CONFIG_FILE = os.environ.get("RT_SIGNAL_STRATEGY_CONFIG_FILE", "/root/rt_signal_strategy_config.json")
+MIN_SIGNAL_HISTORY_BARS = 30
 MIN_VOLUME_SESSION_FRACTION = 0.05
 VOLUME_ANOMALY_RATIO = 3.0
 HK_SYMBOL_RE = re.compile(r"^\d{5}$")
@@ -863,7 +864,7 @@ class IncrementalIndicators:
     def get_score(self, quote_context=None):
         """計算多因子分數 (-1 to +1)"""
         closes, highs, lows, volumes = self._series()
-        if not closes or len(closes) < 30:
+        if not closes or len(closes) < MIN_SIGNAL_HISTORY_BARS:
             return None, []
 
         c = closes[-1]
@@ -926,6 +927,14 @@ class IncrementalIndicators:
                 reasons.append(f"5日動量{mom:+.1f}%")
 
         return max(-1, min(1, score)), reasons
+
+
+def indicator_history_bar_count(indicators):
+    closes = getattr(indicators, "closes", None)
+    return len(closes) if isinstance(closes, list) else 0
+
+def indicator_signal_ready(indicators):
+    return indicator_history_bar_count(indicators) >= MIN_SIGNAL_HISTORY_BARS
 
 
 # ========== 條件觸發器 ==========
@@ -1034,7 +1043,7 @@ class TriggerEngine:
         quote, _quote_error = normalize_quote(quote)
         if quote is None:
             return
-        if not indicators.closes or len(indicators.closes) < 20:
+        if not indicator_signal_ready(indicators):
             return
 
         c = quote["price"]
@@ -1299,11 +1308,26 @@ def main():
     all_symbols = [(s, "HK") for s in hk_watchlist] + [(s, "US") for s in us_watchlist]
 
     log("載入歷史K線...")
+    skipped_history = []
     for sym, market in all_symbols:
         ind = IncrementalIndicators(sym)
-        ind.load_history(100)
-        indicators[sym] = ind
-    log(f"載入完成: {len(indicators)}隻股票")
+        loaded = ind.load_history(100)
+        if indicator_signal_ready(ind):
+            indicators[sym] = ind
+        else:
+            reason = "load_failed" if not loaded else "insufficient_daily_history"
+            skipped_history.append((sym, market, indicator_history_bar_count(ind), reason))
+    log(
+        f"載入完成: signal_ready={len(indicators)} skipped={len(skipped_history)} "
+        f"min_daily_bars={MIN_SIGNAL_HISTORY_BARS}"
+    )
+    if skipped_history:
+        sample = ", ".join(
+            f"{sym}/{market}:{bars}:{reason}"
+            for sym, market, bars, reason in skipped_history[:10]
+        )
+        suffix = " ..." if len(skipped_history) > 10 else ""
+        log(f"歷史K線不足跳過: {sample}{suffix}")
 
     trigger = TriggerEngine(
         watchlist_context=watchlist_context,

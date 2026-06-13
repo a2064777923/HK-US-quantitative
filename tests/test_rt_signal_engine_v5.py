@@ -210,6 +210,35 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIsNotNone(score_without_context)
         self.assertIsNotNone(score_with_context)
 
+    def test_signal_readiness_requires_full_multifactor_history(self):
+        indicators = FakeIndicators(score=0.8)
+        indicators.closes = [100] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
+
+        self.assertFalse(rt.indicator_signal_ready(indicators))
+
+        indicators.closes.append(100)
+        self.assertTrue(rt.indicator_signal_ready(indicators))
+
+    def test_trigger_check_ignores_insufficient_multifactor_history(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.closes = [100] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
+        indicators.rsi_14 = 20
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertEqual(engine.alerts, [])
+
     def test_flat_history_rsi_is_neutral_not_overbought(self):
         ind = rt.IncrementalIndicators("AAPL")
         for _ in range(30):
