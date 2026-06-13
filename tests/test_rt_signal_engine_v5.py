@@ -125,6 +125,57 @@ class RtSignalEngineV5Tests(unittest.TestCase):
 
         self.assertEqual(ind.rsi_14, 50)
 
+    def test_realtime_update_rejects_nonfinite_price_without_overwriting_last_bar(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        for _ in range(30):
+            ind._update(100, 101, 99, 1000)
+
+        self.assertTrue(ind.update_realtime(101, 102, 100, 500))
+        self.assertEqual(ind.rt_close, 101)
+
+        self.assertFalse(ind.update_realtime(float("nan"), 200, 1, 9999))
+        self.assertEqual(ind.rt_close, 101)
+        self.assertEqual(ind.rt_high, 102)
+        self.assertEqual(ind.rt_low, 100)
+        self.assertEqual(ind.rt_volume, 500)
+
+    def test_trigger_check_ignores_invalid_quote_without_alerts(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+
+        for bad_quote in (
+            {},
+            {"price": None, "volume": 1000, "market": "US", "time": "2026-06-11 10:00:00"},
+            {"price": float("nan"), "volume": 1000, "market": "US", "time": "2026-06-11 10:00:00"},
+            {"price": -1, "volume": 1000, "market": "US", "time": "2026-06-11 10:00:00"},
+        ):
+            with self.subTest(bad_quote=bad_quote):
+                engine.check("AAPL", indicators, bad_quote)
+
+        self.assertEqual(engine.alerts, [])
+
+    def test_quote_normalization_sanitizes_optional_fields(self):
+        quote, reason = rt.normalize_quote(
+            {
+                "price": "100",
+                "high": "nan",
+                "low": -5,
+                "volume": -10,
+                "amount": -1,
+                "change_pct": "nan",
+                "market": "US",
+            }
+        )
+
+        self.assertIsNone(reason)
+        self.assertEqual(quote["price"], 100)
+        self.assertEqual(quote["high"], 100)
+        self.assertEqual(quote["low"], 100)
+        self.assertEqual(quote["volume"], 0)
+        self.assertEqual(quote["amount"], 0)
+        self.assertEqual(quote["change_pct"], 0)
+
     def test_send_alert_writes_latest_file_and_append_only_queue(self):
         alerts = [
             {"signal_id": "a1", "symbol": "00700", "signal_type": "BUY"},

@@ -67,7 +67,8 @@ def as_float(value, default=None):
     try:
         if value in (None, ""):
             return default
-        return float(value)
+        result = float(value)
+        return result if math.isfinite(result) else default
     except (TypeError, ValueError):
         return default
 
@@ -432,6 +433,43 @@ def fetch_us_quotes(symbols):
     except:
         return {}
 
+def normalize_quote(quote):
+    """Return a finite realtime quote payload or a rejection reason."""
+    if not isinstance(quote, dict):
+        return None, "quote_not_dict"
+    price = as_float(quote.get("price"))
+    if price is None:
+        return None, "missing_or_invalid_price"
+    if price <= 0:
+        return None, "non_positive_price"
+
+    high = as_float(quote.get("high"), price)
+    low = as_float(quote.get("low"), price)
+    volume = as_float(quote.get("volume"), 0) or 0
+    amount = as_float(quote.get("amount"), 0) or 0
+    change_pct = as_float(quote.get("change_pct"), 0) or 0
+    if high <= 0:
+        high = price
+    if low <= 0:
+        low = price
+    if volume < 0:
+        volume = 0
+    if amount < 0:
+        amount = 0
+
+    normalized = dict(quote)
+    normalized.update(
+        {
+            "price": price,
+            "high": max(high, price),
+            "low": min(low, price),
+            "volume": volume,
+            "amount": amount,
+            "change_pct": change_pct,
+        }
+    )
+    return normalized, None
+
 def parse_quote_datetime(value):
     if not value:
         return None
@@ -484,10 +522,9 @@ def regular_session_minutes(market):
 
 def cumulative_volume_ratio(quote_volume, avg_daily_volume, market, quote_time=None):
     """Compare cumulative intraday volume with expected cumulative daily volume."""
-    try:
-        quote_volume = float(quote_volume)
-        avg_daily_volume = float(avg_daily_volume)
-    except (TypeError, ValueError):
+    quote_volume = as_float(quote_volume)
+    avg_daily_volume = as_float(avg_daily_volume)
+    if quote_volume is None or avg_daily_volume is None:
         return None
     if quote_volume <= 0 or avg_daily_volume <= 0:
         return None
@@ -638,13 +675,26 @@ class IncrementalIndicators:
     def update_realtime(self, price, high, low, volume):
         """用一根臨時日內bar更新指標，唔污染歷史日線序列。"""
         if not self.closes:
-            return
+            return False
+        price = as_float(price)
+        if price is None or price <= 0:
+            return False
+        high = as_float(high, price)
+        low = as_float(low, price)
+        volume = as_float(volume, 0) or 0
+        if high <= 0:
+            high = price
+        if low <= 0:
+            low = price
+        if volume < 0:
+            volume = 0
         self.rt_close = price
-        self.rt_high = max(high or price, price)
-        self.rt_low = min(low or price, price)
+        self.rt_high = max(high, price)
+        self.rt_low = min(low, price)
         self.rt_volume = volume
         self.rt_updated_at = datetime.now().isoformat(timespec="seconds")
         self._recalculate_realtime_indicators()
+        return True
 
     def _series(self):
         """返回歷史日線 + 當前臨時bar；不修改持久歷史序列。"""
@@ -889,6 +939,8 @@ class TriggerEngine:
             take = float(take_profit)
         except (TypeError, ValueError):
             return False, "missing_or_invalid_risk_price"
+        if not (math.isfinite(entry) and math.isfinite(stop) and math.isfinite(take)):
+            return False, "missing_or_invalid_risk_price"
         if entry <= 0 or stop <= 0 or take <= 0:
             return False, "non_positive_risk_price"
         if signal_type == "BUY" and not (stop < entry < take):
@@ -899,12 +951,13 @@ class TriggerEngine:
 
     def check(self, symbol, indicators, quote):
         """檢查所有觸發條件"""
+        quote, _quote_error = normalize_quote(quote)
+        if quote is None:
+            return
         if not indicators.closes or len(indicators.closes) < 20:
             return
 
         c = quote["price"]
-        if c <= 0:
-            return
 
         now = time.time()
         triggered = []
@@ -1170,6 +1223,9 @@ def main():
             trigger.alerts = []
             for sym, quote in all_quotes.items():
                 if sym in indicators:
+                    quote, _quote_error = normalize_quote(quote)
+                    if quote is None:
+                        continue
                     # 用實時價格更新指標（增量）
                     indicators[sym].update_realtime(
                         quote["price"], quote["high"], quote["low"], quote["volume"]
