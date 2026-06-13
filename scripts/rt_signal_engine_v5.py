@@ -254,7 +254,7 @@ def normalize_strategy_config(config):
     config["signal_cooldown_seconds"] = cooldown
 
     volume_ratio = as_float(config.get("volume_anomaly_ratio"), VOLUME_ANOMALY_RATIO)
-    if volume_ratio is None or volume_ratio <= 0:
+    if volume_ratio is None or volume_ratio < VOLUME_ANOMALY_RATIO:
         warnings.append("invalid_volume_anomaly_ratio_using_default")
         volume_ratio = VOLUME_ANOMALY_RATIO
     config["volume_anomaly_ratio"] = volume_ratio
