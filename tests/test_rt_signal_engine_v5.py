@@ -427,6 +427,27 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertAlmostEqual(ratio, 700 / (1000 * (270 / 390)), places=4)
         self.assertLess(ratio, 2)
 
+    def test_parse_quote_datetime_accepts_compact_vendor_timestamps(self):
+        self.assertEqual(
+            rt.parse_quote_datetime("20260611140000"),
+            datetime(2026, 6, 11, 14, 0, 0),
+        )
+        self.assertEqual(
+            rt.parse_quote_datetime("202606111400"),
+            datetime(2026, 6, 11, 14, 0, 0),
+        )
+
+    def test_cumulative_volume_ratio_uses_compact_quote_timestamp(self):
+        ratio = rt.cumulative_volume_ratio(
+            quote_volume=700,
+            avg_daily_volume=1000,
+            market="US",
+            quote_time="20260611140000",
+        )
+
+        self.assertAlmostEqual(ratio, 700 / (1000 * (270 / 390)), places=4)
+        self.assertLess(ratio, 2)
+
     def test_market_open_flags_handle_us_overnight_hkt_weekday_rollover(self):
         hk_open, us_open = rt.market_open_flags_hkt(datetime(2026, 6, 13, 3, 59))
         self.assertFalse(hk_open)

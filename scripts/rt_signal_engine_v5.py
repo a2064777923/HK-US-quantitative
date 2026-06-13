@@ -502,7 +502,13 @@ def parse_quote_datetime(value):
     if not value:
         return None
     value = str(value).strip()
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S", "%H:%M:%S"):
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y%m%d%H%M%S",
+        "%Y%m%d%H%M",
+        "%H:%M:%S",
+    ):
         try:
             parsed = datetime.strptime(value, fmt)
             if fmt == "%H:%M:%S":
