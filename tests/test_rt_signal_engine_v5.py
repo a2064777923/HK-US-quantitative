@@ -123,6 +123,70 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(ind.lows, [96.0, 100.0])
         self.assertEqual(ind.volumes, [900.0, 1100.0])
 
+    def test_load_state_returns_default_for_missing_or_corrupt_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(Path(tmpdir) / "rt_signal_state.json")
+            with patch.object(rt, "STATE_FILE", state_file):
+                self.assertEqual(rt.load_state(), {"cooldowns": {}, "date": ""})
+
+                Path(state_file).write_text("{bad json", encoding="utf-8")
+                self.assertEqual(rt.load_state(), {"cooldowns": {}, "date": ""})
+
+    def test_load_state_sanitizes_cooldown_shape(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "rt_signal_state.json"
+            state_file.write_text(
+                json.dumps(
+                    {
+                        "date": "2026-06-13",
+                        "cooldowns": {
+                            "AAPL:BUY:RSI": 1000,
+                            " 0700:SELL:MA5 ": "2000.5",
+                            "bad:none": None,
+                            "bad:negative": -1,
+                            "bad:nan": float("nan"),
+                            "": 123,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(rt, "STATE_FILE", str(state_file)):
+                loaded = rt.load_state()
+
+        self.assertEqual(
+            loaded,
+            {
+                "date": "2026-06-13",
+                "cooldowns": {
+                    "AAPL:BUY:RSI": 1000.0,
+                    "0700:SELL:MA5": 2000.5,
+                },
+            },
+        )
+
+    def test_save_state_writes_sanitized_json_atomically(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = Path(tmpdir) / "rt_signal_state.json"
+            with patch.object(rt, "STATE_FILE", str(state_file)):
+                rt.save_state(
+                    {
+                        "date": "2026-06-13",
+                        "cooldowns": {
+                            "AAPL:BUY:RSI": 1000,
+                            "bad:nan": float("nan"),
+                            "bad:negative": -1,
+                        },
+                    }
+                )
+
+            loaded = json.loads(state_file.read_text(encoding="utf-8"))
+            tmp_files = list(Path(tmpdir).glob("rt_signal_state.json.*.tmp"))
+
+        self.assertEqual(loaded, {"cooldowns": {"AAPL:BUY:RSI": 1000.0}, "date": "2026-06-13"})
+        self.assertEqual(tmp_files, [])
+
     def test_realtime_score_volume_uses_session_adjusted_cumulative_ratio(self):
         ind = rt.IncrementalIndicators("AAPL")
         for _ in range(30):

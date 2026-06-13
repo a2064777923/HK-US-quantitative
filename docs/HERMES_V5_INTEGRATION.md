@@ -39,6 +39,7 @@ Improvements:
 - Signal cooldown keys are symbol/type/trigger based rather than HKT-calendar-date based. This keeps one US overnight session from re-emitting the same technical trigger just because Hong Kong local time crossed midnight.
 - `signal_id` buckets use the actual trigger cooldown seconds, including per-trigger overrides, so a valid alert emitted after a shorter configured cooldown does not collide with the previous alert in event-store, order-intake, or outcome deduplication.
 - Alert output is strict JSON. Non-finite internal values such as NaN/inf `full_score` or ATR are normalized before alert construction, and `send_alert()` refuses to write non-standard JSON tokens to the latest alert file or append-only queue.
+- Cooldown state in `/tmp/rt_signal_state.json` is normalized on read/write and saved through an atomic temp-file replace. Corrupt or wrong-shaped state falls back to an empty cooldown ledger, while malformed cooldown entries are dropped instead of poisoning the whole engine. This preserves alert idempotency without changing strategy thresholds, Hermes judgment, order intake, simulation state, or crontab wiring.
 - Volume anomaly WATCH alerts and the v5 `full_score` volume factor compare cumulative intraday volume with expected cumulative daily volume based on elapsed HK/US session minutes. This avoids stale one-minute/daily-volume mismatches and keeps confirmation scoring aligned with the alert's volume-anomaly definition.
 
 ### Hermes bridge
@@ -698,7 +699,7 @@ Expected outputs on the server:
 
 - `/tmp/rt_signal_alert.json` exists after the first actionable or watch alert.
 - `/tmp/rt_signal_alerts.jsonl` grows append-only with one JSON alert per line.
-- `/tmp/rt_signal_state.json` stores cooldown state.
+- `/tmp/rt_signal_state.json` stores normalized cooldown state and is rewritten atomically.
 
 ### Phase 3: Add Hermes bridge in notify-only mode
 

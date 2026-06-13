@@ -1210,16 +1210,47 @@ def log(msg):
     ts = datetime.now().strftime("%H:%M:%S")
     print(f"[{ts}] {msg}", flush=True)
 
+def default_state():
+    return {"cooldowns": {}, "date": ""}
+
+def normalize_state(payload):
+    state = default_state()
+    if not isinstance(payload, dict):
+        return state
+
+    cooldowns = payload.get("cooldowns")
+    if isinstance(cooldowns, dict):
+        for raw_key, raw_value in cooldowns.items():
+            key = str(raw_key or "").strip()
+            value = as_float(raw_value)
+            if key and value is not None and value >= 0:
+                state["cooldowns"][key] = value
+
+    date = str(payload.get("date") or "").strip()
+    if date:
+        state["date"] = date
+    return state
+
 def load_state():
     try:
-        with open(STATE_FILE) as f:
-            return json.load(f)
-    except:
-        return {"cooldowns": {}, "date": ""}
+        with open(STATE_FILE, encoding="utf-8") as f:
+            return normalize_state(json.load(f))
+    except (OSError, json.JSONDecodeError):
+        return default_state()
 
 def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+    payload = normalize_state(state)
+    tmp = f"{STATE_FILE}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, allow_nan=False)
+        os.replace(tmp, STATE_FILE)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 def send_alert(alerts):
     """寫入最新alert文件，同時追加到事件隊列供Hermes無損消費。"""
