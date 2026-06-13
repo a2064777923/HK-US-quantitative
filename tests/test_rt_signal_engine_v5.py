@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+import builtins
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -211,6 +212,28 @@ class RtSignalEngineV5Tests(unittest.TestCase):
 
             self.assertFalse(Path(latest).exists())
             self.assertFalse(Path(queue).exists())
+
+    def test_send_alert_does_not_update_latest_when_queue_append_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            latest_path = Path(td) / "latest.json"
+            queue_path = Path(td) / "queue.jsonl"
+            latest_path.write_text(json.dumps([{"signal_id": "old"}]), encoding="utf-8")
+            original_open = builtins.open
+
+            def fail_queue_open(path, mode="r", *args, **kwargs):
+                if str(path) == str(queue_path) and "a" in mode:
+                    raise OSError("queue unavailable")
+                return original_open(path, mode, *args, **kwargs)
+
+            with patch.object(rt, "ALERT_FILE", str(latest_path)), patch.object(
+                rt, "ALERT_QUEUE_FILE", str(queue_path)
+            ), patch("builtins.open", side_effect=fail_queue_open):
+                with self.assertRaises(OSError):
+                    rt.send_alert([{"signal_id": "new"}])
+
+            latest_payload = json.loads(latest_path.read_text(encoding="utf-8"))
+            self.assertEqual(latest_payload, [{"signal_id": "old"}])
+            self.assertFalse(queue_path.exists())
 
     def test_cumulative_volume_ratio_uses_elapsed_session_fraction(self):
         ratio = rt.cumulative_volume_ratio(

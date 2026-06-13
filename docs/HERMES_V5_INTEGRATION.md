@@ -30,6 +30,7 @@ Improvements:
 - It writes every alert as an event with `signal_id`, `source`, `market`, `confirmed`, `full_score`, `entry_price`, `stop_loss`, and `take_profit` when the alert is a confirmed directional candidate.
 - It still writes the legacy latest-alert file at `/tmp/rt_signal_alert.json`.
 - It also appends every alert to `/tmp/rt_signal_alerts.jsonl`, so Hermes can consume alerts without losing events when multiple alerts happen between cron runs.
+- The append-only queue is written before the legacy latest-alert file. If queue append fails, the latest file is left unchanged rather than showing an alert that never entered the event history.
 - Realtime quotes are handled as one temporary intraday bar. They no longer get appended to historical daily arrays every scan, which avoids RSI/MA/MACD drift during the day.
 - MA5 and MA10/MA20 crossover triggers compare the current temporary intraday bar against the latest completed historical daily state, so an already-crossed moving average is not re-emitted as a fresh crossover.
 - BUY/SELL candidates carry a full-score confirmation flag. Unconfirmed directional candidates are downgraded to `WATCH` by default, with `candidate_signal_type` and candidate risk fields retained for diagnostics.

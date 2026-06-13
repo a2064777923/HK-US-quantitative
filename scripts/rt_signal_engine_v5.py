@@ -1176,10 +1176,17 @@ def save_state(state):
 
 def send_alert(alerts):
     """寫入最新alert文件，同時追加到事件隊列供Hermes無損消費。"""
+    latest_payload = json.dumps(alerts, ensure_ascii=False, indent=2, allow_nan=False)
+    queue_lines = [json.dumps(alert, ensure_ascii=False, allow_nan=False) for alert in alerts]
+
+    with open(ALERT_QUEUE_FILE, "a", encoding="utf-8") as f:
+        for line in queue_lines:
+            f.write(line + "\n")
+
     tmp = ALERT_FILE + ".tmp"
     try:
         with open(tmp, "w") as f:
-            json.dump(alerts, f, ensure_ascii=False, indent=2, allow_nan=False)
+            f.write(latest_payload)
         os.replace(tmp, ALERT_FILE)
     except Exception:
         try:
@@ -1188,9 +1195,6 @@ def send_alert(alerts):
         except OSError:
             pass
         raise
-    with open(ALERT_QUEUE_FILE, "a", encoding="utf-8") as f:
-        for alert in alerts:
-            f.write(json.dumps(alert, ensure_ascii=False, allow_nan=False) + "\n")
 
 def main():
     hk_watchlist, us_watchlist, watchlist_context = load_watchlists()
