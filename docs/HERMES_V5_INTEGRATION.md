@@ -1673,6 +1673,7 @@ The default config matches the previous hard-coded behavior:
 - `full_score` confirmation thresholds must stay inside the engine score domain `[-1, 1]`; invalid global thresholds fall back to defaults and invalid per-trigger threshold overrides are ignored, so a config typo cannot make every directional trigger confirmed.
 - volume anomaly ratio threshold `3.0`;
 - signal cooldown `1800` seconds;
+- per-trigger `enabled` values are normalized from booleans or boolean-like strings, and invalid per-trigger `cooldown_seconds` values are ignored so the trigger inherits the global cooldown instead of a hard-coded fallback;
 - ATR stop/take-profit multiples `2.0` and `3.0`;
 - minimum directional risk/reward ratio `1.2`;
 - unconfirmed directional candidates are emitted as `WATCH` by default through `emission.emit_unconfirmed_directional_as_watch=true`.

@@ -865,11 +865,49 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIn("invalid_trigger_min_full_score:BUY:站上MA5", warnings)
         self.assertIn("invalid_trigger_max_full_score:SELL:跌破MA5", warnings)
 
+    def test_strategy_config_normalizes_trigger_enabled_string_and_bad_cooldown(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "trigger_overrides": {
+                    "BUY:RSI超賣": {"enabled": "false", "cooldown_seconds": -5},
+                }
+            }
+        )
+
+        override = config["trigger_overrides"]["BUY:RSI超賣"]
+        self.assertIs(override["enabled"], False)
+        self.assertNotIn("cooldown_seconds", override)
+        self.assertIn("invalid_trigger_cooldown_seconds:BUY:RSI超賣", warnings)
+
     def test_strategy_config_can_disable_trigger(self):
         engine = rt.TriggerEngine(
             strategy_config={
                 "trigger_overrides": {
                     "WATCH:成交量異動": {"enabled": False},
+                }
+            }
+        )
+        indicators = FakeIndicators(avg_volume=1000)
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 4000,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertEqual(engine.alerts, [])
+
+    def test_strategy_config_string_false_can_disable_trigger(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "trigger_overrides": {
+                    "WATCH:成交量異動": {"enabled": "false"},
                 }
             }
         )
@@ -1265,6 +1303,18 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertNotEqual(first_id, second_id)
         self.assertEqual(first_id.rsplit(":", 1)[-1], str(1_000_000 // 300))
         self.assertEqual(second_id.rsplit(":", 1)[-1], str(1_000_301 // 300))
+
+    def test_invalid_trigger_cooldown_falls_back_to_global_cooldown(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "signal_cooldown_seconds": 600,
+                "trigger_overrides": {
+                    "BUY:RSI超賣": {"cooldown_seconds": -5},
+                },
+            }
+        )
+
+        self.assertEqual(engine.trigger_cooldown_seconds("BUY", "RSI超賣"), 600)
 
     def test_signal_id_date_uses_quote_timestamp_when_available(self):
         engine = rt.TriggerEngine()

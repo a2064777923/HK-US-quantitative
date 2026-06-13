@@ -293,8 +293,13 @@ def normalize_strategy_config(config):
             continue
         normalize_override_score_threshold(override, key, "min_full_score", warnings)
         normalize_override_score_threshold(override, key, "max_full_score", warnings)
+        if "enabled" in override:
+            override["enabled"] = as_bool(override.get("enabled"), True)
         if "cooldown_seconds" in override:
             override["cooldown_seconds"] = as_int(override.get("cooldown_seconds"))
+            if override["cooldown_seconds"] is None or override["cooldown_seconds"] <= 0:
+                warnings.append(f"invalid_trigger_cooldown_seconds:{key}")
+                override.pop("cooldown_seconds", None)
     config["config_id"] = strategy_config_digest(config)
     return config, warnings
 
