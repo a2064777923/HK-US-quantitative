@@ -553,6 +553,38 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(engine.alerts, [])
         self.assertEqual(engine.cooldowns[cooldown_key], 1_000_000 - 60)
 
+    def test_signal_id_bucket_uses_configured_trigger_cooldown(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "trigger_overrides": {
+                    "BUY:RSI超賣": {"cooldown_seconds": 300},
+                },
+            }
+        )
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+        quote = {
+            "price": 100,
+            "volume": 0,
+            "market": "US",
+            "time": "2026-06-13 03:59:00",
+            "change_pct": 0,
+        }
+
+        with patch.object(rt.time, "time", side_effect=[1_000_000, 1_000_301]):
+            engine.check("AAPL", indicators, quote)
+            engine.check("AAPL", indicators, quote)
+
+        self.assertEqual(len(engine.alerts), 2)
+        first_id = engine.alerts[0]["signal_id"]
+        second_id = engine.alerts[1]["signal_id"]
+        self.assertNotEqual(first_id, second_id)
+        self.assertEqual(first_id.rsplit(":", 1)[-1], str(1_000_000 // 300))
+        self.assertEqual(second_id.rsplit(":", 1)[-1], str(1_000_301 // 300))
+
     def test_invalid_buy_risk_geometry_is_downgraded_to_watch(self):
         engine = rt.TriggerEngine(
             strategy_config={

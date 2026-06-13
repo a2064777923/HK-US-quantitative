@@ -928,6 +928,13 @@ class TriggerEngine:
     def alert_cooldown_key(self, symbol, signal_type, trigger_name):
         return f"{str(symbol or '').upper()}:{self.trigger_key(signal_type, trigger_name)}"
 
+    def alert_signal_id(self, symbol, trigger_name, signal_type, now, cooldown_seconds):
+        bucket_seconds = cooldown_seconds if cooldown_seconds and cooldown_seconds > 0 else SIGNAL_COOLDOWN
+        return (
+            f"{datetime.now().strftime('%Y%m%d')}:{symbol}:{trigger_name}:{signal_type}:"
+            f"{int(now // bucket_seconds)}"
+        )
+
     def volume_anomaly_ratio(self):
         return as_float(self.strategy_config.get("volume_anomaly_ratio"), VOLUME_ANOMALY_RATIO) or VOLUME_ANOMALY_RATIO
 
@@ -1105,7 +1112,13 @@ class TriggerEngine:
             
             market = quote.get("market", "")
             self.alerts.append({
-                "signal_id": f"{datetime.now().strftime('%Y%m%d')}:{symbol}:{trigger_name}:{emitted_signal_type}:{int(now // SIGNAL_COOLDOWN)}",
+                "signal_id": self.alert_signal_id(
+                    symbol,
+                    trigger_name,
+                    emitted_signal_type,
+                    now,
+                    cooldown_seconds,
+                ),
                 "source": "rt_signal_engine_v5",
                 "symbol": symbol,
                 "market": market,

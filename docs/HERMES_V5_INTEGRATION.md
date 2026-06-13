@@ -36,6 +36,7 @@ Improvements:
 - Realtime quotes are normalized before they update the temporary bar or trigger checks. Missing, non-finite, or non-positive prices are rejected without emitting alerts; optional high/low/volume/change fields are clamped to a safe same-price/zero-volume tick when the price itself is valid.
 - HK/US scan gating now uses HKT-aware session helpers. The US overnight window maps 00:00-04:00 HKT to the previous US trading weekday, so Friday US regular trading is not skipped during Saturday early HKT and Sunday/Monday early HKT is not mistaken for a live US session.
 - Signal cooldown keys are symbol/type/trigger based rather than HKT-calendar-date based. This keeps one US overnight session from re-emitting the same technical trigger just because Hong Kong local time crossed midnight.
+- `signal_id` buckets use the actual trigger cooldown seconds, including per-trigger overrides, so a valid alert emitted after a shorter configured cooldown does not collide with the previous alert in event-store, order-intake, or outcome deduplication.
 - Volume anomaly WATCH alerts and the v5 `full_score` volume factor compare cumulative intraday volume with expected cumulative daily volume based on elapsed HK/US session minutes. This avoids stale one-minute/daily-volume mismatches and keeps confirmation scoring aligned with the alert's volume-anomaly definition.
 
 ### Hermes bridge
