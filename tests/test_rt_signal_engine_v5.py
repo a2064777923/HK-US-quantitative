@@ -329,6 +329,8 @@ class RtSignalEngineV5Tests(unittest.TestCase):
 
         for bad_quote in (
             {},
+            {"price": 100, "volume": 1000, "time": "2026-06-11 10:00:00"},
+            {"price": 100, "volume": 1000, "market": "CN", "time": "2026-06-11 10:00:00"},
             {"price": None, "volume": 1000, "market": "US", "time": "2026-06-11 10:00:00"},
             {"price": float("nan"), "volume": 1000, "market": "US", "time": "2026-06-11 10:00:00"},
             {"price": -1, "volume": 1000, "market": "US", "time": "2026-06-11 10:00:00"},
@@ -373,6 +375,31 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIsNone(reason)
         self.assertEqual(quote["time"], "2026-06-11T14:00:00")
         self.assertEqual(quote["market"], "US")
+
+    def test_quote_normalization_rejects_unknown_market(self):
+        quote, reason = rt.normalize_quote({"price": "100", "market": "CN"})
+
+        self.assertIsNone(quote)
+        self.assertEqual(reason, "missing_or_invalid_market")
+
+    def test_trigger_check_ignores_symbol_market_mismatch(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "HK",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertEqual(engine.alerts, [])
 
     def test_quote_normalization_derives_change_pct_from_prev_close(self):
         quote, reason = rt.normalize_quote(

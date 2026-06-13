@@ -538,6 +538,9 @@ def normalize_quote(quote):
         volume = 0
     if amount < 0:
         amount = 0
+    market = str(quote.get("market") or "").strip().upper()
+    if market not in ("HK", "US"):
+        return None, "missing_or_invalid_market"
 
     normalized = dict(quote)
     normalized.update(
@@ -550,7 +553,7 @@ def normalize_quote(quote):
             "amount": amount,
             "change_pct": change_pct,
             "time": quote_time_text(quote.get("time")),
-            "market": str(quote.get("market") or "").strip().upper(),
+            "market": market,
         }
     )
     return normalized, None
@@ -1210,6 +1213,9 @@ class TriggerEngine:
         """檢查所有觸發條件"""
         quote, _quote_error = normalize_quote(quote)
         if quote is None:
+            return
+        symbol = str(symbol or "").strip().upper()
+        if not valid_watchlist_symbol(symbol, market=quote.get("market")):
             return
         if not indicator_signal_ready(indicators):
             return
