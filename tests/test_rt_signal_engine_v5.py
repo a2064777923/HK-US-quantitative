@@ -978,12 +978,57 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIn("invalid_buy_min_full_score_using_default", warnings)
         self.assertIn("invalid_sell_max_full_score_using_default", warnings)
 
+    def test_strategy_config_does_not_allow_looser_confirmation_thresholds(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "confirmation_thresholds": {
+                    "BUY": {"min_full_score": 0.0},
+                    "SELL": {"max_full_score": 0.0},
+                }
+            }
+        )
+
+        self.assertEqual(config["confirmation_thresholds"]["BUY"]["min_full_score"], 0.25)
+        self.assertEqual(config["confirmation_thresholds"]["SELL"]["max_full_score"], -0.25)
+        self.assertIn("invalid_buy_min_full_score_using_default", warnings)
+        self.assertIn("invalid_sell_max_full_score_using_default", warnings)
+
+    def test_strategy_config_allows_stricter_confirmation_thresholds(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "confirmation_thresholds": {
+                    "BUY": {"min_full_score": 0.6},
+                    "SELL": {"max_full_score": -0.6},
+                }
+            }
+        )
+
+        self.assertEqual(config["confirmation_thresholds"]["BUY"]["min_full_score"], 0.6)
+        self.assertEqual(config["confirmation_thresholds"]["SELL"]["max_full_score"], -0.6)
+        self.assertNotIn("invalid_buy_min_full_score_using_default", warnings)
+        self.assertNotIn("invalid_sell_max_full_score_using_default", warnings)
+
     def test_strategy_config_drops_out_of_range_trigger_threshold_override(self):
         config, warnings = rt.normalize_strategy_config(
             {
                 "trigger_overrides": {
                     "BUY:站上MA5": {"min_full_score": -2},
                     "SELL:跌破MA5": {"max_full_score": 2},
+                }
+            }
+        )
+
+        self.assertNotIn("min_full_score", config["trigger_overrides"]["BUY:站上MA5"])
+        self.assertNotIn("max_full_score", config["trigger_overrides"]["SELL:跌破MA5"])
+        self.assertIn("invalid_trigger_min_full_score:BUY:站上MA5", warnings)
+        self.assertIn("invalid_trigger_max_full_score:SELL:跌破MA5", warnings)
+
+    def test_strategy_config_drops_looser_trigger_threshold_override(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "trigger_overrides": {
+                    "BUY:站上MA5": {"min_full_score": 0.0},
+                    "SELL:跌破MA5": {"max_full_score": 0.0},
                 }
             }
         )

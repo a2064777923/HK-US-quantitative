@@ -217,9 +217,14 @@ def merge_strategy_config(base, override):
                     merged[key][sub_key] = value
     return merged
 
-def normalize_global_score_threshold(value, default, warning_code, warnings):
+def normalize_global_score_threshold(value, default, warning_code, warnings, direction):
     threshold = as_float(value)
-    if threshold is None or threshold < -1 or threshold > 1:
+    invalid = threshold is None or threshold < -1 or threshold > 1
+    if direction == "BUY" and threshold is not None and threshold < default:
+        invalid = True
+    if direction == "SELL" and threshold is not None and threshold > default:
+        invalid = True
+    if invalid:
         warnings.append(warning_code)
         return default
     return threshold
@@ -228,7 +233,12 @@ def normalize_override_score_threshold(override, key, field, warnings):
     if field not in override:
         return
     threshold = as_float(override.get(field))
-    if threshold is None or threshold < -1 or threshold > 1:
+    invalid = threshold is None or threshold < -1 or threshold > 1
+    if field == "min_full_score" and threshold is not None and threshold < 0.25:
+        invalid = True
+    if field == "max_full_score" and threshold is not None and threshold > -0.25:
+        invalid = True
+    if invalid:
         warnings.append(f"invalid_trigger_{field}:{key}")
         override.pop(field, None)
         return
@@ -257,12 +267,14 @@ def normalize_strategy_config(config):
         0.25,
         "invalid_buy_min_full_score_using_default",
         warnings,
+        "BUY",
     )
     sell["max_full_score"] = normalize_global_score_threshold(
         sell.get("max_full_score"),
         -0.25,
         "invalid_sell_max_full_score_using_default",
         warnings,
+        "SELL",
     )
 
     risk = config.setdefault("risk_model", {})
