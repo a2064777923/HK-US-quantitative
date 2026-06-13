@@ -549,9 +549,22 @@ def normalize_quote(quote):
             "volume": volume,
             "amount": amount,
             "change_pct": change_pct,
+            "time": quote_time_text(quote.get("time")),
+            "market": str(quote.get("market") or "").strip().upper(),
         }
     )
     return normalized, None
+
+def quote_time_text(value):
+    if value in (None, ""):
+        return ""
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        try:
+            return str(isoformat()).strip()
+        except Exception:
+            pass
+    return str(value).strip()
 
 def parse_quote_datetime(value, assume_today_for_time_only=False):
     if not value:

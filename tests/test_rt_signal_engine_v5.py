@@ -361,6 +361,19 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(quote["amount"], 0)
         self.assertEqual(quote["change_pct"], 0)
 
+    def test_quote_normalization_serializes_time_and_market(self):
+        quote, reason = rt.normalize_quote(
+            {
+                "price": "100",
+                "time": datetime(2026, 6, 11, 14, 0, 0),
+                "market": " us ",
+            }
+        )
+
+        self.assertIsNone(reason)
+        self.assertEqual(quote["time"], "2026-06-11T14:00:00")
+        self.assertEqual(quote["market"], "US")
+
     def test_quote_normalization_derives_change_pct_from_prev_close(self):
         quote, reason = rt.normalize_quote(
             {
@@ -540,6 +553,31 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             rt.alert_signal_date(None, generated_at=datetime(2026, 6, 12, 1, 0, 0)),
             "20260612",
         )
+
+    def test_alert_with_datetime_quote_time_remains_strict_json(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": datetime(2026, 6, 11, 14, 0, 0),
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertEqual(alert["quote_time"], "2026-06-11T14:00:00")
+        self.assertTrue(alert["signal_id"].startswith("20260611:AAPL:RSI超賣:BUY:"))
+        json.dumps(alert, allow_nan=False)
 
     def test_alert_signal_date_does_not_use_time_only_quote_timestamp(self):
         self.assertEqual(
