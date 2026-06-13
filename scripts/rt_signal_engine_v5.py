@@ -1066,7 +1066,7 @@ class IncrementalIndicators:
         if len(closes) >= 5:
             mom = (c / closes[-5] - 1) * 100
             if abs(mom) > 5:
-                tag = "上升" if mom > 0 else "下降"
+                score += 0.2 if mom > 0 else -0.2
                 reasons.append(f"5日動量{mom:+.1f}%")
 
         return max(-1, min(1, score)), reasons

@@ -239,6 +239,24 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(down_score, -0.2)
         self.assertTrue(any(reason.startswith("放量下跌") for reason in down_reasons))
 
+    def test_momentum_reason_contributes_to_full_score_directionally(self):
+        up = rt.IncrementalIndicators("AAPL")
+        down = rt.IncrementalIndicators("AAPL")
+        up.closes = [100] * 29 + [106]
+        down.closes = [100] * 29 + [94]
+        for ind in (up, down):
+            ind.highs = [110] * 30
+            ind.lows = [90] * 30
+            ind.volumes = [1000] * 30
+
+        up_score, up_reasons = up.get_score()
+        down_score, down_reasons = down.get_score()
+
+        self.assertEqual(up_score, 0.2)
+        self.assertIn("5日動量+6.0%", up_reasons)
+        self.assertEqual(down_score, -0.2)
+        self.assertIn("5日動量-6.0%", down_reasons)
+
     def test_signal_readiness_requires_full_multifactor_history(self):
         indicators = FakeIndicators(score=0.8)
         indicators.closes = [100] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)
