@@ -32,7 +32,7 @@ Improvements:
 - It also appends every alert to `/tmp/rt_signal_alerts.jsonl`, so Hermes can consume alerts without losing events when multiple alerts happen between cron runs.
 - Realtime quotes are handled as one temporary intraday bar. They no longer get appended to historical daily arrays every scan, which avoids RSI/MA/MACD drift during the day.
 - BUY/SELL candidates carry a full-score confirmation flag. Unconfirmed directional candidates are downgraded to `WATCH` by default, with `candidate_signal_type` and candidate risk fields retained for diagnostics.
-- Volume anomaly WATCH alerts compare cumulative intraday volume with expected cumulative daily volume based on elapsed HK/US session minutes. This avoids the old false spike where cumulative volume was divided by one minute of average volume.
+- Volume anomaly WATCH alerts and the v5 `full_score` volume factor compare cumulative intraday volume with expected cumulative daily volume based on elapsed HK/US session minutes. This avoids stale one-minute/daily-volume mismatches and keeps confirmation scoring aligned with the alert's volume-anomaly definition.
 
 ### Hermes bridge
 

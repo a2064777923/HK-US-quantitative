@@ -20,7 +20,7 @@ class FakeIndicators:
         self.atr_14 = 1
         self.score = score
 
-    def get_score(self):
+    def get_score(self, quote_context=None):
         return self.score, []
 
 
@@ -70,6 +70,29 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIn("ORDER BY timestamp::date, timestamp DESC", normalized)
         self.assertIn("FROM daily_bar ORDER BY trade_date DESC LIMIT 2", normalized)
         self.assertEqual(ind.closes[-2:], [100.0, 101.0])
+
+    def test_realtime_score_volume_uses_session_adjusted_cumulative_ratio(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        for _ in range(30):
+            ind._update(100, 101, 99, 1000)
+
+        ind.update_realtime(101, 102, 100, 200)
+
+        score_without_context, reasons_without_context = ind.get_score()
+        score_with_context, reasons_with_context = ind.get_score(
+            {"market": "US", "time": "2026-06-11 10:00:00"}
+        )
+        _, _, _, volumes = ind._series()
+
+        self.assertIsNone(ind.score_volume_ratio(volumes))
+        self.assertGreater(
+            ind.score_volume_ratio(volumes, {"market": "US", "time": "2026-06-11 10:00:00"}),
+            2.0,
+        )
+        self.assertFalse(any(reason.startswith("放量") for reason in reasons_without_context))
+        self.assertTrue(any(reason.startswith("放量") for reason in reasons_with_context))
+        self.assertIsNotNone(score_without_context)
+        self.assertIsNotNone(score_with_context)
 
     def test_send_alert_writes_latest_file_and_append_only_queue(self):
         alerts = [

@@ -710,7 +710,29 @@ class IncrementalIndicators:
             self.macd_dea = signal_line[-1]
             self.macd_hist = self.macd_dif - self.macd_dea
 
-    def get_score(self):
+    def score_volume_ratio(self, volumes, quote_context=None):
+        if self.rt_close is not None:
+            historical_volumes = self.volumes[-20:]
+            if not historical_volumes:
+                return None
+            avg_vol = sum(historical_volumes) / len(historical_volumes)
+            if avg_vol <= 0 or not isinstance(quote_context, dict):
+                return None
+            return cumulative_volume_ratio(
+                self.rt_volume or 0,
+                avg_vol,
+                quote_context.get("market"),
+                quote_context.get("time"),
+            )
+
+        if len(volumes) < 20:
+            return None
+        avg_vol = sum(volumes[-20:]) / 20
+        if avg_vol <= 0:
+            return None
+        return volumes[-1] / avg_vol
+
+    def get_score(self, quote_context=None):
         """計算多因子分數 (-1 to +1)"""
         closes, highs, lows, volumes = self._series()
         if not closes or len(closes) < 30:
@@ -761,14 +783,12 @@ class IncrementalIndicators:
                 score -= 0.2; reasons.append("觸及布林上軌")
 
         # 成交量
-        if len(volumes) >= 20:
-            avg_vol = sum(volumes[-20:]) / 20
-            if avg_vol > 0:
-                vr = volumes[-1] / avg_vol
-                if vr > 2.0:
-                    score += 0.2; reasons.append(f"放量{vr:.1f}倍")
-                elif vr > 1.5 and c > closes[-2]:
-                    score += 0.1
+        vr = self.score_volume_ratio(volumes, quote_context=quote_context)
+        if vr is not None:
+            if vr > 2.0:
+                score += 0.2; reasons.append(f"放量{vr:.1f}倍")
+            elif vr > 1.5 and c > closes[-2]:
+                score += 0.1
 
         # 動量
         if len(closes) >= 5:
@@ -861,7 +881,7 @@ class TriggerEngine:
 
         now = time.time()
         triggered = []
-        full_score, full_reasons = indicators.get_score()
+        full_score, full_reasons = indicators.get_score(quote)
 
         # 1. RSI 極端值
         if indicators.rsi_14 is not None:
