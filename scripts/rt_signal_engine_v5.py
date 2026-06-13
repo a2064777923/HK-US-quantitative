@@ -60,7 +60,8 @@ def default_strategy_config():
         },
         "risk_model": {
             "atr_stop_multiple": 2.0,
-            "atr_take_profit_multiple": 3.0
+            "atr_take_profit_multiple": 3.0,
+            "min_rr_ratio": 1.2
         },
         "emission": {
             "emit_unconfirmed_directional_as_watch": True
@@ -240,12 +241,16 @@ def normalize_strategy_config(config):
     risk = config.setdefault("risk_model", {})
     risk["atr_stop_multiple"] = as_float(risk.get("atr_stop_multiple"), 2.0)
     risk["atr_take_profit_multiple"] = as_float(risk.get("atr_take_profit_multiple"), 3.0)
+    risk["min_rr_ratio"] = as_float(risk.get("min_rr_ratio"), 1.2)
     if risk["atr_stop_multiple"] is None or risk["atr_stop_multiple"] <= 0:
         warnings.append("invalid_atr_stop_multiple_using_default")
         risk["atr_stop_multiple"] = 2.0
     if risk["atr_take_profit_multiple"] is None or risk["atr_take_profit_multiple"] <= 0:
         warnings.append("invalid_atr_take_profit_multiple_using_default")
         risk["atr_take_profit_multiple"] = 3.0
+    if risk["min_rr_ratio"] is None or risk["min_rr_ratio"] <= 0:
+        warnings.append("invalid_min_rr_ratio_using_default")
+        risk["min_rr_ratio"] = 1.2
 
     emission = config.setdefault("emission", {})
     emission["emit_unconfirmed_directional_as_watch"] = as_bool(
@@ -1063,6 +1068,9 @@ class TriggerEngine:
     def risk_multiple(self, key, default):
         return as_float((self.strategy_config.get("risk_model") or {}).get(key), default) or default
 
+    def min_rr_ratio(self):
+        return as_float((self.strategy_config.get("risk_model") or {}).get("min_rr_ratio"), 1.2) or 1.2
+
     def emit_unconfirmed_directional_as_watch(self):
         return as_bool(
             (self.strategy_config.get("emission") or {}).get("emit_unconfirmed_directional_as_watch"),
@@ -1201,6 +1209,16 @@ class TriggerEngine:
                 candidate_stop_loss,
                 candidate_take_profit,
             )
+            min_rr_ratio = self.min_rr_ratio() if signal_type in ("BUY", "SELL") else None
+            if (
+                signal_type in ("BUY", "SELL")
+                and risk_geometry_valid
+                and candidate_rr_ratio is not None
+                and min_rr_ratio is not None
+                and candidate_rr_ratio < min_rr_ratio
+            ):
+                risk_geometry_valid = False
+                risk_geometry_reason = "rr_ratio_below_minimum"
 
             emitted_signal_type = signal_type
             suppressed_directional_reason = None
@@ -1280,6 +1298,7 @@ class TriggerEngine:
                 "candidate_stop_loss": candidate_stop_loss,
                 "candidate_take_profit": candidate_take_profit,
                 "candidate_rr_ratio": candidate_rr_ratio,
+                "min_rr_ratio": min_rr_ratio,
                 "atr": round(atr, 3),
             })
 

@@ -14,7 +14,8 @@
   },
   "risk_model": {
     "atr_stop_multiple": 2.0,
-    "atr_take_profit_multiple": 3.0
+    "atr_take_profit_multiple": 3.0,
+    "min_rr_ratio": 1.2
   },
   "emission": {
     "emit_unconfirmed_directional_as_watch": true

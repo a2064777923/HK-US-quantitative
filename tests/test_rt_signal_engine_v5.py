@@ -780,6 +780,12 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(config["trigger_overrides"]["BUY:站上MA5"]["min_full_score"], 0.6)
         self.assertEqual(len(config["config_id"]), 16)
 
+    def test_strategy_config_normalizes_min_rr_ratio(self):
+        config, warnings = rt.normalize_strategy_config({"risk_model": {"min_rr_ratio": -1}})
+
+        self.assertEqual(config["risk_model"]["min_rr_ratio"], 1.2)
+        self.assertIn("invalid_min_rr_ratio_using_default", warnings)
+
     def test_strategy_config_can_disable_trigger(self):
         engine = rt.TriggerEngine(
             strategy_config={
@@ -939,6 +945,48 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(ma5_alerts[1]["signal_type"], "BUY")
         self.assertTrue(ma5_alerts[1]["confirmed"])
         self.assertTrue(ma5_alerts[1]["execution_candidate"])
+
+    def test_low_rr_directional_is_downgraded_to_watch(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+                "risk_model": {
+                    "atr_stop_multiple": 3.0,
+                    "atr_take_profit_multiple": 1.0,
+                    "min_rr_ratio": 1.2,
+                },
+            }
+        )
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+        indicators.atr_14 = 2
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertFalse(alert["risk_geometry_valid"])
+        self.assertEqual(alert["risk_geometry_reason"], "rr_ratio_below_minimum")
+        self.assertEqual(alert["candidate_rr_ratio"], 0.33)
+        self.assertEqual(alert["min_rr_ratio"], 1.2)
+        self.assertIsNone(alert["stop_loss"])
+        self.assertIsNone(alert["take_profit"])
 
     def test_nonfinite_score_and_atr_do_not_enter_alert_json(self):
         engine = rt.TriggerEngine()
