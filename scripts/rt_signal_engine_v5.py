@@ -538,7 +538,21 @@ class IncrementalIndicators:
 
     def load_history(self, days=100):
         """從DB載入歷史K線"""
-        raw = db(f"SELECT close_price, high_price, low_price, volume FROM klines WHERE symbol='{self.symbol}' AND interval='day' ORDER BY timestamp DESC LIMIT {days}")
+        raw = db(
+            f"""
+            WITH daily_bar AS (
+                SELECT DISTINCT ON (timestamp::date)
+                       timestamp::date AS trade_date,
+                       close_price, high_price, low_price, volume
+                FROM klines
+                WHERE symbol='{self.symbol}' AND interval='day'
+                ORDER BY timestamp::date, timestamp DESC
+            )
+            SELECT close_price, high_price, low_price, volume
+            FROM daily_bar
+            ORDER BY trade_date DESC LIMIT {days}
+            """
+        )
         rows = []
         for line in raw.split("\n"):
             if not line.strip(): continue

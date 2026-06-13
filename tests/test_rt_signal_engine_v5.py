@@ -52,6 +52,25 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(lows[-1], 151)
         self.assertEqual(volumes[-1], 6_000)
 
+    def test_load_history_reads_canonical_daily_bars(self):
+        captured = {}
+
+        def fake_db(sql):
+            captured["sql"] = sql
+            return "101|102|100|1100\n100|101|99|1000"
+
+        ind = rt.IncrementalIndicators("AAPL")
+        with patch.object(rt, "db", side_effect=fake_db):
+            ind.load_history(days=2)
+
+        sql = captured["sql"]
+        normalized = " ".join(sql.split())
+        self.assertIn("WITH daily_bar AS", sql)
+        self.assertIn("SELECT DISTINCT ON (timestamp::date)", sql)
+        self.assertIn("ORDER BY timestamp::date, timestamp DESC", normalized)
+        self.assertIn("FROM daily_bar ORDER BY trade_date DESC LIMIT 2", normalized)
+        self.assertEqual(ind.closes[-2:], [100.0, 101.0])
+
     def test_send_alert_writes_latest_file_and_append_only_queue(self):
         alerts = [
             {"signal_id": "a1", "symbol": "00700", "signal_type": "BUY"},
