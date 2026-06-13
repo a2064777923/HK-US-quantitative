@@ -1135,6 +1135,23 @@ class TriggerEngine:
             return None
         return round(reward / risk, 2)
 
+    @staticmethod
+    def risk_price_decimals(reference_price):
+        price = as_float(reference_price)
+        if price is None or price >= 1:
+            return 2
+        if price >= 0.1:
+            return 3
+        return 4
+
+    @classmethod
+    def round_risk_price(cls, value, reference_price=None):
+        price = as_float(value)
+        if price is None:
+            return None
+        decimals = cls.risk_price_decimals(reference_price if reference_price is not None else price)
+        return round(price, decimals)
+
     def check(self, symbol, indicators, quote):
         """檢查所有觸發條件"""
         quote, _quote_error = normalize_quote(quote)
@@ -1213,13 +1230,13 @@ class TriggerEngine:
             take_profit_multiple = self.risk_multiple("atr_take_profit_multiple", 3.0)
             
             confirmed = self.is_confirmed(signal_type, trigger_name, full_score)
-            candidate_entry_price = round(c, 2)
+            candidate_entry_price = self.round_risk_price(c)
             if signal_type == "BUY":
-                candidate_stop_loss = round(c - stop_multiple * atr, 2)
-                candidate_take_profit = round(c + take_profit_multiple * atr, 2)
+                candidate_stop_loss = self.round_risk_price(c - stop_multiple * atr, reference_price=c)
+                candidate_take_profit = self.round_risk_price(c + take_profit_multiple * atr, reference_price=c)
             elif signal_type == "SELL":
-                candidate_stop_loss = round(c + stop_multiple * atr, 2)
-                candidate_take_profit = round(c - take_profit_multiple * atr, 2)
+                candidate_stop_loss = self.round_risk_price(c + stop_multiple * atr, reference_price=c)
+                candidate_take_profit = self.round_risk_price(c - take_profit_multiple * atr, reference_price=c)
             else:
                 candidate_stop_loss = None
                 candidate_take_profit = None
@@ -1276,7 +1293,7 @@ class TriggerEngine:
                 take_profit = candidate_take_profit
                 rr_ratio = candidate_rr_ratio
             else:
-                entry_price = round(c, 2)
+                entry_price = candidate_entry_price
                 stop_loss = None
                 take_profit = None
                 rr_ratio = None
