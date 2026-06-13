@@ -594,7 +594,7 @@ class IncrementalIndicators:
                     avg_loss = (prev_avg_loss * 13 + loss) / 14
                 self._prev_avg_gain = avg_gain
                 self._prev_avg_loss = avg_loss
-                self.rsi_14 = 100 - (100 / (1 + avg_gain / avg_loss)) if avg_loss > 0 else 100
+                self.rsi_14 = self.rsi_from_averages(avg_gain, avg_loss)
 
         # MA (增量)
         if n >= 5: self.ma5 = sum(self.closes[-5:]) / 5
@@ -683,7 +683,7 @@ class IncrementalIndicators:
             for i in range(14, len(gains)):
                 avg_gain = (avg_gain * 13 + gains[i]) / 14
                 avg_loss = (avg_loss * 13 + losses[i]) / 14
-            self.rsi_14 = 100 - (100 / (1 + avg_gain / avg_loss)) if avg_loss > 0 else 100
+            self.rsi_14 = self.rsi_from_averages(avg_gain, avg_loss)
 
             trs = []
             for i in range(max(1, n-14), n):
@@ -709,6 +709,14 @@ class IncrementalIndicators:
             self.macd_dif = macd_line[-1]
             self.macd_dea = signal_line[-1]
             self.macd_hist = self.macd_dif - self.macd_dea
+
+    @staticmethod
+    def rsi_from_averages(avg_gain, avg_loss):
+        if avg_loss > 0:
+            return 100 - (100 / (1 + avg_gain / avg_loss))
+        if avg_gain > 0:
+            return 100
+        return 50
 
     def score_volume_ratio(self, volumes, quote_context=None):
         if self.rt_close is not None:

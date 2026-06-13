@@ -94,6 +94,37 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIsNotNone(score_without_context)
         self.assertIsNotNone(score_with_context)
 
+    def test_flat_history_rsi_is_neutral_not_overbought(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        for _ in range(30):
+            ind._update(100, 100, 100, 1000)
+
+        self.assertEqual(ind.rsi_14, 50)
+
+        engine = rt.TriggerEngine()
+        engine.check(
+            "AAPL",
+            ind,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertNotIn("RSI超買", [item["trigger"] for item in engine.alerts])
+
+    def test_flat_realtime_rsi_is_neutral_not_overbought(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        for _ in range(30):
+            ind._update(100, 100, 100, 1000)
+
+        ind.update_realtime(100, 100, 100, 0)
+
+        self.assertEqual(ind.rsi_14, 50)
+
     def test_send_alert_writes_latest_file_and_append_only_queue(self):
         alerts = [
             {"signal_id": "a1", "symbol": "00700", "signal_type": "BUY"},
