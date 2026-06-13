@@ -1,6 +1,15 @@
 # === Hermes v5 bridge cron ===
 # Safe default: notify only, no simulation order execution.
-* * * * * RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py
+# Default notification text also reads /tmp/hermes_signal_review_packet.json
+# and appends matching Hermes context digest lines. Add
+# RT_ALERT_INCLUDE_PACKET_CONTEXT=0 to revert to compact legacy alert text.
+# Packet context older than RT_ALERT_MAX_PACKET_CONTEXT_AGE_MINUTES=10 is
+# disclosed as STALE in the notification; it does not enable/disable execution.
+* * * * * RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1
+# Optional Feishu delivery. Keep disabled until app credentials are verified.
+# On Feishu failure, rt_alert_bridge.py keeps sent-state unchanged so alerts/position reviews retry.
+# Requires FEISHU_APP_ID/FEISHU_APP_SECRET/FEISHU_CHAT_ID in /root/.quantmind_env or the cron environment.
+# * * * * * /bin/bash -lc "cd /root && [ -f /root/.quantmind_env ] && . /root/.quantmind_env; RT_ALERT_REMOTE=local RT_ALERT_SEND_FEISHU=1 RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1"
 
 # Shadow mode: run alert-specific intake without placing orders.
 # * * * * * RT_ALERT_EXECUTION_MODE=alert-dry-run RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py
@@ -15,9 +24,12 @@
 # Optional read-only health report for Hermes/operator logs.
 */5 * * * * /usr/bin/python3 /root/system_health_check.py --output /tmp/quantmind_system_health.json >> /tmp/quantmind_health.log 2>&1
 
-# Optional read-only portfolio context for Hermes prompts.
-# Output includes portfolio_risk; hermes_review_packet.py already embeds this context.
-# */15 * * * * /usr/bin/python3 /root/portfolio_report.py --output /tmp/portfolio_report.json --text >> /tmp/portfolio_report.log 2>&1
+# Read-only cron wiring audit. Does not install or modify crontab.
+*/10 * * * * /usr/bin/python3 /root/cron_audit_report.py --output /tmp/cron_audit_report.json --text >> /tmp/cron_audit_report.log 2>&1
+
+# Read-only portfolio context for Hermes prompts.
+# Output includes portfolio_risk; hermes_review_packet.py embeds this context and readiness requires it fresh.
+*/15 * * * * /usr/bin/python3 /root/portfolio_report.py --output /tmp/portfolio_report.json --text >> /tmp/portfolio_report.log 2>&1
 # 45 16 * * 1-5 /usr/bin/python3 /root/portfolio_report.py --send-feishu --text >> /tmp/portfolio_report.log 2>&1
 
 # Optional read-only simulation position reconciliation plan. Does not write DB unless --apply is used manually.
@@ -26,11 +38,77 @@
 # Read-only data freshness/integrity contract for Hermes and system health.
 */15 * * * * /usr/bin/python3 /root/data_health_report.py --output /tmp/data_health_report.json --text >> /tmp/data_health_report.log 2>&1
 
+# Read-only data-source inventory. It only queries DB metadata/source coverage and reads /tmp context/input files.
+*/10 * * * * /usr/bin/python3 /root/data_source_inventory_report.py --output /tmp/data_source_inventory_report.json --text >> /tmp/data_source_inventory_report.log 2>&1
+
+# Read-only K-line source-granularity provenance proposal. Does not write DB unless an operator manually reruns with --apply and the current proposal hash.
+*/30 * * * * /usr/bin/python3 /root/kline_source_granularity_report.py --output /tmp/kline_source_granularity_report.json --text >> /tmp/kline_source_granularity_report.log 2>&1
+
+# Dry-run intraday minute K-line fetch plan. Does not write DB unless an operator manually reruns with --apply and the current plan hash.
+*/5 * * * * /usr/bin/python3 /root/intraday_kline_batch.py --output /tmp/intraday_kline_batch.json --text >> /tmp/intraday_kline_batch.log 2>&1
+
+# Read-only minute-bar confirmation/contradiction context for Hermes. Does not repair K-lines or submit orders.
+*/5 * * * * /usr/bin/python3 /root/intraday_context_report.py --output /tmp/intraday_context_report.json --text >> /tmp/intraday_context_report.log 2>&1
+
+# Read-only 5m/15m/30m/60m quality gate for intraday confirmation. Does not query DB or change strategy.
+*/5 * * * * /usr/bin/python3 /root/intraday_timeframe_quality_report.py --output /tmp/intraday_timeframe_quality_report.json --text >> /tmp/intraday_timeframe_quality_report.log 2>&1
+
+# Read-only validation for HK/US holiday, half-day, and ad-hoc intraday session overrides.
+*/30 * * * * /usr/bin/python3 /root/intraday_market_session_overrides_report.py --output /tmp/intraday_market_session_overrides_report.json --text >> /tmp/intraday_market_session_overrides_report.log 2>&1
+
+# Read-only source reliability matrix for Hermes. Does not fetch data, repair data, or submit orders.
+*/10 * * * * /usr/bin/python3 /root/source_reliability_report.py --output /tmp/source_reliability_report.json --text >> /tmp/source_reliability_report.log 2>&1
+
+# Read-only trusted-source preflight for Wudao/broker/official/sentiment/fundamentals payloads.
+# It validates existing input files only; it does not append JSONL, edit strategy, write alerts, repair data, or submit orders.
+*/10 * * * * /usr/bin/python3 /root/trusted_source_preflight.py --output /tmp/trusted_source_preflight_report.json --text >> /tmp/trusted_source_preflight.log 2>&1
+
+# Read-only trusted-source discovery. Inventories configured Wudao/InfoHub/broker/official/vendor adapters without printing secrets.
+*/10 * * * * /usr/bin/python3 /root/trusted_source_discovery_report.py --output /tmp/trusted_source_discovery_report.json --text >> /tmp/trusted_source_discovery_report.log 2>&1
+
 # Optional read-only K-line integrity repair plan. Does not write DB unless --apply is used manually with a matching plan hash.
 # */15 * * * * /usr/bin/python3 /root/kline_integrity_repair.py --output /tmp/kline_integrity_repair.json --text >> /tmp/kline_integrity_repair.log 2>&1
 
+# Read-only daily K-line gap repair plan. Does not write DB unless --apply is used manually with a matching plan hash.
+*/30 * * * * /usr/bin/python3 /root/kline_daily_gap_repair.py --output /tmp/kline_daily_gap_repair.json --text >> /tmp/kline_daily_gap_repair.log 2>&1
+
+# Read-only classification for unresolved daily K-line gap symbols. Does not repair K-lines or change universe/watchlists.
+15,45 * * * * /usr/bin/python3 /root/kline_gap_source_diagnostic_report.py --output /tmp/kline_gap_source_diagnostic_report.json --text >> /tmp/kline_gap_source_diagnostic_report.log 2>&1
+
+# Read-only alternate-provider probe for unresolved daily K-line gaps. Does not use alternate rows for repairs.
+20,50 * * * * /usr/bin/python3 /root/kline_gap_alternate_provider_probe.py --output /tmp/kline_gap_alternate_provider_probe.json --text >> /tmp/kline_gap_alternate_provider_probe.log 2>&1
+
+# Read-only quality gate for alternate-provider repair candidates. It has no apply command.
+25,55 * * * * /usr/bin/python3 /root/kline_gap_alternate_provider_repair_plan.py --output /tmp/kline_gap_alternate_provider_repair_plan.json --text >> /tmp/kline_gap_alternate_provider_repair_plan.log 2>&1
+
 # Read-only stock-pool breadth/regime context for Hermes prompts.
 */30 * * * * /usr/bin/python3 /root/market_context_report.py --output /tmp/market_context_report.json --text >> /tmp/market_context_report.log 2>&1
+
+# Read-only external news/macro/event/capital-flow context.
+# external_market_context_producer.py writes /tmp/external_market_context_inputs.json from public RSS headlines.
+# Add --include-infohub --infohub-url http://127.0.0.1:8899 to also read the local Info Hub HTTP bridge.
+# Wudao MCP, broker, or capital-flow exporters can replace/add inputs through the same JSON/JSONL contract.
+*/5 * * * * /usr/bin/python3 /root/external_market_context_producer.py --include-infohub --infohub-url http://127.0.0.1:8899 --output /tmp/external_market_context_inputs.json --text >> /tmp/external_market_context_producer.log 2>&1 && /usr/bin/python3 /root/external_market_context_report.py --output /tmp/external_market_context_report.json --text >> /tmp/external_market_context_report.log 2>&1
+
+# Read-only watchlist-linked external event catalysts for Hermes prompts.
+# This consumes /tmp/external_market_context_report.json and /root/rt_signal_watchlist.json only.
+*/5 * * * * /usr/bin/python3 /root/event_catalyst_report.py --output /tmp/event_catalyst_report.json --text >> /tmp/event_catalyst_report.log 2>&1
+
+# Read-only event-driven review signals. Supports/challenges v5 technical alerts, but never writes alert queue or submits orders.
+*/5 * * * * /usr/bin/python3 /root/event_catalyst_signal_report.py --output /tmp/event_catalyst_signal_report.json --text >> /tmp/event_catalyst_signal_report.log 2>&1
+
+# Read-only quantified volatility/capital-flow/risk-appetite sentiment context.
+# market_sentiment_producer.py writes /tmp/market_sentiment_inputs.json from public VIX/ETF/index snapshots.
+# Use /root/market_sentiment_ingest.py only for additional append-only producer writes.
+*/5 * * * * /usr/bin/python3 /root/market_sentiment_producer.py --output /tmp/market_sentiment_inputs.json --text >> /tmp/market_sentiment_producer.log 2>&1 && /usr/bin/python3 /root/market_sentiment_report.py --output /tmp/market_sentiment_report.json --text >> /tmp/market_sentiment_report.log 2>&1
+
+# Read-only HK/US benchmark index and ETF history for market_context_report.py.
+# This writes only /tmp/market_index_context_inputs.json and does not populate DB index tables.
+*/30 * * * * /usr/bin/python3 /root/market_index_context_producer.py --output /tmp/market_index_context_inputs.json --text >> /tmp/market_index_context_producer.log 2>&1
+
+# Read-only valuation/profitability/growth/leverage fundamentals context.
+# Producers should write /tmp/fundamentals_context_inputs.json or append JSONL.
+*/30 * * * * /usr/bin/python3 /root/fundamentals_context_producer.py --output /tmp/fundamentals_context_inputs.json --text >> /tmp/fundamentals_context_producer.log 2>&1 && /usr/bin/python3 /root/fundamentals_context_report.py --output /tmp/fundamentals_context_report.json --text >> /tmp/fundamentals_context_report.log 2>&1
 
 # Read-only ranked universe candidate. Does not update the live /root/rt_signal_watchlist.json.
 0 * * * * /usr/bin/python3 /root/universe_rank_report.py --output /tmp/universe_rank_report.json --watchlist-output /tmp/rt_signal_watchlist_candidate.json --text >> /tmp/universe_rank_report.log 2>&1
@@ -67,20 +145,31 @@
 # Read-only strategy review policy from outcome and alert-quality reports. Does not change thresholds automatically.
 */30 * * * * /usr/bin/python3 /root/strategy_review_report.py --output /tmp/strategy_review_report.json --text >> /tmp/strategy_review_report.log 2>&1
 
-# Read-only cross-stage learning report. Joins alerts, Hermes judgments, intake decisions, and outcomes; does not change strategy.
+# Read-only Hermes judgment audit. Does not write judgments or submit orders.
+*/10 * * * * /usr/bin/python3 /root/hermes_judgment_audit_report.py --output /tmp/hermes_judgment_audit_report.json --text >> /tmp/hermes_judgment_audit_report.log 2>&1
+
+# Read-only cross-stage learning report. Joins alerts, Hermes judgments, judgment audit, intake decisions, and outcomes; does not change strategy.
 */30 * * * * /usr/bin/python3 /root/strategy_learning_report.py --output /tmp/strategy_learning_report.json --text >> /tmp/strategy_learning_report.log 2>&1
 
 # Read-only simulation performance attribution. Converts recent simulated P&L into Hermes risk context.
 */30 * * * * /usr/bin/python3 /root/simulation_performance_report.py --output /tmp/simulation_performance_report.json --text >> /tmp/simulation_performance_report.log 2>&1
 
+# Read-only simulation loss postmortem audit and note draft helper. Drafts do not write notes or change strategy.
+*/30 * * * * /usr/bin/python3 /root/simulation_postmortem_audit_report.py --output /tmp/simulation_postmortem_audit_report.json --text >> /tmp/simulation_postmortem_audit_report.log 2>&1
+*/30 * * * * /usr/bin/python3 /root/simulation_postmortem_note_draft_report.py --output /tmp/simulation_postmortem_note_draft_report.json --text >> /tmp/simulation_postmortem_note_draft_report.log 2>&1
+
 # Read-only execution readiness dashboard. Does not enable execute mode or submit orders.
 */30 * * * * /usr/bin/python3 /root/execution_readiness_report.py --output /tmp/execution_readiness_report.json --text >> /tmp/execution_readiness_report.log 2>&1
 
+# Read-only Hermes/operator remediation priority queue. Does not install cron, write judgments, or submit orders.
+*/5 * * * * /usr/bin/python3 /root/operator_action_queue_report.py --output /tmp/operator_action_queue_report.json --text >> /tmp/operator_action_queue_report.log 2>&1
+
+# Manual only: refresh all read-only evidence reports in dependency order.
+# Does not edit crontab, submit orders, use --apply, or run execute mode.
+# /usr/bin/python3 /root/readiness_refresh.py --output /tmp/readiness_refresh_report.json --text
+
 # Read-only strategy config proposal. Does not update the live /root/rt_signal_strategy_config.json.
 5,35 * * * * /usr/bin/python3 /root/strategy_config_proposal.py --output /tmp/rt_signal_strategy_config_proposal.json --text >> /tmp/strategy_config_proposal.log 2>&1
-
-# Read-only Hermes judgment audit. Does not write judgments or submit orders.
-*/10 * * * * /usr/bin/python3 /root/hermes_judgment_audit_report.py --output /tmp/hermes_judgment_audit_report.json --text >> /tmp/hermes_judgment_audit_report.log 2>&1
 
 # Optional Hermes judgment durability dry-run. It does not write DB unless --apply and the reviewed schema hash are supplied.
 */10 * * * * /usr/bin/python3 /root/hermes_judgment_event_store.py --output /tmp/hermes_judgment_event_store_report.json --text >> /tmp/hermes_judgment_event_store.log 2>&1
