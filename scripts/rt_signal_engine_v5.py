@@ -622,7 +622,9 @@ def cumulative_volume_ratio(quote_volume, avg_daily_volume, market, quote_time=N
     if quote_volume <= 0 or avg_daily_volume <= 0:
         return None
 
-    dt = parse_quote_datetime(quote_time) or datetime.now()
+    dt = parse_quote_datetime(quote_time)
+    if not dt:
+        return None
     elapsed = session_elapsed_minutes(market, dt)
     session_minutes = regular_session_minutes(market)
     if elapsed is None or session_minutes is None:

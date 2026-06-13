@@ -491,6 +491,24 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertAlmostEqual(ratio, 700 / (1000 * (270 / 390)), places=4)
         self.assertLess(ratio, 2)
 
+    def test_cumulative_volume_ratio_requires_parseable_quote_timestamp(self):
+        self.assertIsNone(
+            rt.cumulative_volume_ratio(
+                quote_volume=700,
+                avg_daily_volume=1000,
+                market="US",
+                quote_time=None,
+            )
+        )
+        self.assertIsNone(
+            rt.cumulative_volume_ratio(
+                quote_volume=700,
+                avg_daily_volume=1000,
+                market="US",
+                quote_time="bad-vendor-time",
+            )
+        )
+
     def test_alert_signal_date_prefers_quote_timestamp(self):
         self.assertEqual(
             rt.alert_signal_date(
@@ -571,6 +589,24 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(len(engine.alerts), 1)
         self.assertEqual(engine.alerts[0]["trigger"], "成交量異動")
         self.assertEqual(engine.alerts[0]["signal_type"], "WATCH")
+
+    def test_volume_watch_not_triggered_without_parseable_quote_timestamp(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(avg_volume=1000)
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 4000,
+                "market": "US",
+                "time": "bad-vendor-time",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertEqual(engine.alerts, [])
 
     def test_ma5_trigger_uses_latest_historical_close_as_previous_state(self):
         engine = rt.TriggerEngine()
