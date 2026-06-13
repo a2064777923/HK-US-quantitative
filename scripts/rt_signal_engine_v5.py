@@ -898,17 +898,18 @@ class TriggerEngine:
                 triggered.append(("布林上軌突破", f"價格${c} > 上軌${indicators.bb_upper:.2f}", "SELL"))
 
         # 3. 均線金叉/死叉
-        if indicators.ma5 and indicators.ma10 and len(indicators.closes) >= 2:
-            prev_c = indicators.closes[-2]
-            if c > indicators.ma5 and prev_c <= indicators.ma5:
+        if indicators.ma5 and indicators.ma10 and len(indicators.closes) >= 5:
+            prev_c = indicators.closes[-1]
+            prev_ma5 = sum(indicators.closes[-5:]) / 5
+            if c > indicators.ma5 and prev_c <= prev_ma5:
                 triggered.append(("站上MA5", f"${c} > MA5=${indicators.ma5:.2f}", "BUY"))
-            if c < indicators.ma5 and prev_c >= indicators.ma5:
+            if c < indicators.ma5 and prev_c >= prev_ma5:
                 triggered.append(("跌破MA5", f"${c} < MA5=${indicators.ma5:.2f}", "SELL"))
 
         if indicators.ma10 and indicators.ma20:
-            if indicators.ma10 > indicators.ma20 and len(indicators.closes) >= 21:
-                prev_ma10 = sum(indicators.closes[-11:-1]) / 10
-                prev_ma20 = sum(indicators.closes[-21:-1]) / 20
+            if indicators.ma10 > indicators.ma20 and len(indicators.closes) >= 20:
+                prev_ma10 = sum(indicators.closes[-10:]) / 10
+                prev_ma20 = sum(indicators.closes[-20:]) / 20
                 if prev_ma10 <= prev_ma20:
                     triggered.append(("MA金叉", f"MA10上穿MA20", "BUY"))
 

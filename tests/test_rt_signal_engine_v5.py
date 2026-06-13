@@ -166,6 +166,50 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(engine.alerts[0]["trigger"], "成交量異動")
         self.assertEqual(engine.alerts[0]["signal_type"], "WATCH")
 
+    def test_ma5_trigger_uses_latest_historical_close_as_previous_state(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.closes = [100] * 25 + [90, 90, 90, 90, 110]
+        indicators.ma5 = 98.2
+        indicators.ma10 = 100
+        indicators.ma20 = 101
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 111,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertNotIn("站上MA5", [item["trigger"] for item in engine.alerts])
+
+    def test_ma_cross_trigger_uses_latest_historical_mas_as_previous_state(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.closes = [100] * 29 + [200]
+        indicators.ma5 = 100
+        indicators.ma10 = 111
+        indicators.ma20 = 105.5
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertNotIn("MA金叉", [item["trigger"] for item in engine.alerts])
+
     def test_load_watchlists_from_json_file(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "watchlist.json"
