@@ -2739,6 +2739,7 @@ The dry-run report includes:
 - `schema_hash` for the reviewed DB table contract;
 - `batch_hash` for the current intake-decision batch;
 - counts by ledger (`dry_runs` vs `processed`), status (`dry_run`, `rejected`, `submitted`, `error`), and mode;
+- `lineage_summary` with schema `rt_order_intake_lineage_summary_v1`, showing whether submitted intake decisions have extractable `order_id` values;
 - safety flags confirming that it does not submit orders, change intake state, change strategy config, or restart services.
 
 Apply mode is hash-gated:
@@ -2752,6 +2753,8 @@ Apply mode is hash-gated:
 ```
 
 Apply mode only creates/updates the audit table and upserts intake decision events. It does not call the simulation API, does not mutate `/tmp/rt_order_intake_state.json`, and does not make a rejected or dry-run item executable.
+
+The audit table stores both the raw `order_result` JSON and indexed `order_id`/`order_ids` columns extracted from common API response shapes such as `order_result.order_id`, `order_result.id`, or nested `data/order/result` objects. This is only for audit joins: it lets later postmortem tooling connect `sim_trades.order_id` back to `rt_order_intake_events.signal_id` without parsing every JSONB decision row. If `lineage_summary.status=DEGRADED`, at least one submitted decision lacks an extractable order ID, so closed-trade learning must not treat that decision as fully traceable.
 
 Hermes packet and readiness integration:
 

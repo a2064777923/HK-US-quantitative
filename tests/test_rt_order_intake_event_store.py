@@ -60,6 +60,11 @@ class RtOrderIntakeEventStoreTests(unittest.TestCase):
         self.assertEqual(payload["event_summary"]["by_ledger"], {"dry_runs": 1, "processed": 1})
         self.assertEqual(payload["event_summary"]["by_status"], {"dry_run": 1, "submitted": 1})
         self.assertEqual(payload["event_summary"]["submitted_count"], 1)
+        self.assertEqual(payload["lineage_summary"]["schema"], "rt_order_intake_lineage_summary_v1")
+        self.assertEqual(payload["lineage_summary"]["status"], "OK")
+        self.assertEqual(payload["lineage_summary"]["submitted_with_order_id_count"], 1)
+        self.assertEqual(payload["lineage_summary"]["submitted_missing_order_id_count"], 0)
+        self.assertEqual(payload["lineage_summary"]["sample_order_ids"], ["ok"])
         self.assertTrue(payload["schema_hash"])
         self.assertTrue(payload["safety"]["does_not_submit_orders"])
         self.assertTrue(payload["safety"]["does_not_change_intake_state"])
@@ -98,6 +103,9 @@ class RtOrderIntakeEventStoreTests(unittest.TestCase):
         self.assertTrue(payload["applied"])
         self.assertEqual(len(calls), 1)
         self.assertIn("CREATE TABLE IF NOT EXISTS rt_order_intake_events", calls[0])
+        self.assertIn("order_id TEXT", calls[0])
+        self.assertIn("order_ids JSONB", calls[0])
+        self.assertIn("rt_order_intake_events_order_id_idx", calls[0])
         self.assertIn("ON CONFLICT (event_key) DO UPDATE", calls[0])
 
     def test_invalid_table_name_blocks_apply(self):
@@ -132,6 +140,42 @@ class RtOrderIntakeEventStoreTests(unittest.TestCase):
         self.assertIn("O''Hare rejection", sql)
         self.assertIn("'sig-quote'", sql)
         self.assertIn("::jsonb", sql)
+
+    def test_order_result_ids_reads_nested_api_shapes(self):
+        ids = store.order_result_ids(
+            {
+                "order_id": "top",
+                "data": {"id": "nested-id"},
+                "order": {"client_order_id": "client"},
+                "result": {"clientOrderId": "camel"},
+            }
+        )
+
+        self.assertEqual(ids, ["top", "nested-id", "client", "camel"])
+
+    def test_submitted_without_order_id_degrades_lineage_summary(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = Path(td) / "state.json"
+            write_state(
+                state_file,
+                {
+                    "dry_runs": {},
+                    "processed": {
+                        "sig-2": {
+                            **intake_decision("sig-2", status="submitted", mode="execute"),
+                            "submitted_at": "2026-06-12T10:05:00",
+                            "order_result": {"status": "accepted"},
+                        }
+                    },
+                },
+            )
+
+            payload = store.build_report(str(state_file))
+
+        self.assertEqual(payload["lineage_summary"]["status"], "DEGRADED")
+        self.assertEqual(payload["lineage_summary"]["submitted_with_order_id_count"], 0)
+        self.assertEqual(payload["lineage_summary"]["submitted_missing_order_id_count"], 1)
+        self.assertIn("submitted_order_id_missing", payload["lineage_summary"]["reason_codes"])
 
 
 if __name__ == "__main__":

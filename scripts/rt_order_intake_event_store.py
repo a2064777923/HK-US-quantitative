@@ -105,6 +105,32 @@ def stable_json(payload):
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def unique_text(values):
+    seen = set()
+    result = []
+    for value in values or []:
+        text = str(value if value is not None else "").strip()
+        if text and text.lower() not in ("none", "null") and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return result
+
+
+def order_result_ids(order_result):
+    ids = []
+    if isinstance(order_result, dict):
+        for key in ("order_id", "id", "client_order_id", "clientOrderId"):
+            ids.append(order_result.get(key))
+        for nested_key in ("data", "order", "result"):
+            nested = order_result.get(nested_key)
+            if isinstance(nested, dict):
+                for key in ("order_id", "id", "client_order_id", "clientOrderId"):
+                    ids.append(nested.get(key))
+    elif order_result is not None:
+        ids.append(order_result)
+    return unique_text(ids)
+
+
 def normalize_state(raw):
     if not isinstance(raw, dict):
         raw = {}
@@ -196,6 +222,8 @@ CREATE TABLE IF NOT EXISTS {table} (
     symbol_conflict_status TEXT,
     market_context_status TEXT,
     hermes_status TEXT,
+    order_id TEXT,
+    order_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
     order_result JSONB,
     decision_json JSONB NOT NULL,
     first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -211,6 +239,8 @@ CREATE INDEX IF NOT EXISTS {table}_symbol_idx
     ON {table} (symbol);
 CREATE INDEX IF NOT EXISTS {table}_submitted_idx
     ON {table} (submitted_at);
+CREATE INDEX IF NOT EXISTS {table}_order_id_idx
+    ON {table} (order_id);
 """.strip()
 
 
@@ -231,6 +261,7 @@ def upsert_sql(event, table_name=DEFAULT_TABLE):
     table = quote_ident(table_name)
     decision = event["decision"]
     order_result = decision.get("order_result")
+    order_ids = order_result_ids(order_result)
     values = {
         "event_key": sql_quote(event["event_key"]),
         "signal_id": sql_quote(event["signal_id"]),
@@ -251,6 +282,8 @@ def upsert_sql(event, table_name=DEFAULT_TABLE):
         "symbol_conflict_status": sql_quote(gate_status(decision, "symbol_conflict")),
         "market_context_status": sql_quote(gate_status(decision, "market_context")),
         "hermes_status": sql_quote(gate_status(decision, "hermes")),
+        "order_id": sql_quote(order_ids[0]) if order_ids else "NULL",
+        "order_ids": sql_quote(stable_json(order_ids)) + "::jsonb",
         "order_result": (sql_quote(stable_json(order_result)) + "::jsonb") if isinstance(order_result, dict) else "NULL",
         "decision_json": sql_quote(stable_json(decision)) + "::jsonb",
     }
@@ -301,6 +334,54 @@ def event_summary(events):
         "submitted_count": submitted_count,
         "rejected_count": rejected_count,
         "error_count": error_count,
+    }
+
+
+def lineage_summary(events):
+    submitted = []
+    submitted_with_order_id = []
+    submitted_missing_order_id = []
+    processed_with_order_id = []
+    order_ids = []
+    for event in events:
+        decision = event["decision"]
+        if decision.get("status") != "submitted":
+            continue
+        ids = order_result_ids(decision.get("order_result"))
+        row = {
+            "ledger": event.get("ledger"),
+            "signal_id": event.get("signal_id"),
+            "symbol": plan_value(decision, "symbol") or (decision.get("alert") or {}).get("symbol"),
+            "side": plan_value(decision, "side") or (decision.get("alert") or {}).get("signal_type"),
+            "submitted_at": decision.get("submitted_at"),
+            "order_ids": ids,
+        }
+        submitted.append(row)
+        if ids:
+            submitted_with_order_id.append(row)
+            order_ids.extend(ids)
+            if event.get("ledger") == "processed":
+                processed_with_order_id.append(row)
+        else:
+            submitted_missing_order_id.append(row)
+
+    reasons = []
+    if submitted and submitted_missing_order_id:
+        reasons.append("submitted_order_id_missing")
+    status = "NO_SUBMITTED_ORDERS"
+    if submitted:
+        status = "OK" if not reasons else "DEGRADED"
+    return {
+        "schema": "rt_order_intake_lineage_summary_v1",
+        "status": status,
+        "submitted_count": len(submitted),
+        "submitted_with_order_id_count": len(submitted_with_order_id),
+        "submitted_missing_order_id_count": len(submitted_missing_order_id),
+        "processed_submitted_with_order_id_count": len(processed_with_order_id),
+        "unique_order_id_count": len(unique_text(order_ids)),
+        "sample_order_ids": unique_text(order_ids)[:10],
+        "reason_codes": reasons,
+        "sample_submitted": submitted[:10],
     }
 
 
@@ -359,6 +440,7 @@ def build_report(
         "event_count": len(events),
         "duplicate_count": event_stats["duplicate_count"],
         "event_summary": event_summary(events),
+        "lineage_summary": lineage_summary(events),
         "warnings": warnings,
         "validation_reasons": reasons,
         "applied": applied,
@@ -391,6 +473,18 @@ def build_text_report(payload):
         lines.append("Warnings: " + ", ".join(payload["warnings"]))
     lines.append("by_ledger=" + json.dumps(payload["event_summary"]["by_ledger"], ensure_ascii=False))
     lines.append("by_status=" + json.dumps(payload["event_summary"]["by_status"], ensure_ascii=False))
+    lineage = payload.get("lineage_summary") or {}
+    lines.append(
+        "lineage="
+        + json.dumps(
+            {
+                "status": lineage.get("status"),
+                "submitted_with_order_id_count": lineage.get("submitted_with_order_id_count"),
+                "submitted_missing_order_id_count": lineage.get("submitted_missing_order_id_count"),
+            },
+            ensure_ascii=False,
+        )
+    )
     if payload.get("apply_result"):
         lines.append("apply_result=" + json.dumps(payload["apply_result"], ensure_ascii=False))
     return "\n".join(lines)
