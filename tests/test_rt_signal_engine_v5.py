@@ -491,6 +491,19 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertAlmostEqual(ratio, 700 / (1000 * (270 / 390)), places=4)
         self.assertLess(ratio, 2)
 
+    def test_alert_signal_date_prefers_quote_timestamp(self):
+        self.assertEqual(
+            rt.alert_signal_date(
+                "20260611140000",
+                generated_at=datetime(2026, 6, 12, 1, 0, 0),
+            ),
+            "20260611",
+        )
+        self.assertEqual(
+            rt.alert_signal_date(None, generated_at=datetime(2026, 6, 12, 1, 0, 0)),
+            "20260612",
+        )
+
     def test_market_open_flags_handle_us_overnight_hkt_weekday_rollover(self):
         hk_open, us_open = rt.market_open_flags_hkt(datetime(2026, 6, 13, 3, 59))
         self.assertFalse(hk_open)
@@ -944,6 +957,34 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertNotEqual(first_id, second_id)
         self.assertEqual(first_id.rsplit(":", 1)[-1], str(1_000_000 // 300))
         self.assertEqual(second_id.rsplit(":", 1)[-1], str(1_000_301 // 300))
+
+    def test_signal_id_date_uses_quote_timestamp_when_available(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        with patch.object(rt.time, "time", return_value=1_000_000), patch.object(
+            rt, "datetime", wraps=rt.datetime
+        ) as fake_datetime:
+            fake_datetime.now.return_value = datetime(2026, 6, 12, 1, 0, 0)
+            engine.check(
+                "AAPL",
+                indicators,
+                {
+                    "price": 100,
+                    "volume": 0,
+                    "market": "US",
+                    "time": "20260611140000",
+                    "change_pct": 0,
+                },
+            )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertTrue(alert["signal_id"].startswith("20260611:AAPL:RSI超賣:BUY:"))
+        self.assertEqual(alert["generated_at"], "2026-06-12T01:00:00")
 
     def test_invalid_buy_risk_geometry_is_downgraded_to_watch(self):
         engine = rt.TriggerEngine(

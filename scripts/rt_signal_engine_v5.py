@@ -992,6 +992,13 @@ def indicator_signal_ready(indicators):
         and lengths["closes"] >= MIN_SIGNAL_HISTORY_BARS
     )
 
+def alert_signal_date(quote_time=None, generated_at=None):
+    parsed_quote_time = parse_quote_datetime(quote_time)
+    if parsed_quote_time is not None:
+        return parsed_quote_time.strftime("%Y%m%d")
+    generated_at = generated_at or datetime.now()
+    return generated_at.strftime("%Y%m%d")
+
 
 # ========== 條件觸發器 ==========
 class TriggerEngine:
@@ -1040,10 +1047,11 @@ class TriggerEngine:
     def alert_cooldown_key(self, symbol, signal_type, trigger_name):
         return f"{str(symbol or '').upper()}:{self.trigger_key(signal_type, trigger_name)}"
 
-    def alert_signal_id(self, symbol, trigger_name, signal_type, now, cooldown_seconds):
+    def alert_signal_id(self, symbol, trigger_name, signal_type, now, cooldown_seconds, signal_date=None):
         bucket_seconds = cooldown_seconds if cooldown_seconds and cooldown_seconds > 0 else SIGNAL_COOLDOWN
+        date_prefix = signal_date or datetime.now().strftime("%Y%m%d")
         return (
-            f"{datetime.now().strftime('%Y%m%d')}:{symbol}:{trigger_name}:{signal_type}:"
+            f"{date_prefix}:{symbol}:{trigger_name}:{signal_type}:"
             f"{int(now // bucket_seconds)}"
         )
 
@@ -1227,6 +1235,8 @@ class TriggerEngine:
                 rr_ratio = None
             
             market = quote.get("market", "")
+            generated_at = datetime.now()
+            signal_date = alert_signal_date(quote.get("time"), generated_at=generated_at)
             self.alerts.append({
                 "signal_id": self.alert_signal_id(
                     symbol,
@@ -1234,6 +1244,7 @@ class TriggerEngine:
                     emitted_signal_type,
                     now,
                     cooldown_seconds,
+                    signal_date=signal_date,
                 ),
                 "source": "rt_signal_engine_v5",
                 "symbol": symbol,
@@ -1256,8 +1267,8 @@ class TriggerEngine:
                 "price": c,
                 "change_pct": quote.get("change_pct", 0),
                 "quote_time": quote.get("time", ""),
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "generated_at": datetime.now().isoformat(timespec="seconds"),
+                "time": generated_at.strftime("%H:%M:%S"),
+                "generated_at": generated_at.isoformat(timespec="seconds"),
                 "entry_price": entry_price,
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
