@@ -531,6 +531,26 @@ class HermesReviewPacketTests(unittest.TestCase):
                     "do_not_raise_confidence_from_limited_30m_60m_coverage",
                     "treat_snapshot_minute_timeframes_as_advisory_until_full_ohlcv",
                 ],
+                "decision_policy": {
+                    "schema": "intraday_timeframe_decision_policy_v1",
+                    "confidence_use": "cap_or_challenge_only",
+                    "may_raise_confidence": False,
+                    "requires_forward_evidence_before_confidence_raise": True,
+                    "can_override_daily_gates": False,
+                    "execution_permission": False,
+                    "allowed_effects": ["cap_confidence", "challenge_signal"],
+                    "reason_codes": [
+                        "timeframe_coverage_limited",
+                        "low_fidelity_minute_source",
+                        "snapshot_like_minute_rows",
+                    ],
+                    "timeframe_roles": {
+                        "5m": "entry_timing_noise_check",
+                        "15m": "near_term_confirmation",
+                        "30m": "session_structure_confirmation",
+                        "60m": "session_structure_context",
+                    },
+                },
             },
             intraday_market_session_overrides_payload={
                 "schema": "intraday_market_session_overrides_report_v1",
@@ -953,6 +973,25 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertFalse(payload["intraday_timeframe_quality"]["source"]["writes_database"])
         self.assertFalse(payload["intraday_timeframe_quality"]["source"]["changes_strategy"])
         self.assertTrue(any("Intraday timeframe quality" in note for note in payload["operator_notes"]))
+        timeframe_policy = payload["review_items"][0]["context_digest"]["intraday_timeframe_policy"]
+        self.assertEqual(
+            timeframe_policy["schema"],
+            "hermes_review_item_intraday_timeframe_policy_digest_v1",
+        )
+        self.assertEqual(timeframe_policy["confidence_use"], "cap_or_challenge_only")
+        self.assertFalse(timeframe_policy["may_raise_confidence"])
+        self.assertFalse(timeframe_policy["can_override_daily_gates"])
+        self.assertFalse(timeframe_policy["execution_permission"])
+        self.assertIn("timeframe_coverage_limited", timeframe_policy["reason_codes"])
+        self.assertIn("cap_confidence", timeframe_policy["allowed_effects"])
+        self.assertTrue(timeframe_policy["requires_judgment_acknowledgement"])
+        self.assertIn(
+            "intraday_timeframe_policy_requires_acknowledgement",
+            payload["review_items"][0]["context_digest"]["required_judgment_attention"],
+        )
+        self.assertTrue(
+            any("intraday_timeframe_policy_requires_acknowledgement" in rule for rule in payload["judgment_contract"]["hard_rules"])
+        )
         self.assertEqual(
             payload["intraday_market_session_overrides"]["schema"],
             "intraday_market_session_overrides_report_v1",

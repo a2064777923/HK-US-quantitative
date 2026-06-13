@@ -713,6 +713,19 @@ def numeric_value(value, default=0.0):
         return default
 
 
+def bool_value(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "y"):
+        return True
+    if text in ("0", "false", "no", "n"):
+        return False
+    return default
+
+
 def compact_context_item(item, relevance=None, extra_keys=None):
     keys = [
         "id",
@@ -1153,6 +1166,82 @@ def intraday_minute_producer_summary(payload):
     }
 
 
+def intraday_timeframe_policy_summary(payload):
+    if not isinstance(payload, dict) or not payload:
+        return {
+            "schema": "hermes_review_item_intraday_timeframe_policy_digest_v1",
+            "status": "MISSING",
+            "decision_policy_present": False,
+            "confidence_use": "diagnostic_only",
+            "may_raise_confidence": False,
+            "requires_forward_evidence_before_confidence_raise": True,
+            "can_override_daily_gates": False,
+            "execution_permission": False,
+            "allowed_effects": [],
+            "reason_codes": ["intraday_timeframe_quality_missing"],
+            "requires_judgment_acknowledgement": True,
+        }
+
+    policy = payload.get("decision_policy") if isinstance(payload.get("decision_policy"), dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    report_status = str(payload.get("status") or "MISSING").upper()
+    if policy:
+        reason_codes = normalize_list(policy.get("reason_codes"))
+        confidence_use = str(policy.get("confidence_use") or "diagnostic_only")
+        allowed_effects = normalize_list(policy.get("allowed_effects"))
+        may_raise_confidence = bool_value(policy.get("may_raise_confidence"))
+        requires_forward_evidence = bool_value(
+            policy.get("requires_forward_evidence_before_confidence_raise"),
+            default=True,
+        )
+        can_override_daily_gates = bool_value(policy.get("can_override_daily_gates"))
+        execution_permission = bool_value(policy.get("execution_permission"))
+        timeframe_roles = policy.get("timeframe_roles") if isinstance(policy.get("timeframe_roles"), dict) else {}
+    else:
+        reason_codes = ["intraday_timeframe_policy_missing"]
+        confidence_use = "diagnostic_only"
+        allowed_effects = []
+        may_raise_confidence = False
+        requires_forward_evidence = True
+        can_override_daily_gates = False
+        execution_permission = False
+        timeframe_roles = {}
+    if report_status not in ("", "OK") and f"intraday_timeframe_quality_{report_status.lower()}" not in reason_codes:
+        reason_codes.append(f"intraday_timeframe_quality_{report_status.lower()}")
+    requires_ack = (
+        confidence_use in ("cap_or_challenge_only", "diagnostic_only")
+        or bool(reason_codes)
+        or may_raise_confidence
+        or can_override_daily_gates
+        or execution_permission
+    )
+    return {
+        "schema": "hermes_review_item_intraday_timeframe_policy_digest_v1",
+        "status": report_status,
+        "decision_policy_present": bool(policy),
+        "confidence_use": confidence_use,
+        "may_raise_confidence": may_raise_confidence,
+        "requires_forward_evidence_before_confidence_raise": requires_forward_evidence,
+        "can_override_daily_gates": can_override_daily_gates,
+        "execution_permission": execution_permission,
+        "allowed_effects": allowed_effects,
+        "timeframe_roles": timeframe_roles,
+        "reason_codes": reason_codes[:12],
+        "summary": {
+            "symbol_count": summary.get("symbol_count"),
+            "degraded_symbol_count": summary.get("degraded_symbol_count"),
+            "limited_timeframe_symbol_count": summary.get("limited_timeframe_symbol_count"),
+            "missing_timeframe_symbol_count": summary.get("missing_timeframe_symbol_count"),
+            "conflict_symbol_count": summary.get("conflict_symbol_count"),
+            "low_fidelity_symbol_count": summary.get("low_fidelity_symbol_count"),
+            "snapshot_like_symbol_count": summary.get("snapshot_like_symbol_count"),
+            "missing_source_granularity_symbol_count": summary.get("missing_source_granularity_symbol_count"),
+        },
+        "recommendations": normalize_list(payload.get("recommendations"))[:8],
+        "requires_judgment_acknowledgement": requires_ack,
+    }
+
+
 def intraday_signal_evidence(alert, intraday_context):
     context = intraday_context if isinstance(intraday_context, dict) else {}
     side = str((alert or {}).get("signal_type") or "").upper()
@@ -1319,6 +1408,7 @@ def context_attention_items(
     alert,
     market_context,
     intraday_context,
+    intraday_timeframe_policy,
     intraday_market_session_overrides,
     intraday_minute_producer,
     daily_gap_source,
@@ -1382,6 +1472,15 @@ def context_attention_items(
         attention.append("intraday_context_quality_degraded_requires_disclosure")
     if "intraday_market_not_open_requires_session_context" in intraday_notes:
         attention.append("intraday_market_not_open_requires_session_context")
+    timeframe_policy = intraday_timeframe_policy if isinstance(intraday_timeframe_policy, dict) else {}
+    if timeframe_policy.get("requires_judgment_acknowledgement"):
+        attention.append("intraday_timeframe_policy_requires_acknowledgement")
+    if (
+        timeframe_policy.get("may_raise_confidence")
+        or timeframe_policy.get("can_override_daily_gates")
+        or timeframe_policy.get("execution_permission")
+    ):
+        attention.append("intraday_timeframe_policy_safety_limit_requires_rejection")
     producer_status = str((intraday_minute_producer or {}).get("status") or "").upper()
     producer_notes = set((intraday_minute_producer or {}).get("notes") or [])
     if producer_status in ("MISSING", "STALE", "FAIL", "INVALID", "ACTIONABLE", "PARTIAL", "UNRESOLVED") or producer_notes & {
@@ -1465,6 +1564,7 @@ def context_digest_for_item(
     market_context_payload,
     intraday_kline_batch_payload,
     intraday_context_payload,
+    intraday_timeframe_quality_payload,
     intraday_market_session_overrides_payload,
     external_market_context_payload,
     event_catalyst_payload,
@@ -1478,6 +1578,7 @@ def context_digest_for_item(
     alert = item.get("alert") or {}
     market_context = market_context_for_alert(alert, market_context_payload)
     intraday_context = intraday_context_for_alert(alert, intraday_context_payload)
+    intraday_timeframe_policy = intraday_timeframe_policy_summary(intraday_timeframe_quality_payload)
     intraday_market_session_overrides = intraday_market_session_overrides_for_alert(
         alert,
         intraday_market_session_overrides_payload,
@@ -1512,6 +1613,7 @@ def context_digest_for_item(
         },
         "market_context": market_context,
         "intraday_context": intraday_context,
+        "intraday_timeframe_policy": intraday_timeframe_policy,
         "intraday_signal_evidence": intraday_evidence,
         "intraday_minute_producer": intraday_minute_producer,
         "intraday_market_session_overrides": intraday_market_session_overrides,
@@ -1561,6 +1663,7 @@ def context_digest_for_item(
             alert,
             market_context,
             intraday_context,
+            intraday_timeframe_policy,
             intraday_market_session_overrides,
             intraday_minute_producer,
             daily_gap_source,
@@ -1584,6 +1687,7 @@ def attach_context_digests_to_items(
     market_context_payload,
     intraday_kline_batch_payload,
     intraday_context_payload,
+    intraday_timeframe_quality_payload,
     intraday_market_session_overrides_payload,
     external_market_context_payload,
     event_catalyst_payload,
@@ -1600,6 +1704,7 @@ def attach_context_digests_to_items(
             market_context_payload,
             intraday_kline_batch_payload,
             intraday_context_payload,
+            intraday_timeframe_quality_payload,
             intraday_market_session_overrides_payload,
             external_market_context_payload,
             event_catalyst_payload,
@@ -2210,9 +2315,9 @@ def judgment_contract(judgment_file):
             "hermes_alpha_evidence_status": "required reviewed strategy_learning_brief.hermes_alpha_evidence.status when weak or missing alpha evidence acknowledgement is required",
             "hermes_alpha_evidence_reasons": "required list containing at least one reviewed strategy_learning_brief.hermes_alpha_evidence.reasons[] value when present",
             "hermes_alpha_evidence_notes": "required notes explaining why Hermes is approving/reducing even though audit-pass approval alpha is unproven or negative",
-            "intraday_context_acknowledged": "required true when context_digest.required_judgment_attention includes intraday missing/stale, contradiction, rolling-window coverage, market-session, calendar-override, minute-producer, or minute-quality notes",
+            "intraday_context_acknowledged": "required true when context_digest.required_judgment_attention includes intraday missing/stale, contradiction, rolling-window coverage, timeframe-policy, market-session, calendar-override, minute-producer, or minute-quality notes",
             "intraday_context_status": "required reviewed context_digest.intraday_context.status when intraday acknowledgement is required",
-            "intraday_context_notes": "required notes explaining how intraday confirmation, contradiction, missing/stale minute coverage, producer/apply/source limits, market-session state, calendar-override limits, or degraded minute-bar quality affected confidence, sizing, or rejection",
+            "intraday_context_notes": "required notes explaining how intraday confirmation, contradiction, missing/stale minute coverage, timeframe-policy limits, producer/apply/source limits, market-session state, calendar-override limits, or degraded minute-bar quality affected confidence, sizing, or rejection",
             "intraday_signal_evidence_acknowledged": "required true when context_digest.intraday_signal_evidence.requires_judgment_acknowledgement=true",
             "intraday_signal_evidence_alignment": "required copy of context_digest.intraday_signal_evidence.alignment when intraday evidence requires acknowledgement",
             "intraday_signal_evidence_codes": "required list containing at least one reviewed context_digest.intraday_signal_evidence.codes[] value when present",
@@ -2258,7 +2363,8 @@ def judgment_contract(judgment_file):
             "When source_reliability.status is DEGRADED, STALE, MISSING, or FAIL, do not approve/reduce unless source_reliability_limit_acknowledged=true, source_reliability_components and source_reliability_reasons reference the degraded evidence, and source_reliability_notes explains how source limitations affected confidence, sizing, or rejection.",
             "When simulation_performance.status is WARN or FAIL, do not approve/reduce unless simulation_performance_acknowledged=true, simulation_performance_status matches the reviewed report status, simulation_performance_reason_codes references the report reason_codes when present, and simulation_performance_notes explains how realized simulation performance affected confidence, sizing, or rejection.",
             "When strategy_learning_brief.hermes_alpha_evidence.status is INSUFFICIENT, NEGATIVE, MISSING, or INVALID, or the evidence object is absent, do not approve/reduce unless hermes_alpha_evidence_acknowledged=true, hermes_alpha_evidence_status matches the reviewed status, hermes_alpha_evidence_reasons references at least one reviewed reason when present, and hermes_alpha_evidence_notes explains why the LLM layer is not being treated as proven alpha.",
-            "When review_items[].context_digest.required_judgment_attention includes intraday_context_missing_or_stale_requires_disclosure, intraday_context_challenges_buy_requires_discussion, intraday_context_challenges_sell_requires_discussion, intraday_context_timeframe_conflict_requires_disclosure, intraday_timeframe_coverage_limited_requires_disclosure, intraday_context_quality_degraded_requires_disclosure, intraday_minute_producer_limit_requires_acknowledgement, intraday_market_not_open_requires_session_context, or intraday_market_session_overrides_limit_requires_disclosure, do not approve/reduce unless intraday_context_acknowledged=true, intraday_context_status matches the reviewed status when known, and intraday_context_notes explains how same-session or last-session minute evidence, rolling-window coverage limits, producer/apply/source limits, market-session state, calendar-override limits, and minute-bar quality affected the decision.",
+            "When review_items[].context_digest.required_judgment_attention includes intraday_context_missing_or_stale_requires_disclosure, intraday_context_challenges_buy_requires_discussion, intraday_context_challenges_sell_requires_discussion, intraday_context_timeframe_conflict_requires_disclosure, intraday_timeframe_coverage_limited_requires_disclosure, intraday_timeframe_policy_requires_acknowledgement, intraday_context_quality_degraded_requires_disclosure, intraday_minute_producer_limit_requires_acknowledgement, intraday_market_not_open_requires_session_context, or intraday_market_session_overrides_limit_requires_disclosure, do not approve/reduce unless intraday_context_acknowledged=true, intraday_context_status matches the reviewed status when known, and intraday_context_notes explains how same-session or last-session minute evidence, rolling-window coverage limits, timeframe-policy limits, producer/apply/source limits, market-session state, calendar-override limits, and minute-bar quality affected the decision.",
+            "When review_items[].context_digest.required_judgment_attention includes intraday_timeframe_policy_safety_limit_requires_rejection, use reject or hold until intraday_timeframe_quality_report.py no longer claims confidence raise, execution permission, or daily-gate override authority.",
             "When review_items[].context_digest.intraday_signal_evidence.requires_judgment_acknowledgement=true, do not approve/reduce unless intraday_signal_evidence_acknowledged=true, intraday_signal_evidence_alignment copies the reviewed alignment, intraday_signal_evidence_codes references at least one reviewed support/challenge/conflict/quality/limit code when present, and intraday_signal_evidence_notes explains how 5m/15m/30m/60m/session evidence changed confidence, sizing, rejection, or hold logic.",
         ],
     }
@@ -3062,6 +3168,7 @@ def build_packet(
         market_context_payload,
         intraday_kline_batch_payload,
         intraday_context_payload,
+        intraday_timeframe_quality_payload,
         intraday_market_session_overrides_payload,
         external_market_context_payload,
         event_catalyst_payload,
