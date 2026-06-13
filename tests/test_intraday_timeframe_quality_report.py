@@ -87,6 +87,15 @@ class IntradayTimeframeQualityReportTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["symbol_count"], 1)
         self.assertEqual(payload["summary"]["timeframes"]["60m"]["ok_symbol_count"], 1)
         self.assertIn("intraday_timeframe_quality_clean", payload["recommendations"])
+        policy = payload["decision_policy"]
+        self.assertEqual(policy["schema"], "intraday_timeframe_decision_policy_v1")
+        self.assertEqual(policy["confidence_use"], "soft_confirmation_eligible")
+        self.assertFalse(policy["may_raise_confidence"])
+        self.assertTrue(policy["requires_forward_evidence_before_confidence_raise"])
+        self.assertFalse(policy["can_override_daily_gates"])
+        self.assertFalse(policy["execution_permission"])
+        self.assertEqual(policy["timeframe_roles"]["5m"], "entry_timing_noise_check")
+        self.assertIn("soft_confirm_signal", policy["allowed_effects"])
 
     def test_limited_hourly_coverage_degrades_and_caps_confidence(self):
         windows = {
@@ -105,6 +114,11 @@ class IntradayTimeframeQualityReportTests(unittest.TestCase):
         self.assertEqual(symbol["limited_timeframes"], ["30m", "60m"])
         self.assertIn("timeframe_coverage_limited", symbol["reasons"])
         self.assertIn("do_not_raise_confidence_from_limited_30m_60m_coverage", payload["recommendations"])
+        policy = payload["decision_policy"]
+        self.assertEqual(policy["confidence_use"], "cap_or_challenge_only")
+        self.assertFalse(policy["may_raise_confidence"])
+        self.assertEqual(policy["allowed_effects"], ["cap_confidence", "challenge_signal"])
+        self.assertIn("timeframe_coverage_limited", policy["reason_codes"])
 
     def test_snapshot_low_fidelity_timeframes_are_advisory_only(self):
         quality = {
@@ -147,6 +161,8 @@ class IntradayTimeframeQualityReportTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "FAIL")
         self.assertIn("fix_intraday_context_report_before_timeframe_quality_review", payload["recommendations"])
+        self.assertEqual(payload["decision_policy"]["confidence_use"], "diagnostic_only")
+        self.assertEqual(payload["decision_policy"]["allowed_effects"], [])
 
 
 if __name__ == "__main__":

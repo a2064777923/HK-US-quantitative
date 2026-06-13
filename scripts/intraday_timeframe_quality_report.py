@@ -15,6 +15,12 @@ from datetime import datetime
 REPORT_FILE = os.environ.get("INTRADAY_TIMEFRAME_QUALITY_REPORT_FILE", "/tmp/intraday_timeframe_quality_report.json")
 INTRADAY_CONTEXT_FILE = os.environ.get("INTRADAY_CONTEXT_REPORT_FILE", "/tmp/intraday_context_report.json")
 TIMEFRAMES = ("5m", "15m", "30m", "60m")
+TIMEFRAME_ROLES = {
+    "5m": "entry_timing_noise_check",
+    "15m": "near_term_confirmation",
+    "30m": "session_structure_confirmation",
+    "60m": "session_structure_context",
+}
 
 
 def now_iso():
@@ -268,6 +274,54 @@ def classify_status(intraday_context, summary):
     return "OK"
 
 
+def build_decision_policy(status, summary):
+    reason_codes = []
+    if status == "MISSING":
+        reason_codes.append("intraday_context_missing")
+    if status == "FAIL":
+        reason_codes.append("intraday_context_failed")
+    if summary.get("limited_timeframe_symbol_count"):
+        reason_codes.append("timeframe_coverage_limited")
+    if summary.get("missing_timeframe_symbol_count") or summary.get("missing_symbol_count"):
+        reason_codes.append("timeframe_coverage_missing")
+    if summary.get("conflict_symbol_count"):
+        reason_codes.append("multi_timeframe_conflict")
+    if summary.get("low_fidelity_symbol_count"):
+        reason_codes.append("low_fidelity_minute_source")
+    if summary.get("snapshot_like_symbol_count"):
+        reason_codes.append("snapshot_like_minute_rows")
+    if summary.get("missing_source_granularity_symbol_count"):
+        reason_codes.append("source_granularity_missing")
+    if summary.get("closed_symbol_count"):
+        reason_codes.append("market_closed")
+    if summary.get("stale_symbol_count"):
+        reason_codes.append("stale_intraday_context")
+    if summary.get("degraded_symbol_count"):
+        reason_codes.append("intraday_quality_degraded")
+
+    if status in ("MISSING", "FAIL"):
+        confidence_use = "diagnostic_only"
+        allowed_effects = []
+    elif reason_codes:
+        confidence_use = "cap_or_challenge_only"
+        allowed_effects = ["cap_confidence", "challenge_signal"]
+    else:
+        confidence_use = "soft_confirmation_eligible"
+        allowed_effects = ["soft_confirm_signal", "cap_confidence", "challenge_signal"]
+
+    return {
+        "schema": "intraday_timeframe_decision_policy_v1",
+        "confidence_use": confidence_use,
+        "may_raise_confidence": False,
+        "requires_forward_evidence_before_confidence_raise": True,
+        "can_override_daily_gates": False,
+        "execution_permission": False,
+        "timeframe_roles": TIMEFRAME_ROLES,
+        "allowed_effects": allowed_effects,
+        "reason_codes": sorted(set(reason_codes)),
+    }
+
+
 def build_recommendations(status, summary):
     recs = []
     if status == "MISSING":
@@ -301,6 +355,7 @@ def build_report(intraday_context=None):
     }
     summary = aggregate_summary(markets)
     status = classify_status(intraday_context, summary)
+    decision_policy = build_decision_policy(status, summary)
     return {
         "schema": "intraday_timeframe_quality_report_v1",
         "generated_at": now_iso(),
@@ -325,6 +380,7 @@ def build_report(intraday_context=None):
         },
         "summary": summary,
         "markets": markets,
+        "decision_policy": decision_policy,
         "recommendations": build_recommendations(status, summary),
         "hermes_use": [
             "Use this report to decide whether 5m/15m/30m/60m evidence is complete enough for confirmation.",
@@ -351,6 +407,14 @@ def build_text_report(payload):
         )
     if payload.get("recommendations"):
         lines.append("Recommendations: " + ", ".join(payload["recommendations"]))
+    policy = payload.get("decision_policy") if isinstance(payload.get("decision_policy"), dict) else {}
+    if policy:
+        lines.append(
+            "Decision policy: "
+            f"confidence_use={policy.get('confidence_use')} "
+            f"may_raise_confidence={policy.get('may_raise_confidence')} "
+            f"can_override_daily_gates={policy.get('can_override_daily_gates')}"
+        )
     return "\n".join(lines)
 
 

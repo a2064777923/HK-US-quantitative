@@ -475,6 +475,7 @@ def apply_intraday_context(component):
 def apply_intraday_timeframe_quality(component, payload):
     summary = component.get("summary") or {}
     source = component.get("source") or {}
+    policy = payload.get("decision_policy") if isinstance(payload.get("decision_policy"), dict) else {}
     timeframes = summary.get("timeframes") if isinstance(summary.get("timeframes"), dict) else {}
     limited_symbols = int(summary.get("limited_timeframe_symbol_count") or 0)
     missing_timeframe_symbols = int(summary.get("missing_timeframe_symbol_count") or 0)
@@ -500,8 +501,27 @@ def apply_intraday_timeframe_quality(component, payload):
         "stale_symbol_count": stale_symbols,
         "timeframes": timeframes,
         "input_file": source.get("input_file"),
+        "decision_policy_present": bool(policy),
+        "confidence_use": policy.get("confidence_use"),
+        "may_raise_confidence": policy.get("may_raise_confidence"),
+        "can_override_daily_gates": policy.get("can_override_daily_gates"),
+        "execution_permission": policy.get("execution_permission"),
     }
-    if source.get("writes_database") or source.get("submits_orders") or source.get("changes_strategy") or source.get("changes_crontab"):
+    unsafe_source_contract = (
+        source.get("writes_database")
+        or source.get("submits_orders")
+        or source.get("changes_strategy")
+        or source.get("changes_crontab")
+    )
+    unsafe_decision_policy = (
+        policy.get("can_override_daily_gates")
+        or policy.get("execution_permission")
+        or (
+            policy.get("may_raise_confidence")
+            and policy.get("requires_forward_evidence_before_confidence_raise") is False
+        )
+    )
+    if unsafe_source_contract or unsafe_decision_policy:
         component["reasons"].append("intraday_timeframe_quality_safety_contract_unsafe")
         component["reliability_status"] = "FAIL"
     if limited_symbols:
