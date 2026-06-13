@@ -286,6 +286,47 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
         self.assertEqual(alert["full_reasons"], reasons)
 
+    def test_full_score_reasons_cover_moderate_positive_contributions(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        ind.closes = [100] * 29 + [103]
+        ind.highs = [104] * 30
+        ind.lows = [99] * 30
+        ind.volumes = [1000] * 29 + [1700]
+        ind.ma5 = 101
+        ind.ma10 = 100
+        ind.ma20 = 100
+        ind.rsi_14 = 60
+        ind.macd_hist = 0.1
+        ind.macd_dif = -0.1
+
+        score, reasons = ind.get_score()
+
+        self.assertAlmostEqual(score, 0.9)
+        self.assertIn("短均線偏強", reasons)
+        self.assertIn("RSI偏強(60)", reasons)
+        self.assertIn("MACD柱轉正", reasons)
+        self.assertTrue(any(reason.startswith("溫和放量上漲") for reason in reasons))
+
+    def test_full_score_reasons_cover_moderate_negative_contributions(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        ind.closes = [100] * 29 + [97]
+        ind.highs = [101] * 30
+        ind.lows = [96] * 30
+        ind.volumes = [1000] * 30
+        ind.ma5 = 99
+        ind.ma10 = 100
+        ind.ma20 = 100
+        ind.rsi_14 = 40
+        ind.macd_hist = -0.1
+        ind.macd_dif = 0.1
+
+        score, reasons = ind.get_score()
+
+        self.assertAlmostEqual(score, -0.7)
+        self.assertIn("短均線偏弱", reasons)
+        self.assertIn("RSI偏弱(40)", reasons)
+        self.assertIn("MACD柱轉負", reasons)
+
     def test_signal_readiness_requires_full_multifactor_history(self):
         indicators = FakeIndicators(score=0.8)
         indicators.closes = [100] * (rt.MIN_SIGNAL_HISTORY_BARS - 1)

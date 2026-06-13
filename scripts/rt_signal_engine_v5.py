@@ -1016,33 +1016,33 @@ class IncrementalIndicators:
             if c > self.ma5 > self.ma10 > self.ma20:
                 score += 0.8; reasons.append("多頭排列")
             elif c > self.ma5 and c > self.ma10:
-                score += 0.4
+                score += 0.4; reasons.append("短均線偏強")
             elif c < self.ma5 < self.ma10 < self.ma20:
                 score -= 0.8; reasons.append("空頭排列")
             elif c < self.ma5 and c < self.ma10:
-                score -= 0.4
+                score -= 0.4; reasons.append("短均線偏弱")
 
         # RSI
         if self.rsi_14 is not None:
             if self.rsi_14 > 70:
                 score -= 0.3; reasons.append(f"RSI偏高({self.rsi_14:.0f})")
             elif self.rsi_14 > 55:
-                score += 0.3
+                score += 0.3; reasons.append(f"RSI偏強({self.rsi_14:.0f})")
             elif self.rsi_14 < 30:
                 score += 0.3; reasons.append(f"RSI超賣({self.rsi_14:.0f})")
             elif self.rsi_14 < 45:
-                score -= 0.2
+                score -= 0.2; reasons.append(f"RSI偏弱({self.rsi_14:.0f})")
 
         # MACD
         if self.macd_hist is not None and self.macd_dif is not None:
             if self.macd_hist > 0 and self.macd_dif > 0:
                 score += 0.3; reasons.append("MACD金叉+正值")
             elif self.macd_hist > 0:
-                score += 0.1
+                score += 0.1; reasons.append("MACD柱轉正")
             elif self.macd_hist < 0 and self.macd_dif < 0:
-                score -= 0.3
+                score -= 0.3; reasons.append("MACD死叉+負值")
             elif self.macd_hist < 0:
-                score -= 0.1
+                score -= 0.1; reasons.append("MACD柱轉負")
 
         # 布林帶
         if self.bb_upper and self.bb_lower:
@@ -1060,7 +1060,7 @@ class IncrementalIndicators:
             elif vr > 2.0 and prior_close is not None and c < prior_close:
                 score -= 0.2; reasons.append(f"放量下跌{vr:.1f}倍")
             elif vr > 1.5 and prior_close is not None and c > prior_close:
-                score += 0.1
+                score += 0.1; reasons.append(f"溫和放量上漲{vr:.1f}倍")
 
         # 動量
         if len(closes) >= 5:
