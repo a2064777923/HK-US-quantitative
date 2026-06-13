@@ -22,6 +22,8 @@ WATCHLIST_FILE = os.environ.get("RT_SIGNAL_WATCHLIST_FILE", "/root/rt_signal_wat
 STRATEGY_CONFIG_FILE = os.environ.get("RT_SIGNAL_STRATEGY_CONFIG_FILE", "/root/rt_signal_strategy_config.json")
 MIN_VOLUME_SESSION_FRACTION = 0.05
 VOLUME_ANOMALY_RATIO = 3.0
+HK_SYMBOL_RE = re.compile(r"^\d{5}$")
+US_SYMBOL_RE = re.compile(r"^(?=.{1,10}$)[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?$")
 
 # 股票池 — 港股+美股
 HK_WATCHLIST = [
@@ -92,7 +94,15 @@ def as_bool(value, default=False):
         return False
     return default
 
-def normalize_symbol_list(value):
+def valid_watchlist_symbol(symbol, market=None):
+    market = str(market or "").upper()
+    if market == "HK":
+        return bool(HK_SYMBOL_RE.match(symbol))
+    if market == "US":
+        return bool(US_SYMBOL_RE.match(symbol))
+    return bool(HK_SYMBOL_RE.match(symbol) or US_SYMBOL_RE.match(symbol))
+
+def normalize_symbol_list(value, market=None, rejected=None):
     if value is None:
         return []
     if isinstance(value, str):
@@ -108,11 +118,15 @@ def normalize_symbol_list(value):
         symbol = str(item).strip().upper()
         if not symbol or symbol in seen:
             continue
+        if not valid_watchlist_symbol(symbol, market=market):
+            if rejected is not None:
+                rejected.append(symbol)
+            continue
         seen.add(symbol)
         symbols.append(symbol)
     return symbols
 
-def symbols_from_watchlist_payload(payload, market):
+def symbols_from_watchlist_payload(payload, market, rejected=None):
     if not isinstance(payload, dict):
         return []
     candidates = [
@@ -130,7 +144,7 @@ def symbols_from_watchlist_payload(payload, market):
             else:
                 candidates.append(item)
     for candidate in candidates:
-        symbols = normalize_symbol_list(candidate)
+        symbols = normalize_symbol_list(candidate, market=market, rejected=rejected)
         if symbols:
             return symbols
     return []
@@ -145,10 +159,18 @@ def load_watchlist_file(path):
             payload = json.load(f)
     except Exception as exc:
         return {}, [f"watchlist_file_invalid:{exc}"]
-    return {
-        "HK": symbols_from_watchlist_payload(payload, "HK"),
-        "US": symbols_from_watchlist_payload(payload, "US"),
-    }, []
+    rejected = {"HK": [], "US": []}
+    watchlists = {
+        "HK": symbols_from_watchlist_payload(payload, "HK", rejected=rejected["HK"]),
+        "US": symbols_from_watchlist_payload(payload, "US", rejected=rejected["US"]),
+    }
+    warnings = []
+    for market, symbols in rejected.items():
+        if symbols:
+            sample = ",".join(symbols[:5])
+            suffix = f":{len(symbols)}" if len(symbols) > 5 else ""
+            warnings.append(f"watchlist_file_invalid_symbols:{market}:{sample}{suffix}")
+    return watchlists, warnings
 
 def watchlist_digest(watchlists):
     seed = {
@@ -314,7 +336,12 @@ def load_watchlists(env=None, file_path=None):
     for market, env_key in (("HK", "RT_SIGNAL_HK_WATCHLIST"), ("US", "RT_SIGNAL_US_WATCHLIST")):
         if env_key not in env:
             continue
-        symbols = normalize_symbol_list(env.get(env_key))
+        rejected = []
+        symbols = normalize_symbol_list(env.get(env_key), market=market, rejected=rejected)
+        if rejected:
+            sample = ",".join(rejected[:5])
+            suffix = f":{len(rejected)}" if len(rejected) > 5 else ""
+            warnings.append(f"watchlist_env_invalid_symbols:{env_key}:{sample}{suffix}")
         if symbols:
             watchlists[market] = symbols
             sources[market] = "env"

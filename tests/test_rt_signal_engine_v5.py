@@ -385,6 +385,46 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(context["markets"]["HK"]["source"], "file")
         self.assertEqual(context["markets"]["US"]["source"], "env")
 
+    def test_load_watchlists_filters_invalid_file_symbols_by_market(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "watchlist.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "markets": {
+                            "HK": {"symbols": ["00700", "hkHSI", "1234", "00005"]},
+                            "US": {"symbols": ["AAPL", "BRK.B", "BAD$", "TOO_LONG_SYMBOL"]},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            hk, us, context = rt.load_watchlists(env={}, file_path=str(path))
+
+        self.assertEqual(hk, ["00700", "00005"])
+        self.assertEqual(us, ["AAPL", "BRK.B"])
+        self.assertTrue(any("watchlist_file_invalid_symbols:HK:" in warning for warning in context["warnings"]))
+        self.assertTrue(any("watchlist_file_invalid_symbols:US:" in warning for warning in context["warnings"]))
+
+    def test_env_watchlist_filters_invalid_symbols_by_market(self):
+        hk, us, context = rt.load_watchlists(
+            env={
+                "RT_SIGNAL_HK_WATCHLIST": "00700, hkHSI, 00005",
+                "RT_SIGNAL_US_WATCHLIST": "AAPL, BRK.B, BAD$",
+            },
+            file_path="",
+        )
+
+        self.assertEqual(hk, ["00700", "00005"])
+        self.assertEqual(us, ["AAPL", "BRK.B"])
+        self.assertTrue(
+            any("watchlist_env_invalid_symbols:RT_SIGNAL_HK_WATCHLIST:" in warning for warning in context["warnings"])
+        )
+        self.assertTrue(
+            any("watchlist_env_invalid_symbols:RT_SIGNAL_US_WATCHLIST:" in warning for warning in context["warnings"])
+        )
+
     def test_trigger_alert_includes_watchlist_metadata(self):
         engine = rt.TriggerEngine(
             watchlist_context={
