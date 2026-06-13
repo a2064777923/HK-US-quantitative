@@ -275,7 +275,7 @@ def normalize_strategy_config(config):
     if risk["atr_take_profit_multiple"] is None or risk["atr_take_profit_multiple"] <= 0:
         warnings.append("invalid_atr_take_profit_multiple_using_default")
         risk["atr_take_profit_multiple"] = 3.0
-    if risk["min_rr_ratio"] is None or risk["min_rr_ratio"] <= 0:
+    if risk["min_rr_ratio"] is None or risk["min_rr_ratio"] < 1.2:
         warnings.append("invalid_min_rr_ratio_using_default")
         risk["min_rr_ratio"] = 1.2
 

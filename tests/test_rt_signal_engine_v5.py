@@ -951,6 +951,18 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(config["risk_model"]["min_rr_ratio"], 1.2)
         self.assertIn("invalid_min_rr_ratio_using_default", warnings)
 
+    def test_strategy_config_does_not_allow_min_rr_below_order_intake_floor(self):
+        config, warnings = rt.normalize_strategy_config({"risk_model": {"min_rr_ratio": 0.5}})
+
+        self.assertEqual(config["risk_model"]["min_rr_ratio"], 1.2)
+        self.assertIn("invalid_min_rr_ratio_using_default", warnings)
+
+    def test_strategy_config_allows_stricter_min_rr_ratio(self):
+        config, warnings = rt.normalize_strategy_config({"risk_model": {"min_rr_ratio": 2.0}})
+
+        self.assertEqual(config["risk_model"]["min_rr_ratio"], 2.0)
+        self.assertNotIn("invalid_min_rr_ratio_using_default", warnings)
+
     def test_strategy_config_normalizes_confirmation_threshold_bounds(self):
         config, warnings = rt.normalize_strategy_config(
             {
