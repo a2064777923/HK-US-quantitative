@@ -1192,11 +1192,13 @@ class TriggerEngine:
                 triggered.append(("跌破MA5", f"${c} < MA5=${indicators.ma5:.2f}", "SELL"))
 
         if indicators.ma10 and indicators.ma20:
-            if indicators.ma10 > indicators.ma20 and len(indicators.closes) >= 20:
+            if len(indicators.closes) >= 20:
                 prev_ma10 = sum(indicators.closes[-10:]) / 10
                 prev_ma20 = sum(indicators.closes[-20:]) / 20
-                if prev_ma10 <= prev_ma20:
+                if indicators.ma10 > indicators.ma20 and prev_ma10 <= prev_ma20:
                     triggered.append(("MA金叉", f"MA10上穿MA20", "BUY"))
+                if indicators.ma10 < indicators.ma20 and prev_ma10 >= prev_ma20:
+                    triggered.append(("MA死叉", f"MA10下穿MA20", "SELL"))
 
         # 4. 成交量異動
         if len(indicators.volumes) >= 20:

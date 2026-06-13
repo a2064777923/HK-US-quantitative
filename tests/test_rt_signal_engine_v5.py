@@ -652,6 +652,55 @@ class RtSignalEngineV5Tests(unittest.TestCase):
 
         self.assertNotIn("MA金叉", [item["trigger"] for item in engine.alerts])
 
+    def test_ma_death_cross_trigger_emits_sell_from_latest_historical_state(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=-0.8)
+        indicators.closes = [100] * 30
+        indicators.ma5 = 100
+        indicators.ma10 = 99
+        indicators.ma20 = 100
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        death_cross_alerts = [item for item in engine.alerts if item["trigger"] == "MA死叉"]
+        self.assertEqual(len(death_cross_alerts), 1)
+        self.assertEqual(death_cross_alerts[0]["signal_type"], "SELL")
+        self.assertEqual(death_cross_alerts[0]["candidate_signal_type"], "SELL")
+        self.assertTrue(death_cross_alerts[0]["confirmed"])
+        self.assertTrue(death_cross_alerts[0]["execution_candidate"])
+
+    def test_ma_death_cross_does_not_reemit_already_crossed_state(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=-0.8)
+        indicators.closes = [100] * 20 + [90] * 10
+        indicators.ma5 = 100
+        indicators.ma10 = 90
+        indicators.ma20 = 95
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertNotIn("MA死叉", [item["trigger"] for item in engine.alerts])
+
     def test_load_watchlists_from_json_file(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "watchlist.json"
