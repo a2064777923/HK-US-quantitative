@@ -1675,6 +1675,8 @@ This reduces same-symbol BUY/SELL queue conflicts without losing diagnostic visi
 
 For trigger overrides with `review_mode=shadow_only_pending_sample`, v5 also emits directional BUY/SELL triggers as `WATCH` even when the full-score threshold is confirmed. The alert keeps `candidate_signal_type`, `candidate_*` risk fields, `trigger_review_mode`, and `strategy_policy_shadow_only=true`, but `execution_candidate=false` and executable stop/take-profit fields stay empty. This lets Hermes and the learning reports continue collecting evidence without allowing a trigger that strategy review placed back into shadow mode to flow into execution review as a trade candidate.
 
+For invalid directional risk geometry, v5 also emits the candidate as `WATCH` before it can enter trade review. `risk_geometry_valid=false` with `risk_geometry_reason` explains whether entry/stop/take-profit was missing, non-positive, or geometrically invalid; executable `stop_loss`, `take_profit`, and `rr_ratio` stay empty while the `candidate_*` fields remain available for diagnostics. This keeps low-price or abnormal-ATR alerts visible without polluting the BUY/SELL execution-candidate queue.
+
 `alert_quality_report.py` summarizes `by_strategy_config_source` and recommends restarting v5 with configured strategy metadata when scanned directional alerts are missing these fields. Older queue entries naturally show `missing` until new alerts are produced after restart.
 
 Server rollout on 2026-06-12:

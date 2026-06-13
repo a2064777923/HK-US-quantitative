@@ -878,6 +878,25 @@ class TriggerEngine:
         threshold = as_float(override.get("max_full_score"), as_float((thresholds.get("SELL") or {}).get("max_full_score"), -0.25))
         return full_score <= threshold
 
+    @staticmethod
+    def risk_geometry(signal_type, entry_price, stop_loss, take_profit):
+        signal_type = str(signal_type or "").upper()
+        if signal_type not in ("BUY", "SELL"):
+            return True, None
+        try:
+            entry = float(entry_price)
+            stop = float(stop_loss)
+            take = float(take_profit)
+        except (TypeError, ValueError):
+            return False, "missing_or_invalid_risk_price"
+        if entry <= 0 or stop <= 0 or take <= 0:
+            return False, "non_positive_risk_price"
+        if signal_type == "BUY" and not (stop < entry < take):
+            return False, "invalid_buy_risk_geometry"
+        if signal_type == "SELL" and not (take < entry < stop):
+            return False, "invalid_sell_risk_geometry"
+        return True, None
+
     def check(self, symbol, indicators, quote):
         """檢查所有觸發條件"""
         if not indicators.closes or len(indicators.closes) < 20:
@@ -968,6 +987,12 @@ class TriggerEngine:
                 candidate_stop_loss = None
                 candidate_take_profit = None
                 candidate_rr_ratio = None
+            risk_geometry_valid, risk_geometry_reason = self.risk_geometry(
+                signal_type,
+                candidate_entry_price,
+                candidate_stop_loss,
+                candidate_take_profit,
+            )
 
             emitted_signal_type = signal_type
             suppressed_directional_reason = None
@@ -984,6 +1009,9 @@ class TriggerEngine:
             ):
                 emitted_signal_type = "WATCH"
                 suppressed_directional_reason = "unconfirmed_directional"
+            if signal_type in ("BUY", "SELL") and not risk_geometry_valid:
+                emitted_signal_type = "WATCH"
+                suppressed_directional_reason = risk_geometry_reason
 
             if emitted_signal_type in ("BUY", "SELL"):
                 entry_price = candidate_entry_price
@@ -1013,6 +1041,8 @@ class TriggerEngine:
                 "suppressed_directional_reason": suppressed_directional_reason,
                 "execution_candidate": emitted_signal_type in ("BUY", "SELL") and confirmed,
                 "confirmed": confirmed,
+                "risk_geometry_valid": risk_geometry_valid,
+                "risk_geometry_reason": risk_geometry_reason,
                 "full_score": round(full_score, 3) if full_score is not None else None,
                 "full_reasons": full_reasons[:5],
                 "price": c,

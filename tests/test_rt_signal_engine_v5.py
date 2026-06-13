@@ -458,6 +458,78 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertFalse(ma5_alert["execution_candidate"])
         self.assertIsNotNone(ma5_alert["stop_loss"])
 
+    def test_invalid_buy_risk_geometry_is_downgraded_to_watch(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+            }
+        )
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+        indicators.atr_14 = 1
+
+        engine.check(
+            "LOW",
+            indicators,
+            {
+                "price": 1,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertFalse(alert["risk_geometry_valid"])
+        self.assertEqual(alert["risk_geometry_reason"], "non_positive_risk_price")
+        self.assertIsNone(alert["stop_loss"])
+        self.assertIsNone(alert["take_profit"])
+        self.assertLessEqual(alert["candidate_stop_loss"], 0)
+
+    def test_invalid_sell_risk_geometry_is_downgraded_to_watch(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+            }
+        )
+        indicators = FakeIndicators(score=-0.8)
+        indicators.rsi_14 = 80
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+        indicators.atr_14 = 1
+
+        engine.check(
+            "LOW",
+            indicators,
+            {
+                "price": 1,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超買"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertEqual(alert["candidate_signal_type"], "SELL")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertFalse(alert["risk_geometry_valid"])
+        self.assertEqual(alert["risk_geometry_reason"], "non_positive_risk_price")
+        self.assertIsNone(alert["stop_loss"])
+        self.assertIsNone(alert["take_profit"])
+        self.assertLessEqual(alert["candidate_take_profit"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
