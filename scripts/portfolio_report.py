@@ -34,10 +34,17 @@ def run_cmd(args, timeout=20):
 
 
 def save_json_atomic(path, payload):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    tmp = f"{path}.{os.getpid()}.{datetime.now().strftime('%Y%m%d%H%M%S%f')}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 def psql(sql, timeout=30):
@@ -266,11 +273,17 @@ def get_latest_klines(symbols):
         return {}
     r = psql(
         f"""
-        SELECT DISTINCT ON (symbol) symbol, close_price, timestamp::date
-        FROM klines
-        WHERE interval = 'day'
-        AND symbol IN ({sql_in(symbols)})
-        ORDER BY symbol, timestamp DESC
+        WITH daily_bar AS (
+            SELECT DISTINCT ON (symbol, timestamp::date)
+                   symbol, close_price, timestamp::date AS trade_date
+            FROM klines
+            WHERE interval = 'day'
+              AND symbol IN ({sql_in(symbols)})
+            ORDER BY symbol, timestamp::date, timestamp DESC
+        )
+        SELECT DISTINCT ON (symbol) symbol, close_price, trade_date
+        FROM daily_bar
+        ORDER BY symbol, trade_date DESC
         """
     )
     result = {}
@@ -1033,13 +1046,17 @@ def get_recent_trades(portfolio_id, days=30):
     cols = table_columns("sim_trades")
     if not cols:
         return []
+    row_id_expr = first_existing("sim_trades", ("id",), "NULL")
+    trade_id_expr = first_existing("sim_trades", ("trade_id",), "NULL")
+    order_id_expr = first_existing("sim_trades", ("order_id",), "NULL")
     fee_expr = first_existing("sim_trades", ("total_fee", "fee", "commission"), "0")
     value_expr = first_existing("sim_trades", ("trade_value", "amount"), "price * quantity")
-    created_expr = first_existing("sim_trades", ("created_at", "executed_at", "trade_time"), "NOW()")
+    created_expr = first_existing("sim_trades", ("executed_at", "created_at", "trade_time"), "NOW()")
     date_filter = f"AND {created_expr} >= NOW() - INTERVAL '{int(days)} days'" if days and days > 0 else ""
     r = psql(
         f"""
-        SELECT symbol, side, price, quantity, {fee_expr}, {value_expr}, {created_expr}
+        SELECT {row_id_expr}, {trade_id_expr}, {order_id_expr},
+               symbol, side, price, quantity, {fee_expr}, {value_expr}, {created_expr}
         FROM sim_trades
         WHERE portfolio_id = {int(portfolio_id)}
         {date_filter}
@@ -1048,16 +1065,19 @@ def get_recent_trades(portfolio_id, days=30):
     )
     trades = []
     for row in rows(r.stdout) if r.returncode == 0 else []:
-        if len(row) >= 7:
+        if len(row) >= 10:
             trades.append(
                 {
-                    "symbol": row[0],
-                    "side": row[1].lower(),
-                    "price": as_float(row[2]),
-                    "quantity": as_float(row[3]),
-                    "fee": as_float(row[4]),
-                    "trade_value": as_float(row[5]),
-                    "created_at": row[6],
+                    "row_id": row[0],
+                    "trade_id": row[1],
+                    "order_id": row[2],
+                    "symbol": row[3],
+                    "side": row[4].lower(),
+                    "price": as_float(row[5]),
+                    "quantity": as_float(row[6]),
+                    "fee": as_float(row[7]),
+                    "trade_value": as_float(row[8]),
+                    "created_at": row[9],
                 }
             )
     return trades
@@ -1075,19 +1095,40 @@ def fifo_trade_review(trades):
         if qty <= 0 or price <= 0:
             continue
         if side == "buy":
-            lots[symbol].append({"quantity": qty, "price": price, "fee": fee})
+            lots[symbol].append(
+                {
+                    "quantity": qty,
+                    "price": price,
+                    "fee": fee,
+                    "row_id": trade.get("row_id"),
+                    "trade_id": trade.get("trade_id"),
+                    "order_id": trade.get("order_id"),
+                    "created_at": trade.get("created_at"),
+                }
+            )
             continue
         if side != "sell":
             continue
         remaining = qty
         cost = 0.0
         buy_fee = 0.0
+        entry_legs = []
         while remaining > 0 and lots[symbol]:
             lot = lots[symbol][0]
             used = min(remaining, lot["quantity"])
             cost += used * lot["price"]
             if lot["quantity"] > 0:
                 buy_fee += lot["fee"] * (used / lot["quantity"])
+            entry_legs.append(
+                {
+                    "row_id": lot.get("row_id"),
+                    "trade_id": lot.get("trade_id"),
+                    "order_id": lot.get("order_id"),
+                    "opened_at": lot.get("created_at"),
+                    "quantity": round(used, 6),
+                    "price": lot.get("price"),
+                }
+            )
             lot["quantity"] -= used
             remaining -= used
             if lot["quantity"] <= 0:
@@ -1101,6 +1142,12 @@ def fifo_trade_review(trades):
             {
                 "symbol": symbol,
                 "quantity": matched,
+                "entry_trade_ids": sorted({str(leg.get("trade_id")) for leg in entry_legs if leg.get("trade_id")}),
+                "entry_order_ids": sorted({str(leg.get("order_id")) for leg in entry_legs if leg.get("order_id")}),
+                "entry_legs": entry_legs,
+                "exit_row_id": trade.get("row_id"),
+                "exit_trade_id": trade.get("trade_id"),
+                "exit_order_id": trade.get("order_id"),
                 "exit_price": price,
                 "pnl_hkd_est": round(pnl * fx_to_hkd(symbol), 2),
                 "pnl_pct_est": round((proceeds / cost - 1) * 100, 2) if cost > 0 else 0,

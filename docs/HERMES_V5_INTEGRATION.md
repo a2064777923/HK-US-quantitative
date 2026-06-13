@@ -552,7 +552,7 @@ It reads:
 - `positions` and `portfolios` for cash, exposure, unrealized P&L, and high-priority holdings;
 - latest `signal_v4/v4_full` rows for each holding;
 - latest K-line close as a price fallback;
-- recent `sim_trades` for FIFO-style closed trade review;
+- recent `sim_trades` for FIFO-style closed trade review, preserving available `id`, `trade_id`, and `order_id` lineage;
 - all available simulation `sim_trades` for a read-only position reconciliation check.
 
 Examples:
@@ -571,6 +571,7 @@ Important behavior:
 - User portfolio recommendations are advice-only.
 - Simulation portfolio recommendations can inform Hermes judgment, but execution still goes through `rt_order_intake.py`.
 - Trade review P&L is FIFO-estimated from `sim_trades`; it is a diagnostic, not a tax/accounting ledger.
+- Closed-trade rows carry entry/exit trade and order IDs when the backend exposes them. This does not prove signal quality by itself; `simulation_performance_report.py` checks whether those order IDs can be traced back to processed v5 intake decisions.
 - Each portfolio report includes `risk_summary`; the payload also includes top-level `portfolio_risk` with `schema=portfolio_risk_report_v1`.
 - `portfolio_risk` covers cash/exposure, market and quote-currency exposure, max and top-3 concentration, unrealized P&L, latest v4 signal pressure, stop-loss distance, stale price/K-line flags, and backend valuation discrepancy.
 - The payload also includes `position_review` with `schema=portfolio_position_review_v1`. These items ask Hermes to review existing holdings for exit, reduction, trailing stop, or hold/watch decisions.
@@ -3403,7 +3404,8 @@ Recommended read-only cron:
 - portfolio risk level and risk flags;
 - worst closed symbols by estimated P&L;
 - open position risk rows, including high-priority holdings and current recommendations;
-- recommendations such as keeping `alert-sim` disabled, prioritizing high-risk position judgments, and inspecting worst closed symbols.
+- closed-trade signal traceability from FIFO closed trades back to `/tmp/rt_order_intake_state.json`;
+- recommendations such as keeping `alert-sim` disabled, repairing signal lineage, prioritizing high-risk position judgments, and inspecting worst closed symbols.
 - a hash-stamped `remediation_plan` with schema `simulation_strategy_remediation_v1`, linking weak simulation evidence to manual review actions.
 
 Default command:
@@ -3412,14 +3414,16 @@ Default command:
 /usr/bin/python3 /root/simulation_performance_report.py --output /tmp/simulation_performance_report.json --text
 ```
 
-The output schema is `simulation_performance_report_v1`. `status=FAIL` means recent simulation behavior does not support new exposure: for example total simulation return is not positive, closed P&L is not positive, closed-trade win rate is too low, blocking simulation review notes are present, or simulation portfolio risk is critical. `status=WARN` means the realized trade sample is acceptable but portfolio risk still requires manual/Hermes review. `status=OK` means the simulation performance attribution layer has no blocking or warning reason. This report is read-only: it does not submit orders, change strategy thresholds, repair positions, or apply watchlist/config proposals.
+The output schema is `simulation_performance_report_v1`. `status=FAIL` means recent simulation behavior does not support new exposure: for example total simulation return is not positive, closed P&L is not positive, closed-trade win rate is too low, blocking simulation review notes are present, closed trades cannot be traced back to processed v5 intake/order decisions, or simulation portfolio risk is critical. `status=WARN` means the realized trade sample is acceptable but portfolio risk still requires manual/Hermes review. `status=OK` means the simulation performance attribution layer has no blocking or warning reason. This report is read-only: it does not submit orders, change strategy thresholds, repair positions, or apply watchlist/config proposals.
+
+The traceability section has schema `simulation_closed_trade_signal_traceability_v1`. It reads only `/tmp/rt_order_intake_state.json` and matches FIFO closed-trade entry/exit `order_id` values to processed intake decisions with `order_result.order_id`/`id`. If recent closed trades exist but processed decisions are empty, the state file is missing, entry order IDs are absent, or entry order IDs do not match any processed signal, the report adds `closed_trade_signal_traceability_missing` and fails closed. Positive P&L without this linkage is not treated as upgrade evidence, because Hermes cannot prove which v5 signal, score, trigger, market context, source-quality state, or judgment produced the trade.
 
 When simulation performance is weak, `remediation_plan.status=operator_review_required`. The plan is intentionally review-only and carries:
 
 - `proposal_hash` as the stable review identifier;
 - `manual_review_required=true` and `auto_applied=false`;
 - an `operator_contract` proving it does not submit orders, change execution mode, change strategy config, change watchlists, change crontab, or repair positions;
-- actions such as `keep_alert_sim_disabled`, `reject_or_hold_new_buy_by_default`, `require_position_judgments_for_high_priority_holdings`, `review_worst_closed_symbols_before_strategy_changes`, and `keep_strategy_changes_manual_and_shadow_only`.
+- actions such as `keep_alert_sim_disabled`, `reject_or_hold_new_buy_by_default`, `repair_closed_trade_signal_lineage`, `require_position_judgments_for_high_priority_holdings`, `review_worst_closed_symbols_before_strategy_changes`, and `keep_strategy_changes_manual_and_shadow_only`.
 
 Hermes may cite the remediation hash in a judgment or daily review, but it must not treat the plan as an applyable strategy proposal. Any real strategy config, watchlist, position-ledger, or execution-mode change still requires the separate hash-confirmed promotion or repair tools and a fresh readiness report.
 
@@ -3701,6 +3705,7 @@ Server rollout on 2026-06-12:
 - `rt_order_intake.py` still depends on the QuantMind simulation API shape; test on the server before enabling `alert-sim`.
 - Hermes LLM judgment is represented as a local JSONL artifact. The next improvement should enrich the judgment prompt with broader market/news/context inputs.
 - `portfolio_report.py` estimates closed-trade P&L from available `sim_trades`; improve it if the backend exposes canonical realized P&L rows.
+- Closed-trade learning now requires `sim_trades.order_id` to line up with `/tmp/rt_order_intake_state.json` processed decisions. The current server may still have many dry-runs and no processed execution records, so this gate can legitimately block strategy promotion until alert-sim execution is intentionally enabled and lineage is retained.
 - The server can show `positions` rows lagging behind `sim_trades`; `portfolio_risk` now detects this, but it does not repair the backend position ledger.
 - `sim_position_reconcile.py` can repair portfolio 8 positions from `sim_trades`, but it should stay hash-gated and manually reviewed until the backend API's own position update path is understood.
 - `rt_signal_outcome_report.py` still uses daily K-lines for return and horizon authority. Minute bars now help resolve same-day stop/target ordering and classify no-lookahead signal-time 5m/15m/30m/60m context for learning, but full execution-quality replay remains incomplete.

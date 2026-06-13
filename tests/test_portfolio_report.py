@@ -8,6 +8,23 @@ from scripts import portfolio_report as report
 
 
 class PortfolioReportTests(unittest.TestCase):
+    def test_get_latest_klines_reads_canonical_daily_bars(self):
+        captured = {}
+
+        def fake_psql(sql, timeout=30):
+            captured["sql"] = sql
+            return type("Result", (), {"returncode": 0, "stdout": "AAPL\t100\t2026-06-12\n", "stderr": ""})()
+
+        with patch.object(report, "psql", side_effect=fake_psql):
+            klines = report.get_latest_klines(["AAPL"])
+
+        sql = captured["sql"]
+        normalized = " ".join(sql.split())
+        self.assertEqual(klines["AAPL"], {"close": 100.0, "date": "2026-06-12"})
+        self.assertIn("WITH daily_bar AS", sql)
+        self.assertIn("SELECT DISTINCT ON (symbol, timestamp::date)", sql)
+        self.assertIn("ORDER BY symbol, timestamp::date, timestamp DESC", normalized)
+
     def test_build_portfolio_report_separates_user_and_simulation_roles(self):
         position = {
             "symbol": "00700",
@@ -54,6 +71,9 @@ class PortfolioReportTests(unittest.TestCase):
     def test_fifo_trade_review_estimates_closed_trade_pnl(self):
         trades = [
             {
+                "row_id": "1",
+                "trade_id": "trade-buy",
+                "order_id": "order-buy",
                 "symbol": "00700",
                 "side": "buy",
                 "price": 100,
@@ -63,6 +83,9 @@ class PortfolioReportTests(unittest.TestCase):
                 "created_at": "2026-06-01",
             },
             {
+                "row_id": "2",
+                "trade_id": "trade-sell",
+                "order_id": "order-sell",
                 "symbol": "00700",
                 "side": "sell",
                 "price": 110,
@@ -80,6 +103,55 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertEqual(closed[0]["quantity"], 4)
         self.assertAlmostEqual(closed[0]["pnl_hkd_est"], 38.6)
         self.assertAlmostEqual(closed[0]["pnl_pct_est"], 10.0)
+        self.assertEqual(closed[0]["entry_trade_ids"], ["trade-buy"])
+        self.assertEqual(closed[0]["entry_order_ids"], ["order-buy"])
+        self.assertEqual(closed[0]["exit_trade_id"], "trade-sell")
+        self.assertEqual(closed[0]["exit_order_id"], "order-sell")
+        self.assertEqual(closed[0]["entry_legs"][0]["opened_at"], "2026-06-01")
+
+    def test_get_recent_trades_preserves_order_lineage_columns(self):
+        captured = {}
+
+        def fake_table_columns(table):
+            self.assertEqual(table, "sim_trades")
+            return {
+                "id",
+                "trade_id",
+                "order_id",
+                "symbol",
+                "side",
+                "price",
+                "quantity",
+                "total_fee",
+                "trade_value",
+                "executed_at",
+            }
+
+        def fake_psql(sql, timeout=30):
+            captured["sql"] = sql
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "1\ttrade-1\torder-1\t00700\tBUY\t100\t10\t1\t1000\t2026-06-01T09:30:00\n",
+                    "stderr": "",
+                },
+            )()
+
+        with (
+            patch.object(report, "table_columns", side_effect=fake_table_columns),
+            patch.object(report, "psql", side_effect=fake_psql),
+        ):
+            trades = report.get_recent_trades(8, days=30)
+
+        sql = " ".join(captured["sql"].split())
+        self.assertIn("SELECT id, trade_id, order_id", sql)
+        self.assertIn("executed_at >= NOW()", sql)
+        self.assertEqual(trades[0]["row_id"], "1")
+        self.assertEqual(trades[0]["trade_id"], "trade-1")
+        self.assertEqual(trades[0]["order_id"], "order-1")
+        self.assertEqual(trades[0]["side"], "buy")
 
     def test_save_json_atomic_writes_payload(self):
         with tempfile.TemporaryDirectory() as td:
