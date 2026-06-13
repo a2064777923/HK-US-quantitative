@@ -1112,6 +1112,29 @@ class TriggerEngine:
             return False, "invalid_sell_risk_geometry"
         return True, None
 
+    @staticmethod
+    def risk_reward_ratio(signal_type, entry_price, stop_loss, take_profit):
+        signal_type = str(signal_type or "").upper()
+        try:
+            entry = float(entry_price)
+            stop = float(stop_loss)
+            take = float(take_profit)
+        except (TypeError, ValueError):
+            return None
+        if not (math.isfinite(entry) and math.isfinite(stop) and math.isfinite(take)):
+            return None
+        if signal_type == "BUY":
+            risk = entry - stop
+            reward = take - entry
+        elif signal_type == "SELL":
+            risk = stop - entry
+            reward = entry - take
+        else:
+            return None
+        if risk <= 0 or reward <= 0:
+            return None
+        return round(reward / risk, 2)
+
     def check(self, symbol, indicators, quote):
         """檢查所有觸發條件"""
         quote, _quote_error = normalize_quote(quote)
@@ -1194,15 +1217,18 @@ class TriggerEngine:
             if signal_type == "BUY":
                 candidate_stop_loss = round(c - stop_multiple * atr, 2)
                 candidate_take_profit = round(c + take_profit_multiple * atr, 2)
-                candidate_rr_ratio = round(take_profit_multiple * atr / (stop_multiple * atr), 2) if atr > 0 and stop_multiple > 0 else 1.5
             elif signal_type == "SELL":
                 candidate_stop_loss = round(c + stop_multiple * atr, 2)
                 candidate_take_profit = round(c - take_profit_multiple * atr, 2)
-                candidate_rr_ratio = round(take_profit_multiple * atr / (stop_multiple * atr), 2) if atr > 0 and stop_multiple > 0 else 1.5
             else:
                 candidate_stop_loss = None
                 candidate_take_profit = None
-                candidate_rr_ratio = None
+            candidate_rr_ratio = self.risk_reward_ratio(
+                signal_type,
+                candidate_entry_price,
+                candidate_stop_loss,
+                candidate_take_profit,
+            )
             risk_geometry_valid, risk_geometry_reason = self.risk_geometry(
                 signal_type,
                 candidate_entry_price,

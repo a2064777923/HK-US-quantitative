@@ -915,6 +915,11 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertFalse(ma5_alert["execution_candidate"])
         self.assertIsNotNone(ma5_alert["stop_loss"])
 
+    def test_risk_reward_ratio_uses_actual_price_geometry(self):
+        self.assertEqual(rt.TriggerEngine.risk_reward_ratio("BUY", 10.0, 9.97, 10.04), 1.33)
+        self.assertEqual(rt.TriggerEngine.risk_reward_ratio("SELL", 10.0, 10.03, 9.96), 1.33)
+        self.assertIsNone(rt.TriggerEngine.risk_reward_ratio("BUY", 10.0, 10.0, 10.04))
+
     def test_unconfirmed_watch_does_not_cool_down_later_confirmed_directional(self):
         engine = rt.TriggerEngine(
             strategy_config={
@@ -987,6 +992,46 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(alert["min_rr_ratio"], 1.2)
         self.assertIsNone(alert["stop_loss"])
         self.assertIsNone(alert["take_profit"])
+
+    def test_rounded_price_rr_below_minimum_is_downgraded_to_watch(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+                "risk_model": {
+                    "atr_stop_multiple": 2.0,
+                    "atr_take_profit_multiple": 3.0,
+                    "min_rr_ratio": 1.4,
+                },
+            }
+        )
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+        indicators.atr_14 = 0.014
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 10,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertEqual(alert["candidate_entry_price"], 10)
+        self.assertEqual(alert["candidate_stop_loss"], 9.97)
+        self.assertEqual(alert["candidate_take_profit"], 10.04)
+        self.assertEqual(alert["candidate_rr_ratio"], 1.33)
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertEqual(alert["risk_geometry_reason"], "rr_ratio_below_minimum")
+        self.assertFalse(alert["execution_candidate"])
 
     def test_nonfinite_score_and_atr_do_not_enter_alert_json(self):
         engine = rt.TriggerEngine()
