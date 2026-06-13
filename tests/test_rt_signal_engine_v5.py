@@ -527,6 +527,32 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertFalse(ma5_alert["execution_candidate"])
         self.assertIsNotNone(ma5_alert["stop_loss"])
 
+    def test_cooldown_key_is_independent_of_hkt_calendar_date(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        cooldown_key = engine.alert_cooldown_key("aapl", "BUY", "RSI超賣")
+        with patch.object(rt.time, "time", return_value=1_000_000):
+            engine.cooldowns[cooldown_key] = 1_000_000 - 60
+            engine.check(
+                "AAPL",
+                indicators,
+                {
+                    "price": 100,
+                    "volume": 0,
+                    "market": "US",
+                    "time": "2026-06-13 03:59:00",
+                    "change_pct": 0,
+                },
+            )
+
+        self.assertEqual(engine.alerts, [])
+        self.assertEqual(engine.cooldowns[cooldown_key], 1_000_000 - 60)
+
     def test_invalid_buy_risk_geometry_is_downgraded_to_watch(self):
         engine = rt.TriggerEngine(
             strategy_config={

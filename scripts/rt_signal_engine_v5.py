@@ -925,6 +925,9 @@ class TriggerEngine:
         cooldown = as_int(override.get("cooldown_seconds"), self.strategy_config.get("signal_cooldown_seconds"))
         return cooldown if cooldown and cooldown > 0 else SIGNAL_COOLDOWN
 
+    def alert_cooldown_key(self, symbol, signal_type, trigger_name):
+        return f"{str(symbol or '').upper()}:{self.trigger_key(signal_type, trigger_name)}"
+
     def volume_anomaly_ratio(self):
         return as_float(self.strategy_config.get("volume_anomaly_ratio"), VOLUME_ANOMALY_RATIO) or VOLUME_ANOMALY_RATIO
 
@@ -1038,7 +1041,7 @@ class TriggerEngine:
         for trigger_name, detail, signal_type in triggered:
             if not self.trigger_enabled(signal_type, trigger_name):
                 continue
-            key = f"{symbol}_{trigger_name}_{datetime.now().strftime('%Y%m%d')}"
+            key = self.alert_cooldown_key(symbol, signal_type, trigger_name)
             cooldown_seconds = self.trigger_cooldown_seconds(signal_type, trigger_name)
             if key in self.cooldowns and now - self.cooldowns[key] < cooldown_seconds:
                 continue
