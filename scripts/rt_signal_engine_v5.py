@@ -1256,17 +1256,16 @@ class TriggerEngine:
             
             # 計算入場/止盈/止損 (基於ATR)
             atr = as_float(indicators.atr_14)
-            if atr is None or atr <= 0:
-                atr = c * 0.02  # 默認2%
+            atr_valid = atr is not None and atr > 0
             stop_multiple = self.risk_multiple("atr_stop_multiple", 2.0)
             take_profit_multiple = self.risk_multiple("atr_take_profit_multiple", 3.0)
             
             confirmed = self.is_confirmed(signal_type, trigger_name, full_score)
             candidate_entry_price = self.round_risk_price(c)
-            if signal_type == "BUY":
+            if signal_type == "BUY" and atr_valid:
                 candidate_stop_loss = self.round_risk_price(c - stop_multiple * atr, reference_price=c)
                 candidate_take_profit = self.round_risk_price(c + take_profit_multiple * atr, reference_price=c)
-            elif signal_type == "SELL":
+            elif signal_type == "SELL" and atr_valid:
                 candidate_stop_loss = self.round_risk_price(c + stop_multiple * atr, reference_price=c)
                 candidate_take_profit = self.round_risk_price(c - take_profit_multiple * atr, reference_price=c)
             else:
@@ -1284,6 +1283,9 @@ class TriggerEngine:
                 candidate_stop_loss,
                 candidate_take_profit,
             )
+            if signal_type in ("BUY", "SELL") and not atr_valid:
+                risk_geometry_valid = False
+                risk_geometry_reason = "missing_or_invalid_atr"
             min_rr_ratio = self.min_rr_ratio() if signal_type in ("BUY", "SELL") else None
             if (
                 signal_type in ("BUY", "SELL")
@@ -1374,7 +1376,7 @@ class TriggerEngine:
                 "candidate_take_profit": candidate_take_profit,
                 "candidate_rr_ratio": candidate_rr_ratio,
                 "min_rr_ratio": min_rr_ratio,
-                "atr": round(atr, 3),
+                "atr": round(atr, 3) if atr is not None else None,
             })
 
 

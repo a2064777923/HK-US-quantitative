@@ -1243,8 +1243,48 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
         self.assertEqual(alert["signal_type"], "WATCH")
         self.assertIsNone(alert["full_score"])
-        self.assertEqual(alert["atr"], 2.0)
+        self.assertIsNone(alert["atr"])
+        self.assertFalse(alert["risk_geometry_valid"])
+        self.assertEqual(alert["risk_geometry_reason"], "missing_or_invalid_atr")
+        self.assertIsNone(alert["candidate_stop_loss"])
+        self.assertIsNone(alert["candidate_take_profit"])
         json.dumps(alert, allow_nan=False)
+
+    def test_missing_atr_directional_is_downgraded_without_fallback_risk_prices(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+        indicators.atr_14 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-13 03:59:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertEqual(alert["suppressed_directional_reason"], "missing_or_invalid_atr")
+        self.assertFalse(alert["risk_geometry_valid"])
+        self.assertEqual(alert["risk_geometry_reason"], "missing_or_invalid_atr")
+        self.assertIsNone(alert["stop_loss"])
+        self.assertIsNone(alert["take_profit"])
+        self.assertIsNone(alert["candidate_stop_loss"])
+        self.assertIsNone(alert["candidate_take_profit"])
+        self.assertIsNone(alert["candidate_rr_ratio"])
+        self.assertIsNone(alert["atr"])
 
     def test_cooldown_key_is_independent_of_hkt_calendar_date(self):
         engine = rt.TriggerEngine()
