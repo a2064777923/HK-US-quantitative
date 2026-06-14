@@ -46,6 +46,17 @@ SIMULATION_POSTMORTEM_NOTE_FILE = os.environ.get(
     "SIMULATION_POSTMORTEM_NOTE_FILE",
     "/tmp/simulation_postmortem_notes.jsonl",
 )
+STRATEGY_REVIEW_FILE = os.environ.get("STRATEGY_REVIEW_REPORT_FILE", "/tmp/strategy_review_report.json")
+V5_LOCAL_REPLAY_FILE = os.environ.get("V5_LOCAL_REPLAY_REPORT_FILE", "/tmp/v5_local_replay_report.json")
+V5_REPLAY_STRATEGY_REVIEW_FILE = os.environ.get(
+    "V5_REPLAY_STRATEGY_REVIEW_REPORT_FILE",
+    "/tmp/v5_replay_strategy_review_report.json",
+)
+TRIGGER_EVIDENCE_CONVERGENCE_FILE = os.environ.get(
+    "TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE",
+    "/tmp/trigger_evidence_convergence_report.json",
+)
+MAX_REPLAY_CONTEXT_AGE_HOURS = float(os.environ.get("OPERATOR_ACTION_MAX_REPLAY_CONTEXT_AGE_HOURS", "24"))
 
 
 PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
@@ -53,6 +64,18 @@ PRIORITY_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
 def now_iso():
     return datetime.now().isoformat(timespec="seconds")
+
+
+def parse_timestamp(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
 
 
 def load_json_file(path, default=None):
@@ -941,6 +964,168 @@ def simulation_postmortem_actions(simulation_postmortem_audit, note_draft_report
     ]
 
 
+def report_age_hours(payload, now=None):
+    generated_at = parse_timestamp(safe_dict(payload).get("generated_at"))
+    if not generated_at:
+        return None
+    now = now or datetime.now()
+    return round((now - generated_at).total_seconds() / 3600.0, 2)
+
+
+def replay_convergence_actions(strategy_review, v5_local_replay, v5_replay_strategy_review, convergence, now=None):
+    strategy_review = safe_dict(strategy_review)
+    v5_local_replay = safe_dict(v5_local_replay)
+    v5_replay_strategy_review = safe_dict(v5_replay_strategy_review)
+    convergence = safe_dict(convergence)
+
+    has_forward_context = strategy_review.get("schema") == "strategy_review_report_v1"
+    has_local_replay = v5_local_replay.get("schema") == "v5_local_replay_report_v1"
+    has_replay_strategy = v5_replay_strategy_review.get("schema") == "v5_replay_strategy_review_report_v1"
+    has_convergence = convergence.get("schema") == "trigger_evidence_convergence_report_v1"
+    if not any((has_forward_context, has_local_replay, has_replay_strategy, has_convergence)):
+        return []
+
+    missing = []
+    if not has_forward_context:
+        missing.append("strategy_review_report")
+    if not has_local_replay:
+        missing.append("v5_local_replay_report")
+    if not has_replay_strategy:
+        missing.append("v5_replay_strategy_review_report")
+    if not has_convergence:
+        missing.append("trigger_evidence_convergence_report")
+
+    actions = []
+    replay_age = report_age_hours(v5_replay_strategy_review, now=now) if has_replay_strategy else None
+    convergence_age = report_age_hours(convergence, now=now) if has_convergence else None
+    stale = []
+    if replay_age is not None and replay_age > MAX_REPLAY_CONTEXT_AGE_HOURS:
+        stale.append("v5_replay_strategy_review_report")
+    if convergence_age is not None and convergence_age > MAX_REPLAY_CONTEXT_AGE_HOURS:
+        stale.append("trigger_evidence_convergence_report")
+
+    if missing or stale:
+        commands = []
+        refresh_replay_strategy = has_local_replay and (
+            not has_replay_strategy or "v5_replay_strategy_review_report" in stale
+        )
+        refresh_convergence = has_forward_context and (
+            has_replay_strategy or refresh_replay_strategy
+        ) and (
+            not has_convergence
+            or "trigger_evidence_convergence_report" in stale
+            or "v5_replay_strategy_review_report" in stale
+        )
+        if refresh_replay_strategy:
+            commands.append(
+                "/usr/bin/python3 /root/v5_replay_strategy_review_report.py "
+                "--v5-local-replay-file /tmp/v5_local_replay_report.json "
+                "--output /tmp/v5_replay_strategy_review_report.json --text"
+            )
+        if refresh_convergence:
+            commands.append(
+                "/usr/bin/python3 /root/trigger_evidence_convergence_report.py "
+                "--strategy-review-file /tmp/strategy_review_report.json "
+                "--v5-replay-strategy-review-file /tmp/v5_replay_strategy_review_report.json "
+                "--output /tmp/trigger_evidence_convergence_report.json --text"
+            )
+        actions.append(
+            action(
+                "refresh_v5_replay_convergence_context",
+                "P2",
+                "evidence_collection",
+                "Refresh local replay and trigger-convergence context",
+                (
+                    "Hermes can compare forward outcome evidence with replay-derived trigger noise only when the replay "
+                    "strategy review and convergence reports are present and fresh."
+                ),
+                evidence={
+                    "missing_reports": missing,
+                    "stale_reports": stale,
+                    "max_age_hours": MAX_REPLAY_CONTEXT_AGE_HOURS,
+                    "ages_hours": {
+                        "v5_replay_strategy_review": replay_age,
+                        "trigger_evidence_convergence": convergence_age,
+                    },
+                    "schemas": {
+                        "strategy_review": strategy_review.get("schema"),
+                        "v5_local_replay": v5_local_replay.get("schema"),
+                        "v5_replay_strategy_review": v5_replay_strategy_review.get("schema"),
+                        "trigger_evidence_convergence": convergence.get("schema"),
+                    },
+                    "local_only_note": "Raw replay CSV data should stay local; only compact JSON reports belong in Hermes context.",
+                },
+                next_step=(
+                    "Regenerate the missing or stale read-only reports from existing local replay/forward review JSON. "
+                    "If v5_local_replay_report is missing on the server, copy only the compact local JSON report or rerun replay locally; "
+                    "do not sync raw CSV/minute data to production by default."
+                ),
+                command=" && ".join(commands) if commands else None,
+                operator_effect={
+                    "refreshes_reports": True,
+                    "uses_local_replay_summary_only": True,
+                    "copies_raw_data": False,
+                    "submits_orders": False,
+                    "changes_strategy": False,
+                    "changes_portfolio": False,
+                    "changes_crontab": False,
+                },
+                blockers=["local_replay_report_required"] if not has_local_replay else [],
+            )
+        )
+
+    summary = safe_dict(convergence.get("summary"))
+    risk_count = int(summary.get("converged_risk_count") or 0)
+    replay_challenges = int(summary.get("replay_challenges_forward_count") or 0)
+    insufficient = int(summary.get("insufficient_forward_sample_count") or 0)
+    if has_convergence and (risk_count or replay_challenges or insufficient):
+        top_rows = []
+        for row in safe_list(convergence.get("trigger_evidence")):
+            if not isinstance(row, dict):
+                continue
+            if row.get("status") in ("CONVERGED_RISK", "REPLAY_CHALLENGES_FORWARD", "INSUFFICIENT_FORWARD_SAMPLE"):
+                top_rows.append(
+                    {
+                        "key": row.get("key"),
+                        "status": row.get("status"),
+                        "confidence": row.get("confidence"),
+                        "reasons": safe_list(row.get("reasons")),
+                        "forward_policy": safe_dict(row.get("forward")).get("policy"),
+                        "replay_policy": safe_dict(row.get("replay")).get("policy"),
+                    }
+                )
+        actions.append(
+            action(
+                "review_trigger_evidence_convergence_before_promotion",
+                "P1" if risk_count or replay_challenges else "P2",
+                "evidence_collection",
+                "Review replay/forward trigger convergence before promotion",
+                (
+                    "Forward outcome policy and local replay noise are not fully supportive. Hermes should treat this as "
+                    "challenge context and cap confidence until forward samples mature or trigger thresholds are reviewed."
+                ),
+                evidence={
+                    "summary": summary,
+                    "top_trigger_evidence": top_rows[:8],
+                    "recommendations": safe_list(convergence.get("recommendations")),
+                    "operator_contract": safe_dict(convergence.get("operator_contract")),
+                },
+                next_step=(
+                    "Do not promote strategy_config from replay or convergence alone. Prioritize triggers flagged as "
+                    "CONVERGED_RISK or REPLAY_CHALLENGES_FORWARD, then wait for resolved forward outcomes before any threshold/config promotion."
+                ),
+                operator_effect={
+                    "refreshes_reports": False,
+                    "submits_orders": False,
+                    "changes_strategy": False,
+                    "changes_portfolio": False,
+                    "changes_crontab": False,
+                },
+            )
+        )
+    return actions
+
+
 def outcome_actions(outcome):
     counts = outcome.get("counts") if isinstance(outcome.get("counts"), dict) else {}
     evaluated = int(counts.get("evaluated_signal_count") or 0)
@@ -1062,6 +1247,26 @@ def build_report(payloads=None):
         else load_json_file(SIMULATION_POSTMORTEM_NOTE_DRAFT_FILE)
     )
     outcome = payloads.get("outcome") if isinstance(payloads.get("outcome"), dict) else load_json_file(OUTCOME_FILE)
+    strategy_review = (
+        payloads.get("strategy_review")
+        if isinstance(payloads.get("strategy_review"), dict)
+        else load_json_file(STRATEGY_REVIEW_FILE)
+    )
+    v5_local_replay = (
+        payloads.get("v5_local_replay")
+        if isinstance(payloads.get("v5_local_replay"), dict)
+        else load_json_file(V5_LOCAL_REPLAY_FILE)
+    )
+    v5_replay_strategy_review = (
+        payloads.get("v5_replay_strategy_review")
+        if isinstance(payloads.get("v5_replay_strategy_review"), dict)
+        else load_json_file(V5_REPLAY_STRATEGY_REVIEW_FILE)
+    )
+    trigger_evidence_convergence = (
+        payloads.get("trigger_evidence_convergence")
+        if isinstance(payloads.get("trigger_evidence_convergence"), dict)
+        else load_json_file(TRIGGER_EVIDENCE_CONVERGENCE_FILE)
+    )
 
     actions = []
     actions.extend(cron_actions(cron_audit, cron_promotion))
@@ -1072,6 +1277,14 @@ def build_report(payloads=None):
     actions.extend(trusted_source_onboarding_actions(trusted_source_discovery, trusted_source_preflight))
     actions.extend(simulation_actions(simulation_performance))
     actions.extend(simulation_postmortem_actions(simulation_postmortem_audit, simulation_postmortem_note_draft))
+    actions.extend(
+        replay_convergence_actions(
+            strategy_review,
+            v5_local_replay,
+            v5_replay_strategy_review,
+            trigger_evidence_convergence,
+        )
+    )
     actions.extend(outcome_actions(outcome))
     actions = dedupe_actions(actions)
 
@@ -1109,6 +1322,10 @@ def build_report(payloads=None):
                 "simulation_postmortem_audit": SIMULATION_POSTMORTEM_AUDIT_FILE,
                 "simulation_postmortem_note_draft": SIMULATION_POSTMORTEM_NOTE_DRAFT_FILE,
                 "outcome": OUTCOME_FILE,
+                "strategy_review": STRATEGY_REVIEW_FILE,
+                "v5_local_replay": V5_LOCAL_REPLAY_FILE,
+                "v5_replay_strategy_review": V5_REPLAY_STRATEGY_REVIEW_FILE,
+                "trigger_evidence_convergence": TRIGGER_EVIDENCE_CONVERGENCE_FILE,
             },
         },
         "summary": {

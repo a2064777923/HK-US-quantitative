@@ -412,6 +412,79 @@ def base_payloads():
             "intraday_signal_context_summary": {"coverage_pct": 59.62},
             "recommendations": ["outcome_sample_not_ready_keep_collecting_daily_klines"],
         },
+        "strategy_review": {
+            "schema": "strategy_review_report_v1",
+            "overall_policy": {"policy": "keep_shadow_or_dry_run"},
+            "trigger_policies": [
+                {
+                    "key": "BUY:站上MA5",
+                    "policy": "shadow_only",
+                    "metrics": {"resolved_count": 0},
+                    "reasons": ["trigger_outcome_sample_below_10"],
+                }
+            ],
+        },
+        "v5_local_replay": {
+            "schema": "v5_local_replay_report_v1",
+            "summary": {
+                "overall_status": "V5_REPLAY_RESEARCH_ONLY",
+                "raw_data_local_only": True,
+                "promotion_ready": False,
+            },
+        },
+        "v5_replay_strategy_review": {
+            "schema": "v5_replay_strategy_review_report_v1",
+            "operator_contract": {
+                "read_only": True,
+                "submits_orders": False,
+                "changes_strategy_config": False,
+                "promotion_eligible": False,
+            },
+            "summary": {
+                "status": "RESEARCH_REVIEW_ONLY",
+                "promotion_eligible": False,
+                "tighten_thresholds_count": 1,
+            },
+        },
+        "trigger_evidence_convergence": {
+            "schema": "trigger_evidence_convergence_report_v1",
+            "operator_contract": {
+                "read_only": True,
+                "submits_orders": False,
+                "changes_strategy_config": False,
+                "promotion_eligible": False,
+            },
+            "summary": {
+                "status": "REVIEW_REQUIRED",
+                "promotion_ready": False,
+                "promotion_eligible": False,
+                "converged_risk_count": 0,
+                "replay_challenges_forward_count": 1,
+                "insufficient_forward_sample_count": 1,
+            },
+            "trigger_evidence": [
+                {
+                    "key": "BUY:站上MA5",
+                    "status": "REPLAY_CHALLENGES_FORWARD",
+                    "confidence": "LOW",
+                    "reasons": ["forward_allows_but_replay_flags_noise"],
+                    "forward": {"policy": "candidate_allow_after_other_gates"},
+                    "replay": {"policy": "tighten_thresholds"},
+                },
+                {
+                    "key": "SELL:跌破MA5",
+                    "status": "INSUFFICIENT_FORWARD_SAMPLE",
+                    "confidence": "LOW",
+                    "reasons": ["forward_outcome_sample_missing"],
+                    "forward": {"policy": "shadow_only"},
+                    "replay": {"policy": "tighten_thresholds"},
+                },
+            ],
+            "recommendations": [
+                "cap_hermes_confidence_until_forward_and_replay_align:BUY:站上MA5",
+                "collect_more_forward_outcomes_before_config_promotion",
+            ],
+        },
     }
 
 
@@ -440,7 +513,15 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertIn("review_intraday_timeframe_quality_limits", actions)
         self.assertIn("onboard_trusted_source_payloads", actions)
         self.assertIn("write_or_repair_simulation_postmortem_notes", actions)
+        self.assertIn("review_trigger_evidence_convergence_before_promotion", actions)
         self.assertIn("wait_for_outcome_maturity", actions)
+        convergence_action = actions["review_trigger_evidence_convergence_before_promotion"]
+        self.assertEqual(convergence_action["priority"], "P1")
+        self.assertEqual(convergence_action["evidence"]["summary"]["replay_challenges_forward_count"], 1)
+        self.assertEqual(convergence_action["evidence"]["top_trigger_evidence"][0]["key"], "BUY:站上MA5")
+        self.assertFalse(convergence_action["operator_effect"]["submits_orders"])
+        self.assertFalse(convergence_action["operator_effect"]["changes_strategy"])
+        self.assertIn("Do not promote strategy_config", convergence_action["recommended_next_step"])
         outcome_action = actions["wait_for_outcome_maturity"]
         self.assertEqual(outcome_action["evidence"]["overall"]["pending_reasons"]["no_future_daily_klines"], 151)
         self.assertEqual(outcome_action["evidence"]["outcome_maturity"]["missing_symbol_kline_count"], 5)
@@ -679,6 +760,44 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertFalse(item["operator_effect"]["submits_orders"])
         self.assertFalse(item["operator_effect"]["changes_strategy"])
 
+    def test_missing_replay_convergence_context_action_is_report_only(self):
+        payloads = base_payloads()
+        payloads["v5_replay_strategy_review"] = {}
+        payloads["trigger_evidence_convergence"] = {}
+        payload = report.build_report(payloads)
+        item = {row["id"]: row for row in payload["actions"]}["refresh_v5_replay_convergence_context"]
+
+        self.assertEqual(item["priority"], "P2")
+        self.assertEqual(item["category"], "evidence_collection")
+        self.assertEqual(
+            item["evidence"]["missing_reports"],
+            ["v5_replay_strategy_review_report", "trigger_evidence_convergence_report"],
+        )
+        self.assertIn("v5_replay_strategy_review_report.py", item["operator_command"])
+        self.assertIn("trigger_evidence_convergence_report.py", item["operator_command"])
+        self.assertIn(" && ", item["operator_command"])
+        self.assertNotIn("local_backtest_dataset.py", item["operator_command"])
+        self.assertTrue(item["operator_effect"]["refreshes_reports"])
+        self.assertTrue(item["operator_effect"]["uses_local_replay_summary_only"])
+        self.assertFalse(item["operator_effect"]["copies_raw_data"])
+        self.assertFalse(item["operator_effect"]["submits_orders"])
+        self.assertFalse(item["operator_effect"]["changes_strategy"])
+        self.assertIn("do not sync raw CSV/minute data", item["recommended_next_step"])
+
+    def test_missing_local_replay_context_blocks_replay_refresh_command(self):
+        payloads = base_payloads()
+        payloads["v5_local_replay"] = {}
+        payloads["v5_replay_strategy_review"] = {}
+        payloads["trigger_evidence_convergence"] = {}
+        payload = report.build_report(payloads)
+        item = {row["id"]: row for row in payload["actions"]}["refresh_v5_replay_convergence_context"]
+
+        self.assertIn("v5_local_replay_report", item["evidence"]["missing_reports"])
+        self.assertIsNone(item["operator_command"])
+        self.assertIn("local_replay_report_required", item["blockers"])
+        self.assertFalse(item["operator_effect"]["copies_raw_data"])
+        self.assertIn("copy only the compact local JSON report", item["recommended_next_step"])
+
     def test_no_actions_is_ok(self):
         payload = report.build_report(
             {
@@ -721,6 +840,10 @@ class OperatorActionQueueReportTests(unittest.TestCase):
                     "status": "OK",
                     "counts": {"evaluated_signal_count": 10},
                 },
+                "strategy_review": {},
+                "v5_local_replay": {},
+                "v5_replay_strategy_review": {},
+                "trigger_evidence_convergence": {},
             }
         )
 
