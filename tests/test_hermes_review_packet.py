@@ -76,6 +76,45 @@ def local_backtest_reliability(status="RESEARCH_USEFUL_WITH_LIMITATIONS", promot
             "status": "WARN",
             "total_symbol_count": 95,
             "total_row_count": 126069,
+            "raw_data_lake_contract": {
+                "local_only": True,
+                "production_consumes_compact_reports_only": True,
+                "required_manifest_fields": ["provider", "path", "coverage", "retrieved_at", "checksum"],
+            },
+            "manifests": {
+                "HK": {
+                    "provider": "tencent_newfqkline",
+                    "market": "HK",
+                    "path": "/tmp/hk_klines_v2.csv",
+                    "retrieved_at": "2026-06-14T12:30:00",
+                    "coverage": {"row_count": 82421, "symbol_count": 63},
+                    "checksum": "hk-sha256",
+                },
+                "US": {
+                    "provider": "alpaca_market_data",
+                    "market": "US",
+                    "path": "/tmp/us_klines.csv",
+                    "retrieved_at": "2026-06-14T12:30:00",
+                    "coverage": {"row_count": 43648, "symbol_count": 32},
+                    "checksum": "us-sha256",
+                },
+                "ALL": {
+                    "provider": "mixed_local_csv",
+                    "market": "ALL",
+                    "path": "/tmp/all_klines.csv",
+                    "retrieved_at": "2026-06-14T12:30:00",
+                    "coverage": {"row_count": 126069, "symbol_count": 95},
+                    "checksum": "all-sha256",
+                },
+            },
+            "checks": [
+                {"status": "OK", "code": "hk_manifest_complete"},
+                {"status": "OK", "code": "hk_manifest_checksum_verified"},
+                {"status": "OK", "code": "us_manifest_complete"},
+                {"status": "OK", "code": "us_manifest_checksum_verified"},
+                {"status": "OK", "code": "all_manifest_complete"},
+                {"status": "OK", "code": "all_manifest_checksum_verified"},
+            ],
             "markets": {
                 "HK": {
                     "provider": "tencent_newfqkline",
@@ -3090,6 +3129,13 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(local["status"], "RESEARCH_USEFUL_WITH_LIMITATIONS")
         self.assertEqual(local["hermes_use"], "research_evidence_only")
         self.assertEqual(local["dataset"]["symbol_count"], 95)
+        self.assertTrue(local["dataset"]["data_manifest_evidence"]["local_only"])
+        self.assertTrue(local["dataset"]["data_manifest_evidence"]["production_consumes_compact_reports_only"])
+        self.assertEqual(local["dataset"]["data_manifest_evidence"]["complete_manifest_market_count"], 3)
+        self.assertEqual(local["dataset"]["data_manifest_evidence"]["checksum_verified_market_count"], 3)
+        self.assertTrue(local["dataset"]["data_manifest_evidence"]["markets"]["HK"]["checksum_verified"])
+        self.assertEqual(local["dataset"]["data_manifest_evidence"]["markets"]["HK"]["coverage"]["symbol_count"], 63)
+        self.assertEqual(local["dataset"]["data_manifest_evidence"]["problem_codes"], [])
         self.assertEqual(local["backtests"][0]["sharpe"], 1.17)
         self.assertFalse(local["promotion_ready"])
         alignment = brief["factor_contract_alignment"]

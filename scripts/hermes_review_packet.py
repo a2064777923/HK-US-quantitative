@@ -2695,6 +2695,52 @@ def strategy_learning_intraday_alignment_brief(strategy_learning_payload):
     }
 
 
+def local_backtest_manifest_evidence(dataset):
+    dataset = dataset if isinstance(dataset, dict) else {}
+    contract = dataset.get("raw_data_lake_contract") if isinstance(dataset.get("raw_data_lake_contract"), dict) else {}
+    manifests = dataset.get("manifests") if isinstance(dataset.get("manifests"), dict) else {}
+    checks = dataset.get("checks") if isinstance(dataset.get("checks"), list) else []
+    by_code = {item.get("code"): item for item in checks if isinstance(item, dict) and item.get("code")}
+    markets = {}
+    problem_codes = []
+    verified_count = 0
+    complete_count = 0
+    for market in ("HK", "US", "ALL"):
+        prefix = market.lower()
+        manifest = manifests.get(market) if isinstance(manifests.get(market), dict) else {}
+        market_codes = [
+            code
+            for code in by_code
+            if isinstance(code, str) and code.startswith(f"{prefix}_manifest_")
+        ]
+        problem = [
+            code
+            for code in market_codes
+            if not code.endswith("_manifest_complete") and not code.endswith("_manifest_checksum_verified")
+        ]
+        if f"{prefix}_manifest_complete" in by_code:
+            complete_count += 1
+        if f"{prefix}_manifest_checksum_verified" in by_code:
+            verified_count += 1
+        problem_codes.extend(problem)
+        markets[market] = {
+            "manifest_present": bool(manifest),
+            "coverage": manifest.get("coverage") if isinstance(manifest, dict) else {},
+            "has_path": bool(manifest.get("path")) if isinstance(manifest, dict) else False,
+            "checksum_verified": f"{prefix}_manifest_checksum_verified" in by_code,
+            "problem_codes": sorted(set(problem))[:6],
+        }
+    return {
+        "local_only": contract.get("local_only"),
+        "production_consumes_compact_reports_only": contract.get("production_consumes_compact_reports_only"),
+        "required_manifest_fields": contract.get("required_manifest_fields") or [],
+        "complete_manifest_market_count": complete_count,
+        "checksum_verified_market_count": verified_count,
+        "markets": markets,
+        "problem_codes": sorted(set(problem_codes))[:10],
+    }
+
+
 def local_backtest_reliability_brief(local_backtest_reliability_payload):
     payload = local_backtest_reliability_payload if isinstance(local_backtest_reliability_payload, dict) else {}
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
@@ -2725,6 +2771,7 @@ def local_backtest_reliability_brief(local_backtest_reliability_payload):
             "us_symbol_count": us.get("symbol_count_covered"),
             "hk_provider": hk.get("provider"),
             "us_feed": us.get("feed"),
+            "data_manifest_evidence": local_backtest_manifest_evidence(dataset),
         },
         "backtests": [
             {
