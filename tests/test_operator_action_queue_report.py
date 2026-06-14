@@ -369,6 +369,46 @@ def base_payloads():
             "schema": "rt_signal_outcome_report_v1",
             "status": "PENDING",
             "counts": {"evaluated_signal_count": 156},
+            "overall": {
+                "resolved_signal_count": 0,
+                "pending_or_invalid_count": 156,
+                "pending_reasons": {"no_future_daily_klines": 151, "missing_symbol_klines": 5},
+            },
+            "outcome_maturity": {
+                "primary_horizon": "1d",
+                "needed_future_days": 1,
+                "latest_signal_date": "2026-06-14",
+                "latest_kline_date": "2026-06-14",
+                "pending_or_invalid_count": 156,
+                "missing_symbol_kline_count": 5,
+                "no_future_daily_kline_count": 151,
+                "daily_gap_source_category_affected_signal_counts": {
+                    "active_universe_or_symbol_mapping_issue": 5
+                },
+                "missing_symbol_kline_diagnostics": [
+                    {
+                        "symbol": "00959",
+                        "affected_signal_count": 5,
+                        "daily_gap_source_category": "active_universe_or_symbol_mapping_issue",
+                    }
+                ],
+            },
+            "by_trigger": [
+                {
+                    "key": "BUY:站上MA5",
+                    "count": 93,
+                    "confirmed_count": 93,
+                    "avg_full_score": 0.7538,
+                    "horizons": {"1d": {"pending_count": 93, "resolved_count": 0}},
+                },
+                {
+                    "key": "SELL:跌破MA5",
+                    "count": 44,
+                    "confirmed_count": 44,
+                    "avg_full_score": -0.7909,
+                    "horizons": {"1d": {"pending_count": 44, "resolved_count": 0}},
+                },
+            ],
             "intraday_signal_context_summary": {"coverage_pct": 59.62},
             "recommendations": ["outcome_sample_not_ready_keep_collecting_daily_klines"],
         },
@@ -400,6 +440,16 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertIn("review_intraday_timeframe_quality_limits", actions)
         self.assertIn("onboard_trusted_source_payloads", actions)
         self.assertIn("write_or_repair_simulation_postmortem_notes", actions)
+        self.assertIn("wait_for_outcome_maturity", actions)
+        outcome_action = actions["wait_for_outcome_maturity"]
+        self.assertEqual(outcome_action["evidence"]["overall"]["pending_reasons"]["no_future_daily_klines"], 151)
+        self.assertEqual(outcome_action["evidence"]["outcome_maturity"]["missing_symbol_kline_count"], 5)
+        self.assertEqual(outcome_action["evidence"]["top_pending_triggers"][0]["key"], "BUY:站上MA5")
+        self.assertEqual(
+            outcome_action["evidence"]["missing_symbol_kline_diagnostics"][0]["daily_gap_source_category"],
+            "active_universe_or_symbol_mapping_issue",
+        )
+        self.assertIn("daily-gap repair/source-diagnostic workflow", outcome_action["recommended_next_step"])
         self.assertEqual(actions["write_high_urgency_position_judgments"]["priority"], "P0")
         self.assertTrue(actions["write_high_urgency_position_judgments"]["operator_effect"]["writes_judgments"])
         self.assertTrue(actions["write_high_urgency_position_judgments"]["operator_effect"]["advisory_only"])

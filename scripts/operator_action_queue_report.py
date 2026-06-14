@@ -947,6 +947,33 @@ def outcome_actions(outcome):
     status = outcome.get("status")
     if status not in ("PENDING", "INSUFFICIENT") and evaluated:
         return []
+    overall = outcome.get("overall") if isinstance(outcome.get("overall"), dict) else {}
+    maturity = outcome.get("outcome_maturity") if isinstance(outcome.get("outcome_maturity"), dict) else {}
+    by_trigger = safe_list(outcome.get("by_trigger"))
+    top_pending_triggers = []
+    for row in by_trigger:
+        if not isinstance(row, dict):
+            continue
+        horizon = safe_dict(safe_dict(row.get("horizons")).get("1d"))
+        pending_count = int(horizon.get("pending_count") or 0)
+        if pending_count <= 0:
+            continue
+        top_pending_triggers.append(
+            {
+                "key": row.get("key"),
+                "count": row.get("count"),
+                "confirmed_count": row.get("confirmed_count"),
+                "pending_1d_count": pending_count,
+                "resolved_1d_count": horizon.get("resolved_count"),
+                "avg_full_score": row.get("avg_full_score"),
+            }
+        )
+    top_pending_triggers = sorted(
+        top_pending_triggers,
+        key=lambda row: (-(int(row.get("pending_1d_count") or 0)), row.get("key") or ""),
+    )
+    pending_reasons = overall.get("pending_reasons") if isinstance(overall.get("pending_reasons"), dict) else {}
+    missing_diagnostics = safe_list(maturity.get("missing_symbol_kline_diagnostics"))
     return [
         action(
             "wait_for_outcome_maturity",
@@ -957,10 +984,34 @@ def outcome_actions(outcome):
             evidence={
                 "status": status,
                 "counts": counts,
+                "overall": {
+                    "resolved_signal_count": overall.get("resolved_signal_count"),
+                    "pending_or_invalid_count": overall.get("pending_or_invalid_count"),
+                    "pending_reasons": pending_reasons,
+                },
+                "outcome_maturity": {
+                    "primary_horizon": maturity.get("primary_horizon"),
+                    "needed_future_days": maturity.get("needed_future_days"),
+                    "latest_signal_date": maturity.get("latest_signal_date"),
+                    "latest_kline_date": maturity.get("latest_kline_date"),
+                    "pending_or_invalid_count": maturity.get("pending_or_invalid_count"),
+                    "missing_symbol_kline_count": maturity.get("missing_symbol_kline_count"),
+                    "no_future_daily_kline_count": maturity.get("no_future_daily_kline_count"),
+                    "daily_gap_source_category_affected_signal_counts": maturity.get(
+                        "daily_gap_source_category_affected_signal_counts"
+                    )
+                    or {},
+                },
+                "top_pending_triggers": top_pending_triggers[:8],
+                "missing_symbol_kline_diagnostics": missing_diagnostics[:8],
                 "intraday_signal_context_summary": outcome.get("intraday_signal_context_summary"),
                 "recommendations": outcome.get("recommendations"),
             },
-            next_step="Keep the outcome report fresh and avoid using pending same-day signals as profitability proof.",
+            next_step=(
+                "Keep rt_signal_outcome_report fresh. If pending_reasons is mostly no_future_daily_klines, wait for "
+                "completed future daily bars; if missing_symbol_klines or daily-gap source categories are present, "
+                "run the daily-gap repair/source-diagnostic workflow before using the sample as strategy evidence."
+            ),
         )
     ]
 
