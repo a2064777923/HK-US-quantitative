@@ -17,6 +17,7 @@ HERMES_REVIEW_PACKET_FILE = os.environ.get("HERMES_REVIEW_PACKET_FILE", "/tmp/he
 EXECUTION_MODE = os.environ.get("RT_ALERT_EXECUTION_MODE", "notify").lower()
 REQUIRE_CONFIRMED = os.environ.get("RT_ALERT_REQUIRE_CONFIRMED", "1") != "0"
 SEND_FEISHU = os.environ.get("RT_ALERT_SEND_FEISHU", "0") == "1"
+INCLUDE_PACKET_CONTEXT = os.environ.get("RT_ALERT_INCLUDE_PACKET_CONTEXT", "1") != "0"
 INCLUDE_POSITION_REVIEW = os.environ.get("RT_ALERT_INCLUDE_POSITION_REVIEW", "1") != "0"
 POSITION_REVIEW_URGENCY = {
     item.strip().lower()
@@ -137,6 +138,10 @@ def alert_key(alert):
     return alert.get("signal_id") or f"{alert.get('symbol')}_{alert.get('trigger')}_{alert.get('time','')}"
 
 
+def signal_id(alert):
+    return alert.get("signal_id") or alert_key(alert)
+
+
 def write_sent(alerts):
     payload = json.dumps(alerts[-1000:], ensure_ascii=False)
     write_text_file(SENT_FILE, payload)
@@ -235,6 +240,141 @@ def actionable_alerts(alerts):
     return rows
 
 
+def review_items_by_signal(packet):
+    if not INCLUDE_PACKET_CONTEXT or not isinstance(packet, dict):
+        return {}
+    rows = packet.get("review_items")
+    if not isinstance(rows, list):
+        return {}
+    return {
+        str(item.get("signal_id")): item
+        for item in rows
+        if isinstance(item, dict) and item.get("signal_id")
+    }
+
+
+def short_list(values, limit=4):
+    rows = []
+    for value in values or []:
+        if value in (None, ""):
+            continue
+        rows.append(str(value))
+        if len(rows) >= limit:
+            break
+    return ",".join(rows)
+
+
+def compact_source_components(source_limits):
+    components = source_limits.get("components") if isinstance(source_limits, dict) else []
+    rows = []
+    for component in components if isinstance(components, list) else []:
+        if not isinstance(component, dict):
+            continue
+        name = component.get("name")
+        reasons = component.get("reasons") if isinstance(component.get("reasons"), list) else []
+        if name and reasons:
+            rows.append(f"{name}:{short_list(reasons, limit=2)}")
+        elif name:
+            rows.append(str(name))
+        if len(rows) >= 3:
+            break
+    return " ".join(rows)
+
+
+def matching_review_item(alert, items_by_signal):
+    sid = signal_id(alert)
+    return items_by_signal.get(str(sid)) if sid else None
+
+
+def build_hermes_context_lines(alert, packet, items_by_signal):
+    if not INCLUDE_PACKET_CONTEXT:
+        return []
+    if not isinstance(packet, dict) or packet.get("schema") != "hermes_signal_review_packet_v1":
+        return ["├─ Hermes審核狀態：MISSING"]
+    item = matching_review_item(alert, items_by_signal)
+    if not item:
+        return ["├─ Hermes審核：NO_MATCH（僅技術信號，未匹配Hermes packet review_item）"]
+
+    lines = [
+        "├─ Hermes審核：eligible={eligible} judgment={judgment}".format(
+            eligible=item.get("eligible_for_approval"),
+            judgment=item.get("recommended_judgment", "?"),
+        )
+    ]
+    blockers = item.get("blocking_reasons") if isinstance(item.get("blocking_reasons"), list) else []
+    if blockers:
+        lines.append(f"├─ Hermes阻塞：{short_list(blockers, limit=4)}")
+
+    readiness = packet.get("execution_readiness") if isinstance(packet.get("execution_readiness"), dict) else {}
+    if readiness:
+        lines.append(
+            "├─ 執行準備：{status} ready={ready}".format(
+                status=readiness.get("status", "?"),
+                ready=readiness.get("ready_for_execute", "?"),
+            )
+        )
+    simulation = packet.get("simulation_performance") if isinstance(packet.get("simulation_performance"), dict) else {}
+    if simulation:
+        sim_text = f"├─ 模擬表現：{simulation.get('status', '?')}"
+        reasons = short_list(simulation.get("reason_codes") or [], limit=3)
+        if reasons:
+            sim_text += f" reasons={reasons}"
+        lines.append(sim_text)
+    learning = packet.get("strategy_learning_brief") if isinstance(packet.get("strategy_learning_brief"), dict) else {}
+    alpha = learning.get("hermes_alpha_evidence") if isinstance(learning.get("hermes_alpha_evidence"), dict) else {}
+    if alpha:
+        lines.append(f"├─ Hermes Alpha：{alpha.get('status', '?')}")
+
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    market = digest.get("market_context") if isinstance(digest.get("market_context"), dict) else {}
+    if market:
+        lines.append(f"├─ 市場：{market.get('regime', '?')}/{market.get('risk_level', '?')}")
+    intraday = digest.get("intraday_signal_evidence") if isinstance(digest.get("intraday_signal_evidence"), dict) else {}
+    if intraday:
+        evidence = f"├─ 分鐘證據：{intraday.get('alignment', '?')}"
+        codes = short_list(intraday.get("codes") or [], limit=3)
+        if codes:
+            evidence += f" codes={codes}"
+        if intraday.get("requires_judgment_acknowledgement"):
+            evidence += " ack=required"
+        lines.append(evidence)
+    external = digest.get("external_market_context") if isinstance(digest.get("external_market_context"), dict) else {}
+    if external and external.get("status") not in (None, "OK", "PASS"):
+        lines.append(f"├─ 新聞/宏觀覆蓋：{external.get('status')}")
+    catalysts = digest.get("event_catalysts") if isinstance(digest.get("event_catalysts"), dict) else {}
+    if catalysts and catalysts.get("status") not in (None, "OK", "PASS"):
+        lines.append(
+            "├─ 事件覆蓋：{status} negative={negative} positive={positive}".format(
+                status=catalysts.get("status"),
+                negative=catalysts.get("negative_candidate_count", 0),
+                positive=catalysts.get("positive_candidate_count", 0),
+            )
+        )
+    event_signals = digest.get("event_catalyst_signals") if isinstance(digest.get("event_catalyst_signals"), dict) else {}
+    if event_signals and (
+        event_signals.get("challenge_buy_count") is not None or event_signals.get("support_buy_count") is not None
+    ):
+        lines.append(
+            "├─ 事件審核：challenge={challenge} support={support}".format(
+                challenge=event_signals.get("challenge_buy_count", 0),
+                support=event_signals.get("support_buy_count", 0),
+            )
+        )
+    sentiment = digest.get("market_sentiment") if isinstance(digest.get("market_sentiment"), dict) else {}
+    if sentiment and sentiment.get("status") not in (None, "OK", "PASS"):
+        lines.append(f"├─ 情緒覆蓋：{sentiment.get('status')}")
+    fundamentals = digest.get("fundamentals_context") if isinstance(digest.get("fundamentals_context"), dict) else {}
+    if fundamentals and fundamentals.get("status") not in (None, "OK", "PASS"):
+        lines.append(f"├─ 基本面覆蓋：{fundamentals.get('status')}")
+    source_limits = digest.get("source_limits") if isinstance(digest.get("source_limits"), dict) else {}
+    source_status = source_limits.get("source_reliability_status")
+    if source_status and source_status not in ("OK", "PASS"):
+        detail = compact_source_components(source_limits)
+        suffix = f" {detail}" if detail else ""
+        lines.append(f"├─ 來源可靠性：{source_status}{suffix}")
+    return lines
+
+
 def position_review_items(packet):
     if not INCLUDE_POSITION_REVIEW:
         return []
@@ -325,7 +465,9 @@ def build_position_review_output(items, packet):
     return "\n".join(lines)
 
 
-def build_output(actionable, execution_mode):
+def build_output(actionable, execution_mode, packet=None):
+    packet = packet if isinstance(packet, dict) else {}
+    items_by_signal = review_items_by_signal(packet)
     lines = ["🎯 **實時操作信號**\n"]
     for alert in actionable:
         icon = "🟢" if alert.get("signal_type") == "BUY" else "🔴"
@@ -336,6 +478,7 @@ def build_output(actionable, execution_mode):
         lines.append(f"├─ 止損：${alert['stop_loss']}")
         lines.append(f"├─ 風險回報：{alert.get('rr_ratio', '?')}")
         lines.append(f"├─ 多因子分：{alert.get('full_score', '?')} | 確認：{alert.get('confirmed', True)}")
+        lines.extend(build_hermes_context_lines(alert, packet, items_by_signal))
         lines.append(
             f"└─ 當前：${float(alert.get('price', alert['entry_price'])):.2f} "
             f"({alert.get('change_pct', 0):+.1f}%) | {alert.get('time','')}"
@@ -416,7 +559,7 @@ def main():
 
     outputs = []
     if actionable:
-        outputs.append(build_output(actionable, EXECUTION_MODE))
+        outputs.append(build_output(actionable, EXECUTION_MODE, packet=packet))
     if pending_reviews:
         outputs.append(build_position_review_output(pending_reviews, packet))
 

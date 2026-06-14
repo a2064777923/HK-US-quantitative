@@ -99,6 +99,55 @@ class RtAlertBridgeTests(unittest.TestCase):
             },
         }
 
+    def packet_with_signal_review(self):
+        return {
+            "schema": "hermes_signal_review_packet_v1",
+            "packet_id": "packet-signal",
+            "generated_at": "2026-06-12T10:01:00",
+            "execution_readiness": {"status": "WARN", "ready_for_execute": False},
+            "simulation_performance": {"status": "FAIL", "reason_codes": ["recent_closed_trades_negative"]},
+            "strategy_learning_brief": {
+                "hermes_alpha_evidence": {
+                    "status": "INSUFFICIENT",
+                    "approved_or_reduced_sample": 2,
+                    "rejected_or_held_sample": 1,
+                }
+            },
+            "review_items": [
+                {
+                    "signal_id": "sig-bridge",
+                    "eligible_for_approval": False,
+                    "recommended_judgment": "reject_or_hold",
+                    "blocking_reasons": ["execution_readiness_would_block_execute", "simulation_performance_fail"],
+                    "context_digest": {
+                        "market_context": {"regime": "risk_off", "risk_level": "high"},
+                        "intraday_signal_evidence": {
+                            "alignment": "challenges",
+                            "codes": ["intraday_down_momentum"],
+                            "requires_judgment_acknowledgement": True,
+                        },
+                        "external_market_context": {"status": "RISK", "relevant_item_count": 1},
+                        "event_catalysts": {
+                            "status": "RISK",
+                            "negative_candidate_count": 1,
+                            "positive_candidate_count": 0,
+                        },
+                        "event_catalyst_signals": {
+                            "status": "RISK",
+                            "challenge_buy_count": 1,
+                            "support_buy_count": 0,
+                        },
+                        "market_sentiment": {"status": "RISK", "relevant_indicator_count": 1},
+                        "fundamentals_context": {"status": "STALE", "relevant_item_count": 0},
+                        "source_limits": {
+                            "source_reliability_status": "DEGRADED",
+                            "components": [{"name": "fundamentals_context", "reasons": ["partial_metric_coverage"]}],
+                        },
+                    },
+                }
+            ],
+        }
+
     def test_local_mode_reads_queue_and_writes_sent_without_ssh(self):
         with tempfile.TemporaryDirectory() as td:
             queue = Path(td) / "alerts.jsonl"
@@ -147,6 +196,58 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("RT_ORDER_EXECUTE_PILOT_ENABLED=1", command)
             self.assertIn("RT_ORDER_US_BROKER=alpaca-paper", command)
             self.assertIn("RT_ORDER_EXECUTION_MODE=execute", command)
+
+    def test_signal_notification_includes_compact_hermes_context(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "packet.json"
+            queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            packet_file.write_text(json.dumps(self.packet_with_signal_review()), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="notify",
+            )
+
+            with patch("builtins.print") as printed:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            text = printed.call_args.args[0]
+            self.assertIn("Hermes審核：eligible=False judgment=reject_or_hold", text)
+            self.assertIn("執行準備：WARN ready=False", text)
+            self.assertIn("模擬表現：FAIL reasons=recent_closed_trades_negative", text)
+            self.assertIn("Hermes Alpha：INSUFFICIENT", text)
+            self.assertIn("市場：risk_off/high", text)
+            self.assertIn("分鐘證據：challenges codes=intraday_down_momentum ack=required", text)
+            self.assertIn("事件審核：challenge=1 support=0", text)
+            self.assertIn("來源可靠性：DEGRADED fundamentals_context:partial_metric_coverage", text)
+
+    def test_signal_notification_marks_missing_packet_match(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "packet.json"
+            queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            packet = self.packet_with_signal_review()
+            packet["review_items"][0]["signal_id"] = "other-signal"
+            packet_file.write_text(json.dumps(packet), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="notify",
+            )
+
+            with patch("builtins.print") as printed:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            self.assertIn("Hermes審核：NO_MATCH", printed.call_args.args[0])
 
     def test_feishu_success_updates_sent_state(self):
         with tempfile.TemporaryDirectory() as td:
