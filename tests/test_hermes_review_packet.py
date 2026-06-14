@@ -151,6 +151,36 @@ def local_backtest_reliability(status="RESEARCH_USEFUL_WITH_LIMITATIONS", promot
     }
 
 
+def data_source_inventory(status="DEGRADED"):
+    return {
+        "schema": "data_source_inventory_report_v1",
+        "status": status,
+        "summary": {
+            "table_status_counts": {"present": 7},
+            "context_file_status_counts": {"present": 12, "missing": 1},
+            "optional_context_file_status_counts": {"missing": 1},
+            "present_input_payload_file_count": 4,
+            "kline_source_counts": {"tencent": 1000, "missing": 2},
+            "weakness_count": 2,
+        },
+        "files": {
+            "optional_context_reports": [
+                {
+                    "name": "local_backtest_reliability",
+                    "exists": False,
+                    "stale": False,
+                    "schema_valid": None,
+                    "status": None,
+                }
+            ]
+        },
+        "weaknesses": [
+            {"code": "kline_data_source_missing", "severity": "WARN"},
+            {"code": "optional_context_reports_not_ready", "severity": "INFO"},
+        ],
+    }
+
+
 def factor_contract_alignment(status="PARTIAL_ALIGNMENT_REQUIRES_CAUTION", promotion_ready=False):
     return {
         "schema": "factor_contract_alignment_report_v1",
@@ -3121,8 +3151,17 @@ class HermesReviewPacketTests(unittest.TestCase):
             v5_local_replay_payload=v5_local_replay(),
             v5_replay_strategy_review_payload=v5_replay_strategy_review(),
             trigger_evidence_convergence_payload=trigger_evidence_convergence(),
+            data_source_inventory_payload=data_source_inventory(),
         )
 
+        inventory = brief["data_source_inventory"]
+        self.assertTrue(inventory["read_only"])
+        self.assertFalse(inventory["submits_orders"])
+        self.assertEqual(inventory["status"], "DEGRADED")
+        self.assertEqual(inventory["optional_context_file_status_counts"], {"missing": 1})
+        self.assertEqual(inventory["optional_research_context"][0]["name"], "local_backtest_reliability")
+        self.assertFalse(inventory["optional_research_context"][0]["exists"])
+        self.assertIn("optional_context_reports_not_ready", inventory["weakness_codes"])
         local = brief["local_backtest_reliability"]
         self.assertTrue(local["read_only"])
         self.assertFalse(local["submits_orders"])
@@ -3185,6 +3224,10 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(missing["status"], "MISSING")
         self.assertTrue(missing["read_only"])
         self.assertFalse(missing["submits_orders"])
+        missing_inventory = packet.strategy_learning_brief({})["data_source_inventory"]
+        self.assertEqual(missing_inventory["status"], "MISSING")
+        self.assertTrue(missing_inventory["read_only"])
+        self.assertFalse(missing_inventory["submits_orders"])
         missing_alignment = packet.strategy_learning_brief({})["factor_contract_alignment"]
         self.assertEqual(missing_alignment["status"], "MISSING")
         self.assertTrue(missing_alignment["read_only"])

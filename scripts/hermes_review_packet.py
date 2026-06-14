@@ -2800,6 +2800,42 @@ def local_backtest_reliability_brief(local_backtest_reliability_payload):
     }
 
 
+def data_source_inventory_brief(data_source_inventory_payload):
+    payload = data_source_inventory_payload if isinstance(data_source_inventory_payload, dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    weaknesses = payload.get("weaknesses") if isinstance(payload.get("weaknesses"), list) else []
+    files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
+    optional_context_rows = files.get("optional_context_reports") if isinstance(files.get("optional_context_reports"), list) else []
+    return {
+        "read_only": True,
+        "submits_orders": False,
+        "schema": payload.get("schema") or "data_source_inventory_report_v1",
+        "status": payload.get("status") or "MISSING",
+        "table_status_counts": summary.get("table_status_counts") or {},
+        "context_file_status_counts": summary.get("context_file_status_counts") or {},
+        "optional_context_file_status_counts": summary.get("optional_context_file_status_counts") or {},
+        "present_input_payload_file_count": summary.get("present_input_payload_file_count"),
+        "kline_source_counts": summary.get("kline_source_counts") or {},
+        "weakness_codes": [
+            item.get("code")
+            for item in weaknesses[:8]
+            if isinstance(item, dict) and item.get("code")
+        ],
+        "optional_research_context": [
+            {
+                "name": item.get("name"),
+                "exists": bool(item.get("exists")),
+                "stale": bool(item.get("stale")),
+                "schema_valid": item.get("schema_valid"),
+                "status": item.get("status"),
+            }
+            for item in optional_context_rows[:8]
+            if isinstance(item, dict)
+        ],
+        "hermes_note": "data_source_inventory_is_visibility_context_not_execution_permission",
+    }
+
+
 def factor_contract_alignment_brief(factor_contract_alignment_payload):
     payload = factor_contract_alignment_payload if isinstance(factor_contract_alignment_payload, dict) else {}
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
@@ -3204,6 +3240,7 @@ def strategy_learning_brief(
     v5_local_replay_payload=None,
     v5_replay_strategy_review_payload=None,
     trigger_evidence_convergence_payload=None,
+    data_source_inventory_payload=None,
 ):
     payload = strategy_learning_payload if isinstance(strategy_learning_payload, dict) else {}
     watchlist_diff_payload = watchlist_diff_payload if isinstance(watchlist_diff_payload, dict) else {}
@@ -3352,6 +3389,7 @@ def strategy_learning_brief(
             "minimum_sample_met": (outcome_evidence.get("resolved_count") or 0) >= 5,
             "source": outcome_evidence_source,
         },
+        "data_source_inventory": data_source_inventory_brief(data_source_inventory_payload),
         "outcome_evidence_all_candidates": {
             "resolved_count": overall.get("resolved_count"),
             "avg_signed_return_pct": overall.get("avg_signed_return_pct"),
@@ -3873,6 +3911,7 @@ def build_packet(
             v5_local_replay_payload,
             v5_replay_strategy_review_payload,
             trigger_evidence_convergence_payload,
+            data_source_inventory_payload=data_source_inventory_payload,
         ),
         "local_backtest_reliability": local_backtest_reliability_payload,
         "factor_contract_alignment": factor_contract_alignment_payload,
