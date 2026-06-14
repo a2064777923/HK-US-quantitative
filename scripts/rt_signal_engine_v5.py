@@ -25,6 +25,8 @@ ALERT_QUEUE_FILE = "/tmp/rt_signal_alerts.jsonl"
 STATE_FILE = "/tmp/rt_signal_state.json"
 WATCHLIST_FILE = os.environ.get("RT_SIGNAL_WATCHLIST_FILE", "/root/rt_signal_watchlist.json")
 STRATEGY_CONFIG_FILE = os.environ.get("RT_SIGNAL_STRATEGY_CONFIG_FILE", "/root/rt_signal_strategy_config.json")
+MAX_QUOTE_AGE_SECONDS = 15 * 60
+MAX_QUOTE_FUTURE_SKEW_SECONDS = 120
 MIN_SIGNAL_HISTORY_BARS = 30
 MIN_VOLUME_SESSION_FRACTION = 0.05
 VOLUME_ANOMALY_RATIO = 3.0
@@ -710,6 +712,56 @@ def us_regular_session_open_hkt(dt):
 def market_open_flags_hkt(dt=None):
     dt = dt or datetime.now()
     return hk_regular_session_open_hkt(dt), us_regular_session_open_hkt(dt)
+
+def market_local_now(market, now=None):
+    now = now or datetime.now()
+    market = str(market or "").upper()
+    if market == "HK":
+        if getattr(now, "tzinfo", None):
+            return now.astimezone(timezone_for_market("HK", reference=now)).replace(tzinfo=None)
+        return now
+    if market == "US":
+        if getattr(now, "tzinfo", None):
+            return now.astimezone(timezone_for_market("US", reference=now)).replace(tzinfo=None)
+        eastern = us_eastern_datetime_from_hkt(now)
+        return eastern.replace(tzinfo=None) if eastern is not None else None
+    return None
+
+def parse_quote_datetime_for_freshness(value, market, now=None):
+    parsed = parse_quote_datetime(value, market=market)
+    if parsed is not None:
+        return parsed
+    market_now = market_local_now(market, now=now)
+    if market_now is None or not value:
+        return None
+    value = str(value).strip()
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            clock = datetime.strptime(value, fmt)
+            return market_now.replace(
+                hour=clock.hour,
+                minute=clock.minute,
+                second=clock.second,
+                microsecond=0,
+            )
+        except ValueError:
+            continue
+    return None
+
+def quote_freshness(quote, now=None, max_age_seconds=MAX_QUOTE_AGE_SECONDS):
+    if not isinstance(quote, dict):
+        return False, "quote_not_dict", None
+    market = str(quote.get("market") or "").upper()
+    market_now = market_local_now(market, now=now)
+    quote_dt = parse_quote_datetime_for_freshness(quote.get("time"), market, now=now)
+    if market_now is None or quote_dt is None:
+        return False, "missing_or_unparseable_quote_time", None
+    age_seconds = (market_now - quote_dt).total_seconds()
+    if age_seconds > max_age_seconds:
+        return False, "stale_quote_time", age_seconds
+    if age_seconds < -MAX_QUOTE_FUTURE_SKEW_SECONDS:
+        return False, "future_quote_time", age_seconds
+    return True, None, age_seconds
 
 def cumulative_volume_ratio(quote_volume, avg_daily_volume, market, quote_time=None):
     """Compare cumulative intraday volume with expected cumulative daily volume."""
@@ -1640,6 +1692,9 @@ def main():
                 if sym in indicators:
                     quote, _quote_error = normalize_quote(quote)
                     if quote is None:
+                        continue
+                    fresh, _freshness_reason, _quote_age_seconds = quote_freshness(quote, now=dt)
+                    if not fresh:
                         continue
                     # 用實時價格更新指標（增量）
                     indicators[sym].update_realtime(

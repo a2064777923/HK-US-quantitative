@@ -698,6 +698,61 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertAlmostEqual(ratio, 700 / (1000 * (270 / 390)), places=4)
         self.assertLess(ratio, 2)
 
+    def test_quote_freshness_accepts_current_hk_dated_quote(self):
+        fresh, reason, age_seconds = rt.quote_freshness(
+            {"market": "HK", "time": "2026-06-11 10:02:00"},
+            now=datetime(2026, 6, 11, 10, 5, 0),
+        )
+
+        self.assertTrue(fresh)
+        self.assertIsNone(reason)
+        self.assertEqual(age_seconds, 180)
+
+    def test_quote_freshness_converts_hkt_now_to_us_market_time(self):
+        fresh, reason, age_seconds = rt.quote_freshness(
+            {"market": "US", "time": "2026-06-11 13:58:00"},
+            now=datetime(2026, 6, 12, 2, 0, 0),
+        )
+
+        self.assertTrue(fresh)
+        self.assertIsNone(reason)
+        self.assertEqual(age_seconds, 120)
+
+    def test_quote_freshness_uses_market_date_for_time_only_quote(self):
+        fresh, reason, age_seconds = rt.quote_freshness(
+            {"market": "US", "time": "13:58:00"},
+            now=datetime(2026, 6, 12, 2, 0, 0),
+        )
+
+        self.assertTrue(fresh)
+        self.assertIsNone(reason)
+        self.assertEqual(age_seconds, 120)
+
+    def test_quote_freshness_rejects_stale_or_future_quote(self):
+        stale = rt.quote_freshness(
+            {"market": "HK", "time": "2026-06-11 09:30:00"},
+            now=datetime(2026, 6, 11, 10, 0, 1),
+        )
+        future = rt.quote_freshness(
+            {"market": "HK", "time": "2026-06-11 10:05:00"},
+            now=datetime(2026, 6, 11, 10, 0, 0),
+        )
+
+        self.assertFalse(stale[0])
+        self.assertEqual(stale[1], "stale_quote_time")
+        self.assertFalse(future[0])
+        self.assertEqual(future[1], "future_quote_time")
+
+    def test_quote_freshness_rejects_missing_or_unparseable_time(self):
+        fresh, reason, age_seconds = rt.quote_freshness(
+            {"market": "US", "time": "bad-vendor-time"},
+            now=datetime(2026, 6, 12, 2, 0, 0),
+        )
+
+        self.assertFalse(fresh)
+        self.assertEqual(reason, "missing_or_unparseable_quote_time")
+        self.assertIsNone(age_seconds)
+
     def test_cumulative_volume_ratio_requires_parseable_quote_timestamp(self):
         self.assertIsNone(
             rt.cumulative_volume_ratio(
