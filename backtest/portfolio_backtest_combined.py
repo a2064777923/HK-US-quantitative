@@ -231,6 +231,6 @@ print(f"\n按出場:")
 for r in sorted(rs,key=lambda x:-rs[x]['c']):
     s=rs[r]; print(f"  {r}: {s['c']}筆 勝率{s['w']/s['c']*100:.0f}% P&L ${s['p']:,.0f}")
 
-with open('/tmp/portfolio_bt_v4.json','w') as f:
+with open('/tmp/portfolio_bt_v4.json','w',encoding='utf-8') as f:
     json.dump({'summary':{'init':INIT,'final':round(fin,2),'ret':round((fin/INIT-1)*100,2),'cagr':round(cagr,2),'sharpe':round(sh,2),'sortino':round(so,2),'dd':round(mdd,2),'calmar':round(cagr/mdd,2) if mdd>0 else 0,'trades':len(trades),'wr':round(wr,1),'mp':mp,'ap':round(ap,1),'mcl':mcl},'trades':trades,'nav':nav,'years':{y:{'c':s['c'],'p':round(s['p'],2),'wr':round(s['w']/s['c']*100,1)} for y,s in ys.items()}},f,ensure_ascii=False,indent=2,default=str)
 print("\n已存 /tmp/portfolio_bt_v4.json", flush=True)

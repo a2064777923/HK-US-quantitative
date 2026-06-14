@@ -284,6 +284,6 @@ for y in sorted(ys):
     s = ys[y]
     print(f"  {y}: {s['c']}筆(港{s['hk']}/美{s['us']}) 勝率{s['w']/s['c']*100:.0f}% P&L ${s['p']:,.0f}")
 
-with open('/tmp/portfolio_bt_realistic.json', 'w') as f:
+with open('/tmp/portfolio_bt_realistic.json', 'w', encoding='utf-8') as f:
     json.dump({'summary': {'init': INITIAL, 'final': round(final_equity, 2), 'ret': round(total_return, 2), 'annual': round(total_return/years, 2), 'sharpe': round(sharpe, 2), 'dd': round(mdd, 2), 'trades': len(trades), 'wr': round(wr, 1), 'avg_pnl': round(avg_pnl, 2), 'total_pnl': round(total_pnl, 2)}, 'trades': trades, 'equity': equity_curve, 'years': {y: {'c': s['c'], 'p': round(s['p'], 2), 'wr': round(s['w']/s['c']*100, 1), 'hk': s['hk'], 'us': s['us']} for y, s in ys.items()}}, f, ensure_ascii=False, indent=2, default=str)
 print("\n已存 /tmp/portfolio_bt_realistic.json", flush=True)

@@ -112,6 +112,18 @@ APCA_API_KEY_ID=... APCA_API_SECRET_KEY=... \
 python3 scripts/local_backtest_dataset.py --output-dir /tmp --us-intraday-timeframe 1Hour
 ```
 
+把本地數據和回測結果整理成可靠性報告：
+
+```bash
+python3 scripts/local_backtest_reliability_report.py \
+  --metadata-file /tmp/hk_us_dataset_metadata.json \
+  --realistic-result-file /tmp/portfolio_bt_realistic.json \
+  --combined-result-file /tmp/portfolio_bt_v4.json \
+  --output /tmp/local_backtest_reliability_report.json --text
+```
+
+這份報告只用來支撐研究判斷，不會改 v5、Hermes、模擬倉或任何 cron。
+
 ## 🚀 部署
 
 ### 依賴
