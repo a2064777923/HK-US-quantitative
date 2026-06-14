@@ -7,6 +7,7 @@ state, change strategy config, write alerts, submit simulation orders, or
 promote any v5/Hermes behavior.
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -18,6 +19,11 @@ DEFAULT_METADATA_FILE = os.environ.get("LOCAL_BACKTEST_METADATA_FILE", "/tmp/hk_
 DEFAULT_REALISTIC_RESULT_FILE = os.environ.get("LOCAL_BACKTEST_REALISTIC_RESULT_FILE", "/tmp/portfolio_bt_realistic.json")
 DEFAULT_COMBINED_RESULT_FILE = os.environ.get("LOCAL_BACKTEST_COMBINED_RESULT_FILE", "/tmp/portfolio_bt_v4.json")
 DEFAULT_OUTPUT_FILE = os.environ.get("LOCAL_BACKTEST_RELIABILITY_REPORT_FILE", "/tmp/local_backtest_reliability_report.json")
+DEFAULT_MANIFEST_FILES = {
+    "HK": os.environ.get("LOCAL_BACKTEST_HK_MANIFEST_FILE"),
+    "US": os.environ.get("LOCAL_BACKTEST_US_MANIFEST_FILE"),
+    "ALL": os.environ.get("LOCAL_BACKTEST_ALL_MANIFEST_FILE"),
+}
 
 STATUS_RANK = {"OK": 0, "INFO": 0, "WARN": 1, "FAIL": 2}
 REQUIRED_RAW_LAKE_MANIFEST_FIELDS = {
@@ -25,6 +31,7 @@ REQUIRED_RAW_LAKE_MANIFEST_FIELDS = {
     "feed",
     "adjustment",
     "timezone",
+    "path",
     "retrieved_at",
     "coverage",
     "gaps",
@@ -134,6 +141,125 @@ def market_coverage(metadata, market):
     }
 
 
+def load_manifest(path):
+    if not path:
+        return None, "manifest_path_missing"
+    if not os.path.exists(path):
+        return None, "manifest_file_missing"
+    try:
+        with open(path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception as exc:
+        return None, f"manifest_unreadable:{exc}"
+    return payload if isinstance(payload, dict) else None, None
+
+
+def file_checksum(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def manifest_path(manifest):
+    if not isinstance(manifest, dict):
+        return None
+    path = manifest.get("path")
+    return path if isinstance(path, str) and path else None
+
+
+def manifest_assessment(manifest, market):
+    if not isinstance(manifest, dict):
+        return {
+            "status": "FAIL",
+            "checks": [check("FAIL", f"{market.lower()}_manifest_missing", "Manifest is missing or unreadable.", {})],
+        }
+    missing_fields = sorted(REQUIRED_RAW_LAKE_MANIFEST_FIELDS - set(manifest.keys()))
+    checks = []
+    if missing_fields:
+        checks.append(
+            check(
+                "FAIL",
+                f"{market.lower()}_manifest_incomplete",
+                "Manifest is missing required provenance or freshness fields.",
+                {"missing_fields": missing_fields},
+            )
+        )
+    else:
+        checks.append(
+            check(
+                "OK",
+                f"{market.lower()}_manifest_complete",
+                "Manifest includes required provenance, freshness, and checksum fields.",
+                {"required_fields": sorted(REQUIRED_RAW_LAKE_MANIFEST_FIELDS)},
+            )
+        )
+    coverage = manifest.get("coverage") if isinstance(manifest.get("coverage"), dict) else {}
+    if not coverage.get("row_count") or not coverage.get("symbol_count"):
+        checks.append(
+            check(
+                "WARN",
+                f"{market.lower()}_manifest_coverage_weak",
+                "Manifest coverage is present but does not prove broad row and symbol coverage.",
+                {"coverage": coverage},
+            )
+        )
+    path = manifest_path(manifest)
+    checksum = manifest.get("checksum")
+    if path:
+        if not os.path.exists(path):
+            checks.append(
+                check(
+                    "FAIL",
+                    f"{market.lower()}_manifest_csv_missing",
+                    "Manifest points to a CSV path that does not exist.",
+                    {"path": path},
+                )
+            )
+        elif checksum:
+            try:
+                current_checksum = file_checksum(path)
+            except Exception as exc:
+                checks.append(
+                    check(
+                        "FAIL",
+                        f"{market.lower()}_manifest_checksum_unreadable",
+                        "CSV file could not be read for checksum verification.",
+                        {"path": path, "error": str(exc)},
+                    )
+                )
+            else:
+                if current_checksum == checksum:
+                    checks.append(
+                        check(
+                            "OK",
+                            f"{market.lower()}_manifest_checksum_verified",
+                            "Manifest checksum matches the referenced CSV file.",
+                            {"path": path},
+                        )
+                    )
+                else:
+                    checks.append(
+                        check(
+                            "FAIL",
+                            f"{market.lower()}_manifest_checksum_mismatch",
+                            "Manifest checksum does not match the referenced CSV file.",
+                            {"path": path, "expected": checksum, "actual": current_checksum},
+                        )
+                    )
+        else:
+            checks.append(
+                check(
+                    "WARN",
+                    f"{market.lower()}_manifest_checksum_missing",
+                    "Manifest lacks a checksum for the referenced CSV file.",
+                    {"path": path},
+                )
+            )
+    return {"status": worst_status([item["status"] for item in checks]), "checks": checks, "manifest": manifest}
+
+
 def dataset_assessment(metadata):
     date_range = metadata.get("date_range") or {}
     hk = market_coverage(metadata, "HK")
@@ -141,6 +267,8 @@ def dataset_assessment(metadata):
     total_symbols = hk["symbol_count_covered"] + us["symbol_count_covered"]
     total_rows = hk["row_count"] + us["row_count"]
     checks = []
+    manifests = metadata.get("manifests") or {}
+    manifest_files = metadata.get("manifest_files") or DEFAULT_MANIFEST_FILES
 
     storage = metadata.get("storage_policy") or {}
     if storage:
@@ -186,6 +314,44 @@ def dataset_assessment(metadata):
                     {"required_fields": sorted(manifest_fields)},
                 )
             )
+        for market in ("HK", "US", "ALL"):
+            manifest = manifests.get(market)
+            manifest_file = manifest_files.get(market)
+            if manifest is not None:
+                assessment = manifest_assessment(manifest, market)
+                checks.extend(assessment.get("checks") or [])
+                if assessment.get("status") == "FAIL":
+                    checks.append(
+                        check(
+                            "FAIL",
+                            f"{market.lower()}_manifest_validation_failed",
+                            "Embedded manifest does not satisfy the raw data contract.",
+                            {"market": market},
+                        )
+                    )
+            elif manifest_file:
+                loaded, error = load_manifest(manifest_file)
+                if error:
+                    checks.append(
+                        check(
+                            "FAIL" if error != "manifest_path_missing" else "WARN",
+                            f"{market.lower()}_manifest_file_{error}",
+                            "Manifest file is missing or unreadable.",
+                            {"path": manifest_file, "error": error},
+                        )
+                    )
+                else:
+                    assessment = manifest_assessment(loaded, market)
+                    checks.extend(assessment.get("checks") or [])
+            elif manifest is None:
+                checks.append(
+                    check(
+                        "WARN",
+                        f"{market.lower()}_manifest_unavailable",
+                        "No manifest data is available for this market; treat raw data provenance as weaker than fully validated local evidence.",
+                        {"market": market},
+                    )
+                )
     else:
         checks.append(
             check(
@@ -261,6 +427,8 @@ def dataset_assessment(metadata):
             "required_manifest_fields": storage.get("required_manifest_fields") if storage else [],
             "large_file_retention": storage.get("large_file_retention") if storage else {},
         },
+        "manifests": manifests,
+        "manifest_files": manifest_files,
         "checks": checks,
         "status": worst_status([item["status"] for item in checks]),
     }

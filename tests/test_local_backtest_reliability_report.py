@@ -25,6 +25,7 @@ def sample_metadata(symbol_count=90, raw_local_only=True, us_feed="iex"):
                 "feed",
                 "adjustment",
                 "timezone",
+                "path",
                 "retrieved_at",
                 "coverage",
                 "gaps",
@@ -100,6 +101,25 @@ def sample_backtest(trades=900, sharpe=1.1, drawdown=12.0, ret=200.0, include_ma
     }
 
 
+def sample_manifest(path, market="HK", checksum=None):
+    return {
+        "provider": "tencent_newfqkline" if market == "HK" else "alpaca_market_data",
+        "market": market,
+        "feed": None if market != "US" else "iex",
+        "timeframe": "1d",
+        "adjustment": "qfq" if market == "HK" else "all",
+        "timezone": "Asia/Hong_Kong" if market == "HK" else "America/New_York",
+        "path": path,
+        "retrieved_at": "2026-06-14T12:00:00",
+        "coverage": {"row_count": 2, "symbol_count": 1, "first": "2026-06-10", "last": "2026-06-11"},
+        "gaps": [],
+        "freshness": {"retrieved_at": "2026-06-14T12:00:00", "scope": "local_dataset_build"},
+        "license_scope": "operator_local_research_use",
+        "checksum": checksum or report.file_checksum(path),
+        "file_size_bytes": os.path.getsize(path),
+    }
+
+
 class LocalBacktestReliabilityReportTests(unittest.TestCase):
     def test_positive_baseline_still_not_promotion_ready(self):
         payload = report.build_report(sample_metadata(), sample_backtest(), sample_backtest(sharpe=0.85, drawdown=19.0))
@@ -120,7 +140,48 @@ class LocalBacktestReliabilityReportTests(unittest.TestCase):
             "raw_lake_manifest_contract_complete",
             [item["code"] for item in payload["dataset"]["checks"]],
         )
+        self.assertIn(
+            "hk_manifest_unavailable",
+            [item["code"] for item in payload["dataset"]["checks"]],
+        )
         self.assertEqual(payload["backtests"][0]["trade_distribution"]["by_market"][0]["key"], "US")
+
+    def test_embedded_manifest_checksum_is_verified_against_local_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "hk_klines_v2.csv")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write("symbol,dt,open_price,high_price,low_price,close_price,volume\n")
+                handle.write("00700,2026-06-10,450,456,448,455,1000\n")
+
+            metadata = sample_metadata()
+            metadata["manifests"] = {"HK": sample_manifest(csv_path, market="HK")}
+
+            payload = report.build_report(metadata, sample_backtest(), sample_backtest())
+            codes = [item["code"] for item in payload["dataset"]["checks"]]
+
+            self.assertIn("hk_manifest_complete", codes)
+            self.assertIn("hk_manifest_checksum_verified", codes)
+            self.assertNotIn("hk_manifest_validation_failed", codes)
+
+    def test_manifest_checksum_mismatch_is_a_hard_dataset_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = os.path.join(tmp, "hk_klines_v2.csv")
+            with open(csv_path, "w", encoding="utf-8") as handle:
+                handle.write("symbol,dt,open_price,high_price,low_price,close_price,volume\n")
+                handle.write("00700,2026-06-10,450,456,448,455,1000\n")
+            manifest = sample_manifest(csv_path, market="HK")
+            with open(csv_path, "a", encoding="utf-8") as handle:
+                handle.write("00700,2026-06-11,455,458,452,457,1100\n")
+
+            metadata = sample_metadata()
+            metadata["manifests"] = {"HK": manifest}
+
+            payload = report.build_report(metadata, sample_backtest(), sample_backtest())
+            codes = [item["code"] for item in payload["dataset"]["checks"]]
+
+            self.assertEqual(payload["dataset"]["status"], "FAIL")
+            self.assertIn("hk_manifest_checksum_mismatch", codes)
+            self.assertIn("hk_manifest_validation_failed", codes)
 
     def test_hard_data_and_performance_failures_make_evidence_insufficient(self):
         weak_backtest = sample_backtest(trades=20, sharpe=0.2, drawdown=35.0, ret=-10.0)

@@ -10,6 +10,7 @@ import argparse
 import csv
 import json
 import os
+import hashlib
 import time
 from datetime import datetime
 from urllib.parse import urlencode
@@ -37,6 +38,7 @@ RAW_DATA_MANIFEST_FIELDS = [
     "feed",
     "adjustment",
     "timezone",
+    "path",
     "retrieved_at",
     "coverage",
     "gaps",
@@ -241,6 +243,51 @@ def write_csv(path, rows, fields):
     return rows
 
 
+def file_checksum(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def file_size(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
+
+
+def build_manifest(path, provider, market, timeframe, rows, extra=None, retrieved_at=None):
+    rows = list(rows or [])
+    dates = [row.get("dt") or row.get("timestamp") for row in rows if row.get("dt") or row.get("timestamp")]
+    first = min(dates) if dates else None
+    last = max(dates) if dates else None
+    manifest = {
+        "provider": provider,
+        "market": market,
+        "feed": (extra or {}).get("feed"),
+        "timeframe": timeframe,
+        "adjustment": (extra or {}).get("adjustment"),
+        "timezone": (extra or {}).get("timezone"),
+        "path": os.path.abspath(path),
+        "retrieved_at": retrieved_at or now_iso(),
+        "coverage": {
+            "row_count": len(rows),
+            "symbol_count": len({row.get("symbol") for row in rows if row.get("symbol")}),
+            "first": first,
+            "last": last,
+        },
+        "gaps": (extra or {}).get("gaps") or [],
+        "freshness": (extra or {}).get("freshness"),
+        "license_scope": (extra or {}).get("license_scope"),
+        "checksum": file_checksum(path),
+        "file_size_bytes": file_size(path),
+        "source_url": (extra or {}).get("source_url"),
+    }
+    return manifest
+
+
 def coverage(rows, timestamp_field="dt"):
     by_symbol = {}
     for row in rows:
@@ -267,6 +314,7 @@ def output_paths(output_dir):
 def build_dataset(args, session=None, env=None):
     output_dir = os.path.abspath(args.output_dir)
     paths = output_paths(output_dir)
+    generated_at = now_iso()
     hk_symbols = normalize_symbols(args.hk_symbol) or ([] if args.skip_default_watchlist else list(HK_WATCHLIST))
     us_symbols = normalize_symbols(args.us_symbol) or ([] if args.skip_default_watchlist else list(US_WATCHLIST))
 
@@ -311,6 +359,52 @@ def build_dataset(args, session=None, env=None):
     us_rows = write_csv(paths["us_csv"], us_rows, DAILY_FIELDS)
     all_rows = write_csv(paths["all_csv"], hk_rows + us_rows, DAILY_FIELDS)
 
+    hk_manifest = build_manifest(
+        paths["hk_csv"],
+        provider="tencent_newfqkline",
+        market="HK",
+        timeframe="1d",
+        rows=hk_rows,
+        extra={
+            "adjustment": "qfq",
+            "timezone": "Asia/Hong_Kong",
+            "freshness": {"retrieved_at": generated_at, "scope": "local_dataset_build"},
+            "license_scope": "operator_local_research_use",
+            "source_url": TENCENT_KLINE_URL,
+        },
+        retrieved_at=generated_at,
+    )
+    us_manifest = build_manifest(
+        paths["us_csv"],
+        provider="alpaca_market_data",
+        market="US",
+        timeframe="1d",
+        rows=us_rows,
+        extra={
+            "feed": args.alpaca_feed,
+            "adjustment": args.alpaca_adjustment,
+            "timezone": "America/New_York",
+            "freshness": {"retrieved_at": generated_at, "scope": "local_dataset_build"},
+            "license_scope": "provider_api_terms_apply",
+            "source_url": ALPACA_DATA_BASE_URL,
+        },
+        retrieved_at=generated_at,
+    )
+    all_manifest = build_manifest(
+        paths["all_csv"],
+        provider="mixed_local_csv",
+        market="ALL",
+        timeframe="1d",
+        rows=all_rows,
+        extra={
+            "adjustment": "mixed",
+            "timezone": "mixed",
+            "freshness": {"retrieved_at": generated_at, "scope": "combined_dataset"},
+            "license_scope": "operator_local_research_use",
+        },
+        retrieved_at=generated_at,
+    )
+
     intraday_outputs = []
     for timeframe in args.us_intraday_timeframe or []:
         rows = fetch_alpaca_bars(
@@ -339,7 +433,7 @@ def build_dataset(args, session=None, env=None):
 
     metadata = {
         "schema": "hk_us_local_backtest_dataset_v1",
-        "generated_at": now_iso(),
+        "generated_at": generated_at,
         "date_range": {"start": args.start_date, "end": args.end_date},
         "storage_policy": {
             "raw_data_local_only": True,
@@ -357,6 +451,11 @@ def build_dataset(args, session=None, env=None):
             },
         },
         "outputs": paths,
+        "manifests": {
+            "HK": hk_manifest,
+            "US": us_manifest,
+            "ALL": all_manifest,
+        },
         "sources": {
             "HK": {
                 "provider": "tencent_newfqkline",

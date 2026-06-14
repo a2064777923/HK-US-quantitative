@@ -174,9 +174,19 @@ class LocalBacktestDatasetTests(unittest.TestCase):
             self.assertTrue(metadata["storage_policy"]["keep_broad_fine_grained_raw_data_locally"])
             self.assertTrue(metadata["storage_policy"]["production_consumes_compact_reports_only"])
             self.assertIn("checksum", metadata["storage_policy"]["required_manifest_fields"])
+            self.assertIn("path", metadata["storage_policy"]["required_manifest_fields"])
             self.assertIn("parquet_zstd", metadata["storage_policy"]["large_file_retention"]["prefer_partitioned_compressed_formats"])
             self.assertEqual(metadata["sources"]["HK"]["row_count"], 1)
             self.assertEqual(metadata["sources"]["US"]["row_count"], 1)
+            self.assertIn("HK", metadata["manifests"])
+            self.assertIn("US", metadata["manifests"])
+            self.assertIn("ALL", metadata["manifests"])
+            self.assertEqual(metadata["manifests"]["HK"]["coverage"]["row_count"], 1)
+            self.assertEqual(metadata["manifests"]["HK"]["coverage"]["symbol_count"], 1)
+            self.assertTrue(metadata["manifests"]["HK"]["checksum"])
+            self.assertEqual(metadata["manifests"]["HK"]["path"], os.path.abspath(os.path.join(tmp, "hk_klines_v2.csv")))
+            self.assertEqual(metadata["manifests"]["US"]["coverage"]["row_count"], 1)
+            self.assertEqual(metadata["manifests"]["ALL"]["coverage"]["symbol_count"], 2)
 
 
 if __name__ == "__main__":
