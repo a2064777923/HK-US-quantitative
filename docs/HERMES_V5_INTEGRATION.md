@@ -3678,6 +3678,7 @@ Optional explicit review inputs:
   --simulation-performance-file /tmp/simulation_performance_report.json \
   --execution-readiness-file /tmp/execution_readiness_report.json \
   --strategy-learning-file /tmp/strategy_learning_report.json \
+  --local-backtest-reliability-file /tmp/local_backtest_reliability_report.json \
   --max-simulation-performance-age-minutes 90 \
   --output /tmp/rt_signal_strategy_config_proposal.json \
   --text
@@ -3695,6 +3696,7 @@ Important behavior:
 - it reads `/tmp/simulation_performance_report.json` as review context when present;
 - it reads `/tmp/execution_readiness_report.json` as a full-stack readiness guard;
 - it reads `/tmp/strategy_learning_report.json` as the audit-pass Hermes learning guard;
+- it reads `/tmp/local_backtest_reliability_report.json` as compact read-only research evidence when present;
 - it writes only `/tmp/rt_signal_strategy_config_proposal.json`;
 - it never overwrites the live strategy config;
 - proposal output has `manual_review_required=true` and `auto_applied=false`;
@@ -3706,12 +3708,15 @@ Simulation-performance integration is additive and lossless for v5:
 
 - `proposed_config` remains a normalized `rt_signal_strategy_config_v1` object. Older review consumers can ignore unknown trigger fields, while v5 uses `review_mode` to enforce shadow-only trigger policies without changing order intake, DB rows, watchlists, crontab, or execution mode;
 - proposal output now includes `simulation_performance_context` with effective `status`, raw `report_status`, compact portfolio/trade summary, `reason_codes`, recommendations, `remediation_plan.proposal_hash`, remediation `action_ids`, and `freshness`;
-- proposal output also includes `execution_readiness_context` and `strategy_learning_context`. These are compact read-only summaries and do not change alert generation by themselves;
+- proposal output also includes `execution_readiness_context`, `strategy_learning_context`, and `local_backtest_reliability_context`. These are compact read-only summaries and do not change alert generation by themselves;
 - `status=FAIL` adds `promotion_blockers[].code=simulation_performance_fail_blocks_strategy_promotion` and sets `promotion.blocked=true`;
 - `status=WARN` adds `promotion_risk_warnings[].code=simulation_performance_warn_requires_operator_review` without blocking dry-run review;
 - missing context adds `promotion_blockers[].code=simulation_performance_missing_blocks_strategy_promotion`;
 - stale or invalid-timestamp context adds `promotion_blockers[].code=simulation_performance_stale_blocks_strategy_promotion`, even if the stale report's raw `report_status` is `OK`;
 - unknown non-clean context adds `promotion_blockers[].code=simulation_performance_unknown_status_blocks_strategy_promotion`;
+- missing local backtest reliability context adds `promotion_risk_warnings[].code=local_backtest_reliability_missing_requires_operator_review` without blocking dry-run review;
+- local backtest reliability `overall_status=INSUFFICIENT_EVIDENCE` adds `promotion_blockers[].code=local_backtest_insufficient_evidence_blocks_strategy_promotion`;
+- local backtest reliability with `promotion_ready!=true`, including the normal `RESEARCH_USEFUL_WITH_LIMITATIONS` status, adds `promotion_risk_warnings[].code=local_backtest_research_only_requires_operator_review` because local CSV/backtest results can support or challenge Hermes hypotheses but cannot authorize strategy promotion by themselves;
 - execution readiness not equal to `READY`, or `ready_for_execute` not equal to `true`, adds `promotion_blockers[].code=execution_readiness_not_ready_blocks_strategy_promotion`;
 - missing strategy learning adds `promotion_blockers[].code=strategy_learning_missing_blocks_strategy_promotion`;
 - missing `audit_pass_judgment_effect` adds `promotion_blockers[].code=strategy_learning_audit_pass_effect_missing_blocks_strategy_promotion`; raw `judgment_effect` is diagnostic only and must not support promotion;
@@ -3731,10 +3736,10 @@ No-loss job order:
 ```bash
 /usr/bin/python3 /root/hermes_judgment_audit_report.py --output /tmp/hermes_judgment_audit_report.json --text
 /usr/bin/python3 /root/strategy_learning_report.py --judgment-audit-report-file /tmp/hermes_judgment_audit_report.json --output /tmp/strategy_learning_report.json --text
-/usr/bin/python3 /root/strategy_config_proposal.py --output /tmp/rt_signal_strategy_config_proposal.json --text
+/usr/bin/python3 /root/strategy_config_proposal.py --local-backtest-reliability-file /tmp/local_backtest_reliability_report.json --output /tmp/rt_signal_strategy_config_proposal.json --text
 ```
 
-This is an evidence-contract change only. It does not submit orders, change v5 thresholds, edit watchlists, mutate the simulation ledger, upload raw data, or require existing jobs to change paths if they already use the `/tmp/...` defaults.
+This is an evidence-contract change only. It does not submit orders, change v5 thresholds, edit watchlists, mutate the simulation ledger, upload raw data, or require existing jobs to change paths if they already use the `/tmp/...` defaults. If the local backtest report is unavailable, the proposal remains reviewable with a risk warning; only explicit hard failures in the compact reliability report block promotion.
 
 Hermes/operator interpretation:
 

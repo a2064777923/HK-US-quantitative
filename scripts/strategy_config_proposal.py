@@ -31,6 +31,10 @@ TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE = os.environ.get(
     "TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE",
     "/tmp/trigger_evidence_convergence_report.json",
 )
+LOCAL_BACKTEST_RELIABILITY_REPORT_FILE = os.environ.get(
+    "LOCAL_BACKTEST_RELIABILITY_REPORT_FILE",
+    "/tmp/local_backtest_reliability_report.json",
+)
 MAX_SIMULATION_PERFORMANCE_AGE_MINUTES = float(
     os.environ.get(
         "STRATEGY_CONFIG_PROPOSAL_MAX_SIMULATION_PERFORMANCE_AGE_MINUTES",
@@ -665,6 +669,108 @@ def trigger_evidence_convergence_promotion_guards(context):
     return blockers
 
 
+def compact_local_backtest_reliability_context(local_backtest_reliability):
+    payload = local_backtest_reliability if isinstance(local_backtest_reliability, dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    dataset = payload.get("dataset") if isinstance(payload.get("dataset"), dict) else {}
+    source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
+    contract = payload.get("hermes_contract") if isinstance(payload.get("hermes_contract"), dict) else {}
+    recommendations = payload.get("recommendations") if isinstance(payload.get("recommendations"), list) else []
+    backtests = payload.get("backtests") if isinstance(payload.get("backtests"), list) else []
+    compact_backtests = []
+    for row in backtests[:4]:
+        if not isinstance(row, dict):
+            continue
+        metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+        compact_backtests.append(
+            {
+                "name": row.get("name"),
+                "status": row.get("status"),
+                "total_return_pct": metrics.get("total_return_pct"),
+                "annual_return_pct": metrics.get("annual_return_pct"),
+                "sharpe": metrics.get("sharpe"),
+                "max_drawdown_pct": metrics.get("max_drawdown_pct"),
+                "trades": metrics.get("trades"),
+                "win_rate_pct": metrics.get("win_rate_pct"),
+            }
+        )
+    return {
+        "schema": "rt_signal_strategy_config_proposal_local_backtest_context_v1",
+        "present": bool(payload),
+        "source_report_file": LOCAL_BACKTEST_RELIABILITY_REPORT_FILE,
+        "source_report_schema": payload.get("schema"),
+        "generated_at": payload.get("generated_at"),
+        "status": summary.get("overall_status") or ("MISSING" if not payload else "UNKNOWN"),
+        "promotion_ready": summary.get("promotion_ready"),
+        "hermes_use": summary.get("hermes_use"),
+        "dataset_status": summary.get("dataset_status") or dataset.get("status"),
+        "backtest_status_counts": (
+            summary.get("backtest_status_counts")
+            if isinstance(summary.get("backtest_status_counts"), dict)
+            else {}
+        ),
+        "best_backtest_by_sharpe": summary.get("best_backtest_by_sharpe"),
+        "dataset": {
+            "total_symbol_count": dataset.get("total_symbol_count"),
+            "total_row_count": dataset.get("total_row_count"),
+            "date_range": dataset.get("date_range") if isinstance(dataset.get("date_range"), dict) else {},
+        },
+        "backtests": compact_backtests,
+        "recommendation_codes": [
+            item.get("code") if isinstance(item, dict) else str(item)
+            for item in recommendations[:12]
+        ],
+        "source_contract": {
+            "read_only_inputs": source.get("read_only_inputs"),
+            "local_only": source.get("local_only"),
+            "changes_v5": source.get("changes_v5"),
+            "changes_order_intake": source.get("changes_order_intake"),
+            "changes_simulation": source.get("changes_simulation"),
+            "uses_credentials": source.get("uses_credentials"),
+        },
+        "hermes_contract": {
+            "contract": contract.get("contract"),
+            "forbidden_use": contract.get("forbidden_use") if isinstance(contract.get("forbidden_use"), list) else [],
+        },
+    }
+
+
+def local_backtest_reliability_promotion_guards(context):
+    status = str(context.get("status") or "MISSING").upper()
+    base = {
+        "local_backtest_status": status,
+        "local_backtest_report_file": context.get("source_report_file"),
+        "local_backtest_schema": context.get("source_report_schema"),
+        "dataset_status": context.get("dataset_status"),
+        "backtest_status_counts": context.get("backtest_status_counts") or {},
+        "recommendation_codes": context.get("recommendation_codes") or [],
+    }
+    blockers = []
+    warnings = []
+    if not context.get("present") or context.get("source_report_schema") != "local_backtest_reliability_report_v1":
+        row = dict(base)
+        row["code"] = "local_backtest_reliability_missing_requires_operator_review"
+        row["detail"] = "local backtest reliability context is unavailable; use simulation, forward outcomes, and Hermes learning as authority before promotion"
+        warnings.append(row)
+        return blockers, warnings
+    if status == "INSUFFICIENT_EVIDENCE":
+        row = dict(base)
+        row["code"] = "local_backtest_insufficient_evidence_blocks_strategy_promotion"
+        row["detail"] = "local dataset or backtest reliability has hard failures; do not promote strategy config changes until the research evidence is repaired"
+        blockers.append(row)
+    elif context.get("promotion_ready") is not True:
+        row = dict(base)
+        row["code"] = "local_backtest_research_only_requires_operator_review"
+        row["detail"] = "local backtest reliability is research evidence only; it can support or challenge hypotheses but cannot authorize strategy promotion by itself"
+        warnings.append(row)
+    elif status not in ("OK", "PASS", "PROMOTION_READY"):
+        row = dict(base)
+        row["code"] = "local_backtest_reliability_unknown_status_requires_operator_review"
+        row["detail"] = "local backtest reliability status is not recognized as clean promotion evidence"
+        warnings.append(row)
+    return blockers, warnings
+
+
 def build_report(
     strategy_review=None,
     current_config=None,
@@ -672,6 +778,7 @@ def build_report(
     execution_readiness=None,
     strategy_learning=None,
     trigger_evidence_convergence=None,
+    local_backtest_reliability=None,
     now=None,
     max_simulation_performance_age_minutes=MAX_SIMULATION_PERFORMANCE_AGE_MINUTES,
 ):
@@ -686,6 +793,8 @@ def build_report(
         strategy_learning = load_json_file(STRATEGY_LEARNING_REPORT_FILE)
     if trigger_evidence_convergence is None:
         trigger_evidence_convergence = load_json_file(TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE)
+    if local_backtest_reliability is None:
+        local_backtest_reliability = load_json_file(LOCAL_BACKTEST_RELIABILITY_REPORT_FILE)
     current_config, config_warnings = rt.normalize_strategy_config(current_config)
     proposed_config = json.loads(json.dumps(current_config))
     changes = []
@@ -706,9 +815,15 @@ def build_report(
     readiness_context = compact_execution_readiness_context(execution_readiness)
     learning_context = compact_strategy_learning_context(strategy_learning)
     convergence_context = compact_trigger_evidence_convergence_context(trigger_evidence_convergence)
+    local_backtest_context = compact_local_backtest_reliability_context(local_backtest_reliability)
     promotion_blockers.extend(execution_readiness_promotion_guards(readiness_context))
     promotion_blockers.extend(strategy_learning_promotion_guards(learning_context))
     promotion_blockers.extend(trigger_evidence_convergence_promotion_guards(convergence_context))
+    local_backtest_blockers, local_backtest_warnings = local_backtest_reliability_promotion_guards(
+        local_backtest_context
+    )
+    promotion_blockers.extend(local_backtest_blockers)
+    promotion_risk_warnings.extend(local_backtest_warnings)
     return {
         "schema": "rt_signal_strategy_config_proposal_v1",
         "generated_at": now_iso(),
@@ -721,6 +836,7 @@ def build_report(
             "execution_readiness_report_file": EXECUTION_READINESS_REPORT_FILE,
             "strategy_learning_report_file": STRATEGY_LEARNING_REPORT_FILE,
             "trigger_evidence_convergence_report_file": TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE,
+            "local_backtest_reliability_report_file": LOCAL_BACKTEST_RELIABILITY_REPORT_FILE,
             "current_config_file": CURRENT_CONFIG_FILE,
             "current_config_id": current_config.get("config_id"),
             "strategy_review_schema": strategy_review.get("schema"),
@@ -742,6 +858,10 @@ def build_report(
             if isinstance(trigger_evidence_convergence, dict)
             else None,
             "trigger_evidence_convergence_status": convergence_context.get("status"),
+            "local_backtest_reliability_schema": local_backtest_reliability.get("schema")
+            if isinstance(local_backtest_reliability, dict)
+            else None,
+            "local_backtest_reliability_status": local_backtest_context.get("status"),
             "max_simulation_performance_age_minutes": max_simulation_performance_age_minutes,
         },
         "proposal_hash": proposal_hash(proposed_config),
@@ -752,6 +872,7 @@ def build_report(
         "execution_readiness_context": readiness_context,
         "strategy_learning_context": learning_context,
         "trigger_evidence_convergence_context": convergence_context,
+        "local_backtest_reliability_context": local_backtest_context,
         "promotion_blockers": promotion_blockers,
         "promotion_risk_warnings": promotion_risk_warnings,
         "promotion": {
@@ -820,6 +941,16 @@ def build_text_report(payload):
                 insufficient=convergence.get("insufficient_forward_sample_count"),
             )
         )
+    local_backtest = payload.get("local_backtest_reliability_context") or {}
+    if local_backtest:
+        lines.append(
+            "local_backtest={status} promotion_ready={promotion_ready} dataset={dataset} best={best}".format(
+                status=local_backtest.get("status"),
+                promotion_ready=local_backtest.get("promotion_ready"),
+                dataset=local_backtest.get("dataset_status"),
+                best=local_backtest.get("best_backtest_by_sharpe"),
+            )
+        )
     for change in payload.get("changes", [])[:12]:
         lines.append(f"  {change['key']}: {change['policy']} -> {change['to']}")
     if payload.get("promotion_blockers"):
@@ -845,6 +976,7 @@ def parse_args():
     parser.add_argument("--execution-readiness-file", default=EXECUTION_READINESS_REPORT_FILE)
     parser.add_argument("--strategy-learning-file", default=STRATEGY_LEARNING_REPORT_FILE)
     parser.add_argument("--trigger-evidence-convergence-file", default=TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE)
+    parser.add_argument("--local-backtest-reliability-file", default=LOCAL_BACKTEST_RELIABILITY_REPORT_FILE)
     parser.add_argument(
         "--max-simulation-performance-age-minutes",
         type=float,
@@ -860,12 +992,14 @@ def main():
     args = parse_args()
     global STRATEGY_REVIEW_REPORT_FILE, CURRENT_CONFIG_FILE, SIMULATION_PERFORMANCE_REPORT_FILE
     global EXECUTION_READINESS_REPORT_FILE, STRATEGY_LEARNING_REPORT_FILE, TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE
+    global LOCAL_BACKTEST_RELIABILITY_REPORT_FILE
     STRATEGY_REVIEW_REPORT_FILE = args.strategy_review_file
     CURRENT_CONFIG_FILE = args.current_config_file
     SIMULATION_PERFORMANCE_REPORT_FILE = args.simulation_performance_file
     EXECUTION_READINESS_REPORT_FILE = args.execution_readiness_file
     STRATEGY_LEARNING_REPORT_FILE = args.strategy_learning_file
     TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE = args.trigger_evidence_convergence_file
+    LOCAL_BACKTEST_RELIABILITY_REPORT_FILE = args.local_backtest_reliability_file
     payload = build_report(max_simulation_performance_age_minutes=args.max_simulation_performance_age_minutes)
     if args.output:
         save_json_atomic(args.output, payload)

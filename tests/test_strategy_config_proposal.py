@@ -242,6 +242,57 @@ def trigger_evidence_convergence(
     }
 
 
+def local_backtest_reliability(status="RESEARCH_USEFUL_WITH_LIMITATIONS", promotion_ready=False):
+    return {
+        "schema": "local_backtest_reliability_report_v1",
+        "generated_at": "2026-06-13T09:55:00",
+        "source": {
+            "read_only_inputs": True,
+            "local_only": True,
+            "changes_v5": False,
+            "changes_order_intake": False,
+            "changes_simulation": False,
+            "uses_credentials": False,
+        },
+        "summary": {
+            "overall_status": status,
+            "promotion_ready": promotion_ready,
+            "hermes_use": "research_evidence_only",
+            "dataset_status": "WARN" if status != "INSUFFICIENT_EVIDENCE" else "FAIL",
+            "backtest_status_counts": {"OK": 1, "WARN": 1},
+            "best_backtest_by_sharpe": "portfolio_backtest_realistic",
+        },
+        "dataset": {
+            "status": "WARN" if status != "INSUFFICIENT_EVIDENCE" else "FAIL",
+            "total_symbol_count": 120,
+            "total_row_count": 120000,
+            "date_range": {"start": "2021-01-01", "end": "2026-06-12", "span_years": 5.45},
+        },
+        "backtests": [
+            {
+                "name": "portfolio_backtest_realistic",
+                "status": "OK",
+                "metrics": {
+                    "total_return_pct": 120.0,
+                    "annual_return_pct": 22.0,
+                    "sharpe": 1.15,
+                    "max_drawdown_pct": 14.0,
+                    "trades": 850,
+                    "win_rate_pct": 53.0,
+                },
+            }
+        ],
+        "recommendations": [
+            {"code": "do_not_promote_strategy_from_single_local_backtest"},
+            {"code": "run_walk_forward_and_out_of_sample_validation"},
+        ],
+        "hermes_contract": {
+            "contract": "research_evidence_only",
+            "forbidden_use": ["do not approve live or simulation execution from this report alone"],
+        },
+    }
+
+
 class StrategyConfigProposalTests(unittest.TestCase):
     def test_build_report_proposes_manual_strategy_config_changes(self):
         payload = proposal.build_report(
@@ -259,6 +310,7 @@ class StrategyConfigProposalTests(unittest.TestCase):
             execution_readiness("READY"),
             strategy_learning(),
             trigger_evidence_convergence(),
+            local_backtest_reliability("OK", promotion_ready=True),
             now=NOW,
         )
         proposed = payload["proposed_config"]
@@ -527,6 +579,7 @@ class StrategyConfigProposalTests(unittest.TestCase):
                 execution_candidate_audit_pass=True,
             ),
             trigger_evidence_convergence(),
+            local_backtest_reliability("OK", promotion_ready=True),
             now=NOW,
         )
 
@@ -599,6 +652,59 @@ class StrategyConfigProposalTests(unittest.TestCase):
         self.assertEqual(context["top_risk_triggers"][0]["key"], "BUY:weak")
         self.assertFalse(context["operator_contract"]["submits_orders"])
         self.assertFalse(context["operator_contract"]["changes_strategy_config"])
+
+    def test_local_backtest_research_only_adds_review_warning_not_blocker(self):
+        payload = proposal.build_report(
+            review_payload(),
+            {"schema": "rt_signal_strategy_config_v1"},
+            simulation_performance("OK"),
+            execution_readiness("READY"),
+            strategy_learning(),
+            trigger_evidence_convergence(),
+            local_backtest_reliability(),
+            now=NOW,
+        )
+
+        self.assertFalse(payload["promotion"]["blocked"])
+        codes = [row["code"] for row in payload["promotion_risk_warnings"]]
+        self.assertIn("local_backtest_research_only_requires_operator_review", codes)
+        self.assertEqual(payload["local_backtest_reliability_context"]["status"], "RESEARCH_USEFUL_WITH_LIMITATIONS")
+        self.assertEqual(payload["local_backtest_reliability_context"]["backtests"][0]["sharpe"], 1.15)
+        self.assertFalse(payload["local_backtest_reliability_context"]["source_contract"]["changes_v5"])
+
+    def test_local_backtest_hard_failure_blocks_promotion(self):
+        payload = proposal.build_report(
+            review_payload(),
+            {"schema": "rt_signal_strategy_config_v1"},
+            simulation_performance("OK"),
+            execution_readiness("READY"),
+            strategy_learning(),
+            trigger_evidence_convergence(),
+            local_backtest_reliability("INSUFFICIENT_EVIDENCE"),
+            now=NOW,
+        )
+
+        self.assertTrue(payload["promotion"]["blocked"])
+        codes = [row["code"] for row in payload["promotion_blockers"]]
+        self.assertIn("local_backtest_insufficient_evidence_blocks_strategy_promotion", codes)
+        self.assertEqual(payload["local_backtest_reliability_context"]["dataset_status"], "FAIL")
+
+    def test_missing_local_backtest_adds_review_warning_not_blocker(self):
+        payload = proposal.build_report(
+            review_payload(),
+            {"schema": "rt_signal_strategy_config_v1"},
+            simulation_performance("OK"),
+            execution_readiness("READY"),
+            strategy_learning(),
+            trigger_evidence_convergence(),
+            {},
+            now=NOW,
+        )
+
+        self.assertFalse(payload["promotion"]["blocked"])
+        codes = [row["code"] for row in payload["promotion_risk_warnings"]]
+        self.assertIn("local_backtest_reliability_missing_requires_operator_review", codes)
+        self.assertEqual(payload["local_backtest_reliability_context"]["status"], "MISSING")
 
 
 if __name__ == "__main__":
