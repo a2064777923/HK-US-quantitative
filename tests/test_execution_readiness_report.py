@@ -166,6 +166,80 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         self.assertEqual(payload["blocking_gates"], [])
         self.assertEqual(payload["warning_gates"], [])
 
+    def test_diagnostic_candidate_outcomes_block_readiness_without_executable_cohort(self):
+        inputs = healthy_inputs()
+        inputs["outcome_report"].update(
+            {
+                "primary_horizon": "1d",
+                "downgraded_directional_alert_count": 4,
+                "counts": {"downgraded_directional_alert_count": 4},
+                "overall": {
+                    "horizons": {
+                        "1d": {
+                            "resolved_count": 30,
+                            "avg_signed_close_return_pct": 1.2,
+                            "win_rate_pct": 62.5,
+                            "target_hit_rate_pct": 37.5,
+                            "stop_hit_rate_pct": 25.0,
+                            "favorable_to_adverse_ratio": 1.4,
+                        }
+                    }
+                },
+            }
+        )
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "BLOCKED")
+        gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "forward_outcome_evidence"][0]
+        self.assertIn("executable-only cohort is missing", gate["detail"])
+        self.assertEqual(gate["data"]["strategy_evidence_metric_scope"], "execution_candidate_missing")
+        self.assertEqual(gate["data"]["diagnostic_candidate_outcome_count"], 4)
+
+    def test_diagnostic_candidate_outcomes_use_executable_cohort_for_readiness(self):
+        inputs = healthy_inputs()
+        inputs["outcome_report"].update(
+            {
+                "primary_horizon": "1d",
+                "counts": {"downgraded_directional_alert_count": 4},
+                "overall": {
+                    "horizons": {
+                        "1d": {
+                            "resolved_count": 30,
+                            "avg_signed_close_return_pct": -0.2,
+                            "win_rate_pct": 40.0,
+                            "target_hit_rate_pct": 20.0,
+                            "stop_hit_rate_pct": 45.0,
+                            "favorable_to_adverse_ratio": 0.8,
+                        }
+                    }
+                },
+                "execution_candidate": {
+                    "overall": {
+                        "horizons": {
+                            "1d": {
+                                "resolved_count": 8,
+                                "avg_signed_close_return_pct": 1.3,
+                                "win_rate_pct": 62.5,
+                                "target_hit_rate_pct": 37.5,
+                                "stop_hit_rate_pct": 25.0,
+                                "favorable_to_adverse_ratio": 1.4,
+                            }
+                        }
+                    }
+                },
+            }
+        )
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "READY")
+        gate = [gate for gate in payload["gates"] if gate["gate"] == "forward_outcome_evidence"][0]
+        self.assertEqual(gate["data"]["strategy_evidence_metric_scope"], "execution_candidate")
+        self.assertEqual(gate["data"]["diagnostic_candidate_outcome_count"], 4)
+        self.assertEqual(gate["data"]["resolved_count"], 8)
+        self.assertEqual(gate["data"]["avg_signed_return_pct"], 1.3)
+
     def test_stale_input_report_blocks_readiness(self):
         inputs = healthy_inputs()
         inputs["strategy_learning"]["generated_at"] = STALE_TIME

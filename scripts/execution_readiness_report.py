@@ -170,6 +170,54 @@ def latest_outcome_counts(outcome_report, strategy_learning):
     }
 
 
+def diagnostic_candidate_outcome_count(outcome_report):
+    if not isinstance(outcome_report, dict):
+        return 0
+    counts = outcome_report.get("counts") if isinstance(outcome_report.get("counts"), dict) else {}
+    for value in (
+        outcome_report.get("downgraded_directional_alert_count"),
+        counts.get("downgraded_directional_alert_count"),
+    ):
+        try:
+            count = int(float(value or 0))
+            if count > 0:
+                return count
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def outcome_horizon_metric(section, horizon):
+    if not isinstance(section, dict):
+        return {}
+    horizons = section.get("horizons") if isinstance(section.get("horizons"), dict) else {}
+    metric = horizons.get(horizon)
+    return metric if isinstance(metric, dict) else {}
+
+
+def executable_only_outcome_metric(outcome_report, horizon):
+    if not isinstance(outcome_report, dict):
+        return {}
+    containers = [
+        outcome_report.get("execution_candidate_overall"),
+        outcome_report.get("overall_execution_candidate"),
+    ]
+    execution_candidate = outcome_report.get("execution_candidate")
+    if isinstance(execution_candidate, dict):
+        containers.append(execution_candidate.get("overall"))
+    overall = outcome_report.get("overall")
+    if isinstance(overall, dict) and (
+        overall.get("execution_candidate") is True
+        or str(overall.get("scope") or "").strip().lower() in ("execution_candidate", "execution_candidate_only")
+    ):
+        containers.append(overall)
+    for container in containers:
+        metric = outcome_horizon_metric(container, horizon)
+        if metric:
+            return metric
+    return {}
+
+
 def simulation_risk_reports(portfolio_report):
     risk = portfolio_report.get("portfolio_risk") if isinstance(portfolio_report.get("portfolio_risk"), dict) else {}
     reports = risk.get("reports") if isinstance(risk.get("reports"), list) else []
@@ -346,12 +394,39 @@ def build_report(
     )
 
     counts = latest_outcome_counts(outcome_report, strategy_learning)
+    diagnostic_candidate_outcomes = diagnostic_candidate_outcome_count(outcome_report)
+    if diagnostic_candidate_outcomes > 0:
+        executable_metric = executable_only_outcome_metric(
+            outcome_report,
+            str(outcome_report.get("primary_horizon") or "1d"),
+        )
+        if executable_metric:
+            if executable_metric.get("resolved_count") is not None:
+                counts["resolved_count"] = int(executable_metric.get("resolved_count") or counts["resolved_count"])
+            if executable_metric.get("avg_signed_close_return_pct") is not None:
+                counts["avg_signed_return_pct"] = executable_metric.get("avg_signed_close_return_pct")
+            if executable_metric.get("win_rate_pct") is not None:
+                counts["win_rate_pct"] = executable_metric.get("win_rate_pct")
+            if executable_metric.get("target_hit_rate_pct") is not None:
+                counts["target_hit_rate_pct"] = executable_metric.get("target_hit_rate_pct")
+            if executable_metric.get("stop_hit_rate_pct") is not None:
+                counts["stop_hit_rate_pct"] = executable_metric.get("stop_hit_rate_pct")
+            if executable_metric.get("favorable_to_adverse_ratio") is not None:
+                counts["favorable_to_adverse_ratio"] = executable_metric.get("favorable_to_adverse_ratio")
+            counts["strategy_evidence_metric_scope"] = "execution_candidate"
+            counts["diagnostic_candidate_outcome_count"] = diagnostic_candidate_outcomes
+        else:
+            counts["strategy_evidence_metric_scope"] = "execution_candidate_missing"
+            counts["diagnostic_candidate_outcome_count"] = diagnostic_candidate_outcomes
     avg_signed_return = as_float(counts.get("avg_signed_return_pct"))
     win_rate = as_float(counts.get("win_rate_pct"))
     target_hit_rate = as_float(counts.get("target_hit_rate_pct"))
     stop_hit_rate = as_float(counts.get("stop_hit_rate_pct"))
     favorable_to_adverse_ratio = as_float(counts.get("favorable_to_adverse_ratio"))
-    if counts["resolved_count"] < min_resolved_outcomes:
+    if counts.get("strategy_evidence_metric_scope") == "execution_candidate_missing":
+        outcome_status = "BLOCK"
+        outcome_detail = "diagnostic candidate outcomes exist but executable-only cohort is missing"
+    elif counts["resolved_count"] < min_resolved_outcomes:
         outcome_status = "BLOCK"
         outcome_detail = f"resolved outcomes {counts['resolved_count']} / required {min_resolved_outcomes}"
     elif avg_signed_return is None:
