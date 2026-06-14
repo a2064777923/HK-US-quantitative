@@ -72,6 +72,12 @@ def unconfirmed_alert(signal_id="unconfirmed-1"):
     item = alert(signal_id)
     item["confirmed"] = False
     item["full_score"] = 0.1
+    item["execution_candidate"] = False
+    item["execution_blocked_reasons"] = ["not_confirmed"]
+    item["entry_price"] = None
+    item["stop_loss"] = None
+    item["take_profit"] = None
+    item["rr_ratio"] = None
     return item
 
 
@@ -2622,6 +2628,51 @@ class HermesReviewPacketTests(unittest.TestCase):
         )
         self.assertEqual(payload["alert_selection"]["review_alert_count"], 1)
 
+    def test_not_execution_candidate_is_observation_not_trade_review_item(self):
+        health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
+        portfolio = {"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []}
+        research = alert("research-buy")
+        research.update(
+            {
+                "confirmed": False,
+                "execution_candidate": False,
+                "execution_blocked_reasons": ["not_confirmed"],
+                "entry_price": None,
+                "stop_loss": None,
+                "take_profit": None,
+                "rr_ratio": None,
+            }
+        )
+        rejected = {
+            "signal_id": "research-buy",
+            "status": "rejected",
+            "reasons": ["not_execution_candidate", "not_confirmed"],
+        }
+
+        payload = packet.build_packet(
+            [research],
+            health_payload=health,
+            portfolio_payload=portfolio,
+            intake_results=[rejected],
+        )
+
+        self.assertEqual(payload["review_items"], [])
+        self.assertEqual(payload["non_actionable_observation_count"], 1)
+        observation = payload["non_actionable_observations"][0]
+        self.assertEqual(observation["signal_id"], "research-buy")
+        self.assertEqual(observation["reason"], "not_execution_candidate")
+        self.assertFalse(observation["alert"]["execution_candidate"])
+        self.assertEqual(observation["alert"]["candidate_entry_price"], 300)
+        self.assertEqual(payload["review_item_suppression"]["status"], "ALL_SELECTED_ALERTS_SUPPRESSED")
+        self.assertEqual(
+            payload["review_item_suppression"]["reason_counts"],
+            [{"key": "not_execution_candidate", "count": 1}],
+        )
+        self.assertIn(
+            "treat_non_execution_candidate_alerts_as_research_observations",
+            payload["review_item_suppression"]["recommendations"],
+        )
+
     def test_sell_with_order_plan_remains_trade_review_item(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
         portfolio = {"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []}
@@ -3515,7 +3566,30 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(payload["alert_selection"]["directional_count"], 2)
         self.assertEqual(payload["alert_selection"]["confirmed_directional_count"], 2)
         self.assertEqual(payload["alert_selection"]["unconfirmed_directional_count"], 0)
+        self.assertEqual(payload["alert_selection"]["execution_candidate_directional_count"], 2)
+        self.assertEqual(payload["alert_selection"]["non_execution_candidate_directional_count"], 0)
         self.assertEqual(payload["alert_selection"]["by_signal_type"]["WATCH"], 1)
+
+    def test_packet_alert_selection_counts_non_execution_candidate_directionals(self):
+        health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
+        portfolio = {"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []}
+        blocked = alert("blocked")
+        blocked.update({"execution_candidate": False, "execution_blocked_reasons": ["not_confirmed"]})
+        source_alerts = [alert("b1"), blocked, unconfirmed_alert("u1")]
+
+        payload = packet.build_packet(
+            [source_alerts[0]],
+            health_payload=health,
+            portfolio_payload=portfolio,
+            intake_results=[intake_result("b1")],
+            source_alerts=source_alerts,
+        )
+
+        self.assertEqual(payload["alert_selection"]["directional_count"], 3)
+        self.assertEqual(payload["alert_selection"]["confirmed_directional_count"], 2)
+        self.assertEqual(payload["alert_selection"]["unconfirmed_directional_count"], 1)
+        self.assertEqual(payload["alert_selection"]["execution_candidate_directional_count"], 1)
+        self.assertEqual(payload["alert_selection"]["non_execution_candidate_directional_count"], 2)
 
     def test_archive_packet_writes_snapshot_by_packet_id(self):
         payload = {

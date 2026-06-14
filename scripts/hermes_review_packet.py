@@ -360,6 +360,8 @@ def alert_selection_stats(source_alerts, review_alerts, sample_scope=None):
     directional = 0
     confirmed_directional = 0
     unconfirmed_directional = 0
+    execution_candidate_directional = 0
+    non_execution_candidate_directional = 0
     for alert in source_alerts:
         side = str(alert.get("signal_type", "UNKNOWN")).upper() or "UNKNOWN"
         by_type[side] = by_type.get(side, 0) + 1
@@ -369,12 +371,18 @@ def alert_selection_stats(source_alerts, review_alerts, sample_scope=None):
                 confirmed_directional += 1
             else:
                 unconfirmed_directional += 1
+            if alert.get("execution_candidate") is True:
+                execution_candidate_directional += 1
+            else:
+                non_execution_candidate_directional += 1
     return {
         "source_alert_count": len(source_alerts),
         "review_alert_count": len(review_alerts),
         "directional_count": directional,
         "confirmed_directional_count": confirmed_directional,
         "unconfirmed_directional_count": unconfirmed_directional,
+        "execution_candidate_directional_count": execution_candidate_directional,
+        "non_execution_candidate_directional_count": non_execution_candidate_directional,
         "directional_not_selected_count": max(directional - len(review_alerts), 0),
         "by_signal_type": by_type,
         "review_signal_ids": [intake.signal_id(alert) for alert in review_alerts],
@@ -511,6 +519,8 @@ def is_non_actionable_observation(alert, result):
     reasons = set((result or {}).get("reasons") or [])
     if (result or {}).get("status") != "rejected":
         return False
+    if "not_execution_candidate" in reasons:
+        return True
     if "alert_too_old" in reasons:
         return True
     return side == "SELL" and "sell_without_position" in reasons
@@ -519,6 +529,8 @@ def is_non_actionable_observation(alert, result):
 def non_actionable_reason(alert, result):
     side = str((alert or {}).get("signal_type", "")).upper()
     reasons = set((result or {}).get("reasons") or [])
+    if "not_execution_candidate" in reasons:
+        return "not_execution_candidate"
     if "alert_too_old" in reasons:
         return "alert_too_old"
     if side == "SELL" and "sell_without_position" in reasons:
@@ -579,6 +591,8 @@ def review_item_suppression_summary(alert_result_pairs, actionable_pairs, observ
         recommendations.append("wait_for_fresh_confirmed_alerts_or_run_packet_during_market_session")
     if reason_counter.get("sell_without_position"):
         recommendations.append("treat_sell_without_position_as_position_observation_only")
+    if reason_counter.get("not_execution_candidate"):
+        recommendations.append("treat_non_execution_candidate_alerts_as_research_observations")
     if status == "HAS_REVIEW_ITEMS":
         recommendations.append("continue_hermes_review_for_review_items")
     if not recommendations:
