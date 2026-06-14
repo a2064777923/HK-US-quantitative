@@ -33,6 +33,10 @@ MOMENTUM_THRESHOLD_PCT = 5.0
 VOLUME_ANOMALY_RATIO = 3.0
 BUY_CONFIRMATION_MIN_SCORE = 0.45
 SELL_CONFIRMATION_MAX_SCORE = -0.45
+MIN_AVG_DAILY_TURNOVER = {
+    "HK": 100_000.0,
+    "US": 100_000.0,
+}
 HK_SYMBOL_RE = re.compile(r"^\d{5}$")
 US_SYMBOL_RE = re.compile(r"^(?=.{1,10}$)[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?$")
 
@@ -67,6 +71,9 @@ def default_strategy_config():
             "atr_stop_multiple": 2.0,
             "atr_take_profit_multiple": 3.0,
             "min_rr_ratio": 1.2
+        },
+        "liquidity_model": {
+            "min_avg_daily_turnover": dict(MIN_AVG_DAILY_TURNOVER)
         },
         "emission": {
             "emit_unconfirmed_directional_as_watch": True
@@ -205,6 +212,7 @@ def strategy_config_digest(config):
         "volume_anomaly_ratio": config.get("volume_anomaly_ratio"),
         "confirmation_thresholds": config.get("confirmation_thresholds"),
         "risk_model": config.get("risk_model"),
+        "liquidity_model": config.get("liquidity_model"),
         "emission": config.get("emission"),
         "trigger_overrides": config.get("trigger_overrides"),
     }
@@ -220,7 +228,7 @@ def merge_strategy_config(base, override):
     for key in ("signal_cooldown_seconds", "volume_anomaly_ratio"):
         if key in override:
             merged[key] = override[key]
-    for key in ("confirmation_thresholds", "risk_model", "emission", "trigger_overrides"):
+    for key in ("confirmation_thresholds", "risk_model", "liquidity_model", "emission", "trigger_overrides"):
         if isinstance(override.get(key), dict):
             merged.setdefault(key, {})
             for sub_key, value in override[key].items():
@@ -304,6 +312,24 @@ def normalize_strategy_config(config):
         warnings.append("invalid_min_rr_ratio_using_default")
         risk["min_rr_ratio"] = 1.2
 
+    liquidity = config.setdefault("liquidity_model", {})
+    raw_min_turnover = (
+        liquidity.get("min_avg_daily_turnover")
+        if isinstance(liquidity.get("min_avg_daily_turnover"), dict)
+        else {}
+    )
+    normalized_min_turnover = {}
+    for market, default in MIN_AVG_DAILY_TURNOVER.items():
+        value = raw_min_turnover.get(market)
+        if value is None:
+            value = raw_min_turnover.get(market.lower())
+        value = as_float(value, default)
+        if value is None or value < default:
+            warnings.append(f"invalid_min_avg_daily_turnover_{market.lower()}_using_default")
+            value = default
+        normalized_min_turnover[market] = value
+    liquidity["min_avg_daily_turnover"] = normalized_min_turnover
+
     emission = config.setdefault("emission", {})
     emission["emit_unconfirmed_directional_as_watch"] = as_bool(
         emission.get("emit_unconfirmed_directional_as_watch"),
@@ -351,6 +377,8 @@ def load_strategy_config(env=None, file_path=None):
     env_buy = env.get("RT_SIGNAL_BUY_MIN_FULL_SCORE")
     env_sell = env.get("RT_SIGNAL_SELL_MAX_FULL_SCORE")
     env_volume = env.get("RT_SIGNAL_VOLUME_ANOMALY_RATIO")
+    env_hk_turnover = env.get("RT_SIGNAL_HK_MIN_AVG_DAILY_TURNOVER")
+    env_us_turnover = env.get("RT_SIGNAL_US_MIN_AVG_DAILY_TURNOVER")
     env_cooldown = env.get("RT_SIGNAL_COOLDOWN_SECONDS")
     env_emit_unconfirmed = env.get("RT_SIGNAL_EMIT_UNCONFIRMED_DIRECTIONAL_AS_WATCH")
     if env_buy is not None:
@@ -361,6 +389,12 @@ def load_strategy_config(env=None, file_path=None):
         source = "env"
     if env_volume is not None:
         config["volume_anomaly_ratio"] = env_volume
+        source = "env"
+    if env_hk_turnover is not None:
+        config.setdefault("liquidity_model", {}).setdefault("min_avg_daily_turnover", {})["HK"] = env_hk_turnover
+        source = "env"
+    if env_us_turnover is not None:
+        config.setdefault("liquidity_model", {}).setdefault("min_avg_daily_turnover", {})["US"] = env_us_turnover
         source = "env"
     if env_cooldown is not None:
         config["signal_cooldown_seconds"] = env_cooldown
@@ -1288,6 +1322,20 @@ def indicator_signal_ready(indicators):
         and lengths["closes"] >= MIN_SIGNAL_HISTORY_BARS
     )
 
+def average_daily_turnover(closes, volumes, lookback=20):
+    if not isinstance(closes, list) or not isinstance(volumes, list):
+        return None
+    if len(closes) < lookback or len(volumes) < lookback:
+        return None
+    notional = 0.0
+    for close, volume in zip(closes[-lookback:], volumes[-lookback:]):
+        close = as_float(close)
+        volume = as_float(volume)
+        if close is None or volume is None or close <= 0 or volume < 0:
+            return None
+        notional += close * volume
+    return notional / lookback
+
 def alert_signal_date(quote_time=None, generated_at=None, market=None):
     parsed_quote_time = parse_quote_datetime(quote_time, market=market)
     if parsed_quote_time is not None:
@@ -1366,6 +1414,19 @@ class TriggerEngine:
 
     def min_rr_ratio(self):
         return as_float((self.strategy_config.get("risk_model") or {}).get("min_rr_ratio"), 1.2) or 1.2
+
+    def min_avg_daily_turnover(self, market):
+        liquidity = self.strategy_config.get("liquidity_model") or {}
+        thresholds = (
+            liquidity.get("min_avg_daily_turnover")
+            if isinstance(liquidity.get("min_avg_daily_turnover"), dict)
+            else {}
+        )
+        market = str(market or "").upper()
+        default = MIN_AVG_DAILY_TURNOVER.get(market)
+        if default is None:
+            return None
+        return as_float(thresholds.get(market), default) or default
 
     def emit_unconfirmed_directional_as_watch(self):
         return as_bool(
@@ -1563,6 +1624,8 @@ class TriggerEngine:
                 candidate_stop_loss,
                 candidate_take_profit,
             )
+            avg_daily_turnover = average_daily_turnover(indicators.closes, indicators.volumes)
+            min_avg_daily_turnover = self.min_avg_daily_turnover(quote.get("market"))
             risk_geometry_valid, risk_geometry_reason = self.risk_geometry(
                 signal_type,
                 candidate_entry_price,
@@ -1575,6 +1638,24 @@ class TriggerEngine:
             elif not atr_valid:
                 risk_geometry_valid = False
                 risk_geometry_reason = "missing_or_invalid_atr"
+            liquidity_geometry_valid = True
+            liquidity_geometry_reason = None
+            if signal_type in ("BUY", "SELL"):
+                if avg_daily_turnover is None or min_avg_daily_turnover is None:
+                    liquidity_geometry_valid = False
+                    liquidity_geometry_reason = "missing_or_invalid_avg_daily_turnover"
+                elif avg_daily_turnover <= 0 or min_avg_daily_turnover <= 0:
+                    liquidity_geometry_valid = False
+                    liquidity_geometry_reason = "non_positive_avg_daily_turnover"
+                elif avg_daily_turnover < min_avg_daily_turnover:
+                    liquidity_geometry_valid = False
+                    liquidity_geometry_reason = "avg_daily_turnover_below_minimum"
+                if not liquidity_geometry_valid:
+                    risk_geometry_valid = False
+                    risk_geometry_reason = liquidity_geometry_reason
+            else:
+                liquidity_geometry_valid = False
+                liquidity_geometry_reason = "not_directional_candidate"
             min_rr_ratio = self.min_rr_ratio() if signal_type in ("BUY", "SELL") else None
             if (
                 signal_type in ("BUY", "SELL")
@@ -1681,6 +1762,8 @@ class TriggerEngine:
                 "confirmed": confirmed,
                 "risk_geometry_valid": risk_geometry_valid,
                 "risk_geometry_reason": risk_geometry_reason,
+                "liquidity_geometry_valid": liquidity_geometry_valid,
+                "liquidity_geometry_reason": liquidity_geometry_reason,
                 "full_score": round(full_score, 3) if full_score is not None else None,
                 "full_reasons": full_reasons,
                 "price": c,
@@ -1696,6 +1779,8 @@ class TriggerEngine:
                 "candidate_stop_loss": candidate_stop_loss,
                 "candidate_take_profit": candidate_take_profit,
                 "candidate_rr_ratio": candidate_rr_ratio,
+                "avg_daily_turnover": round(avg_daily_turnover, 2) if avg_daily_turnover is not None else None,
+                "min_avg_daily_turnover": min_avg_daily_turnover,
                 "min_rr_ratio": min_rr_ratio,
                 "atr": round(atr, 3) if atr is not None else None,
             })

@@ -432,6 +432,12 @@ class HermesReviewPacketTests(unittest.TestCase):
                 "stop_loss": None,
                 "take_profit": None,
                 "rr_ratio": None,
+                "risk_geometry_valid": False,
+                "risk_geometry_reason": "avg_daily_turnover_below_minimum",
+                "liquidity_geometry_valid": False,
+                "liquidity_geometry_reason": "avg_daily_turnover_below_minimum",
+                "avg_daily_turnover": 10_000,
+                "min_avg_daily_turnover": 1_000_000,
             }
         )
 
@@ -450,6 +456,12 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(summary["candidate_stop_loss"], 290)
         self.assertEqual(summary["candidate_take_profit"], 330)
         self.assertEqual(summary["candidate_rr_ratio"], 3.0)
+        self.assertFalse(summary["risk_geometry_valid"])
+        self.assertEqual(summary["risk_geometry_reason"], "avg_daily_turnover_below_minimum")
+        self.assertFalse(summary["liquidity_geometry_valid"])
+        self.assertEqual(summary["liquidity_geometry_reason"], "avg_daily_turnover_below_minimum")
+        self.assertEqual(summary["avg_daily_turnover"], 10_000)
+        self.assertEqual(summary["min_avg_daily_turnover"], 1_000_000)
 
     def test_packet_marks_valid_dry_run_as_eligible_for_review_approval(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}

@@ -1511,6 +1511,39 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(config["volume_anomaly_ratio"], 4.0)
         self.assertNotIn("invalid_volume_anomaly_ratio_using_default", warnings)
 
+    def test_strategy_config_does_not_allow_looser_liquidity_thresholds(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "liquidity_model": {
+                    "min_avg_daily_turnover": {
+                        "HK": 1,
+                        "US": 1,
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(config["liquidity_model"]["min_avg_daily_turnover"], rt.MIN_AVG_DAILY_TURNOVER)
+        self.assertIn("invalid_min_avg_daily_turnover_hk_using_default", warnings)
+        self.assertIn("invalid_min_avg_daily_turnover_us_using_default", warnings)
+
+    def test_strategy_config_allows_stricter_liquidity_thresholds(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "liquidity_model": {
+                    "min_avg_daily_turnover": {
+                        "HK": 1_000_000,
+                        "US": 2_000_000,
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(config["liquidity_model"]["min_avg_daily_turnover"]["HK"], 1_000_000)
+        self.assertEqual(config["liquidity_model"]["min_avg_daily_turnover"]["US"], 2_000_000)
+        self.assertNotIn("invalid_min_avg_daily_turnover_hk_using_default", warnings)
+        self.assertNotIn("invalid_min_avg_daily_turnover_us_using_default", warnings)
+
     def test_strategy_config_normalizes_confirmation_threshold_bounds(self):
         config, warnings = rt.normalize_strategy_config(
             {
@@ -2044,6 +2077,50 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(alert["risk_geometry_reason"], "rr_ratio_below_minimum")
         self.assertEqual(alert["candidate_rr_ratio"], 0.33)
         self.assertEqual(alert["min_rr_ratio"], 1.2)
+        self.assertIsNone(alert["stop_loss"])
+        self.assertIsNone(alert["take_profit"])
+
+    def test_low_liquidity_directional_is_downgraded_to_watch(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+                "liquidity_model": {
+                    "min_avg_daily_turnover": {
+                        "US": 1_000_000,
+                    }
+                },
+            }
+        )
+        indicators = FakeIndicators(avg_volume=100, score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+        indicators.atr_14 = 1
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertFalse(alert["liquidity_geometry_valid"])
+        self.assertEqual(alert["liquidity_geometry_reason"], "avg_daily_turnover_below_minimum")
+        self.assertEqual(alert["risk_geometry_reason"], "avg_daily_turnover_below_minimum")
+        self.assertEqual(alert["avg_daily_turnover"], 10_000)
+        self.assertEqual(alert["min_avg_daily_turnover"], 1_000_000)
+        self.assertIsNone(alert["entry_price"])
         self.assertIsNone(alert["stop_loss"])
         self.assertIsNone(alert["take_profit"])
 

@@ -513,6 +513,12 @@ def alert_summary(alert):
         "candidate_stop_loss": alert.get("candidate_stop_loss"),
         "candidate_take_profit": alert.get("candidate_take_profit"),
         "candidate_rr_ratio": alert.get("candidate_rr_ratio"),
+        "risk_geometry_valid": alert.get("risk_geometry_valid"),
+        "risk_geometry_reason": alert.get("risk_geometry_reason"),
+        "liquidity_geometry_valid": alert.get("liquidity_geometry_valid"),
+        "liquidity_geometry_reason": alert.get("liquidity_geometry_reason"),
+        "avg_daily_turnover": alert.get("avg_daily_turnover"),
+        "min_avg_daily_turnover": alert.get("min_avg_daily_turnover"),
         "generated_at": alert.get("generated_at"),
         "quote_time": alert.get("quote_time") or alert.get("time"),
     }

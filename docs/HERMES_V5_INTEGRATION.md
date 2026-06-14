@@ -1598,6 +1598,14 @@ If the quote timestamp is missing or cannot be parsed, v5 skips the volume anoma
 
 v5 also requires quote volume units to be comparable with daily K-line volume before applying the ratio. US realtime volume and unlabelled internal quotes are treated as shares. Tencent HK realtime quote volume is marked `volume_unit=board_lot`; if the quote does not include a trusted `lot_size`/`board_lot_size`, v5 skips HK volume anomaly and volume-score contribution for that tick. If a future provider or adapter supplies `volume_unit=board_lot` plus `lot_size`, v5 converts it to shares first. This avoids systematic HK volume-ratio distortion while keeping the same alert schema and Hermes contract.
 
+v5 also applies a lightweight liquidity gate before a directional alert can become `execution_candidate=true`. The gate uses completed daily K-lines only:
+
+```text
+20-day average daily turnover = average(close_price * volume)
+```
+
+Defaults are deliberately conservative (`HK=100000`, `US=100000`) so obvious low-turnover noise is kept out of the executable queue without abruptly disabling the current watchlist. Operators may raise the thresholds through `liquidity_model.min_avg_daily_turnover` or `RT_SIGNAL_HK_MIN_AVG_DAILY_TURNOVER` / `RT_SIGNAL_US_MIN_AVG_DAILY_TURNOVER`, but v5 will not accept thresholds below the defaults. A low-liquidity directional setup is emitted as diagnostic `WATCH` with `candidate_signal_type`, `avg_daily_turnover`, `min_avg_daily_turnover`, `liquidity_geometry_valid=false`, and `liquidity_geometry_reason=avg_daily_turnover_below_minimum`. Hermes can still discuss the setup, but order intake will not see executable price fields from that alert.
+
 Server rollout:
 
 - Previous `/root/rt_signal_engine_v5.py` was backed up to `/root/quantmind_backup_20260612_022750/rt_signal_engine_v5.py`.
