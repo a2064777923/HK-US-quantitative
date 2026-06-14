@@ -54,6 +54,7 @@ TRUSTED_SOURCE_DISCOVERY_REPORT_FILE = os.environ.get(
     "/tmp/trusted_source_discovery_report.json",
 )
 CRON_AUDIT_REPORT_FILE = os.environ.get("CRON_AUDIT_REPORT_FILE", "/tmp/cron_audit_report.json")
+CRON_SCRIPT_AVAILABILITY_WARNING = "cron_script_availability_warnings"
 OUTCOME_REPORT_FILE = os.environ.get("RT_SIGNAL_OUTCOME_REPORT_FILE", "/tmp/rt_signal_outcome_report.json")
 MAX_REPORT_AGE_MINUTES = float(os.environ.get("SOURCE_RELIABILITY_MAX_REPORT_AGE_MINUTES", "90"))
 
@@ -700,11 +701,16 @@ def apply_cron(component):
     summary = component.get("summary") or {}
     missing = int(summary.get("missing_required_job_count") or 0)
     dangerous = int(summary.get("dangerous_enabled_count") or 0)
+    missing_scripts = int(summary.get("missing_script_count") or 0)
     if dangerous:
         component["reasons"].append("dangerous_execution_cron_enabled")
         component["reliability_status"] = "FAIL"
     elif missing:
         component["reasons"].append("required_read_only_cron_jobs_missing")
+        component["reliability_status"] = worse_reliability(component["reliability_status"], "DEGRADED")
+    if missing_scripts:
+        component["reasons"].append(CRON_SCRIPT_AVAILABILITY_WARNING)
+        component["missing_script_count"] = missing_scripts
         component["reliability_status"] = worse_reliability(component["reliability_status"], "DEGRADED")
 
 
@@ -840,6 +846,8 @@ def build_recommendations(status, components):
                 recs.append("install_missing_read_only_cron_jobs_before_claiming_autonomous_context_refresh")
             elif reason == "dangerous_execution_cron_enabled":
                 recs.append("disable_dangerous_execution_cron_before_any_trading_review")
+            elif reason == CRON_SCRIPT_AVAILABILITY_WARNING:
+                recs.append("deploy_missing_read_only_scripts_before_claiming_cron_coverage")
             elif reason == "daily_latest_data_source_missing":
                 recs.append("repair_or_explain_missing_daily_kline_data_source_provenance")
             elif reason == "daily_latest_contains_repair_sources":

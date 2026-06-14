@@ -8,6 +8,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 from datetime import datetime
 
@@ -276,6 +277,7 @@ DANGEROUS_ENABLED_PATTERNS = [
     "quantmind_sim_trader.py",
     "rt_alert_bridge.py --mode execute",
 ]
+SCRIPT_TOKEN_RE = re.compile(r"(?<![\w.-])([A-Za-z_][A-Za-z0-9_]*\.py)(?![\w.-])")
 
 
 def now_iso():
@@ -319,6 +321,78 @@ def load_crontab_text():
 
 def job_present(lines, tokens):
     return any(all(token in line for token in tokens) for line in lines)
+
+
+def script_names_from_text(text):
+    return sorted(set(SCRIPT_TOKEN_RE.findall(str(text or ""))))
+
+
+def available_script_names(available_scripts):
+    return {
+        os.path.basename(str(item))
+        for item in (available_scripts or [])
+        if str(item).strip()
+    }
+
+
+def script_exists(script_name, script_root=None, available_scripts=None):
+    if available_scripts is not None:
+        return script_name in available_script_names(available_scripts)
+    if not script_root:
+        return None
+    return os.path.exists(os.path.join(script_root, script_name))
+
+
+def script_availability_audit(lines, required_jobs, script_root=None, available_scripts=None):
+    if not script_root and available_scripts is None:
+        return {
+            "schema": "cron_script_availability_audit_v1",
+            "status": "NOT_CHECKED",
+            "script_root": script_root,
+            "checked_script_count": 0,
+            "missing_script_count": 0,
+            "missing_jobs": [],
+        }
+
+    missing_jobs = []
+    checked_scripts = set()
+    for job in required_jobs:
+        if not job.get("present"):
+            continue
+        matching_lines = [
+            line
+            for line in lines
+            if all(token in line for token in job.get("tokens") or [])
+        ]
+        scripts = set()
+        for line in matching_lines:
+            scripts.update(script_names_from_text(line))
+        for token in job.get("tokens") or []:
+            scripts.update(script_names_from_text(token))
+        missing = []
+        for script in sorted(scripts):
+            checked_scripts.add(script)
+            if script_exists(script, script_root=script_root, available_scripts=available_scripts) is False:
+                missing.append(script)
+        if missing:
+            missing_jobs.append(
+                {
+                    "name": job.get("name"),
+                    "missing_scripts": missing,
+                    "scripts": sorted(scripts),
+                    "line_count": len(matching_lines),
+                }
+            )
+
+    missing_count = sum(len(row["missing_scripts"]) for row in missing_jobs)
+    return {
+        "schema": "cron_script_availability_audit_v1",
+        "status": "WARN" if missing_jobs else "OK",
+        "script_root": script_root,
+        "checked_script_count": len(checked_scripts),
+        "missing_script_count": missing_count,
+        "missing_jobs": missing_jobs,
+    }
 
 
 def dangerous_lines(lines):
@@ -571,7 +645,15 @@ def cron_installation_plan(missing):
     }
 
 
-def build_report(crontab_text=None, warnings=None, env=None, env_file_text=None, sent_file_texts=None):
+def build_report(
+    crontab_text=None,
+    warnings=None,
+    env=None,
+    env_file_text=None,
+    sent_file_texts=None,
+    script_root=None,
+    available_scripts=None,
+):
     warnings = list(warnings or [])
     if crontab_text is None:
         crontab_text, load_warnings = load_crontab_text()
@@ -598,11 +680,21 @@ def build_report(crontab_text=None, warnings=None, env=None, env_file_text=None,
         env_file_text=env_file_text,
         sent_file_texts=sent_file_texts,
     )
+    script_availability = script_availability_audit(
+        lines,
+        required,
+        script_root=script_root,
+        available_scripts=available_scripts,
+    )
     if dangerous:
         status = "FAIL"
     elif alert_delivery.get("status") == "FAIL":
         status = "FAIL"
-    elif missing or alert_delivery.get("status") == "WARN":
+    elif (
+        missing
+        or alert_delivery.get("status") == "WARN"
+        or script_availability.get("status") == "WARN"
+    ):
         status = "WARN"
     else:
         status = "OK"
@@ -611,6 +703,8 @@ def build_report(crontab_text=None, warnings=None, env=None, env_file_text=None,
         recommendations.append("disable_dangerous_execution_cron_before_any_review")
     if missing:
         recommendations.append("install_missing_read_only_cron_jobs_from_config_hermes_v5_crontab")
+    if script_availability.get("missing_script_count"):
+        recommendations.append("deploy_missing_read_only_scripts_before_claiming_cron_coverage")
     recommendations.extend(alert_delivery.get("recommendations") or [])
     if not recommendations:
         recommendations.append("cron_wiring_matches_required_read_only_contract")
@@ -631,17 +725,21 @@ def build_report(crontab_text=None, warnings=None, env=None, env_file_text=None,
             "missing_required_job_count": len(missing),
             "dangerous_enabled_count": len(dangerous),
             "alert_delivery_status": alert_delivery.get("status"),
+            "missing_script_count": script_availability.get("missing_script_count", 0),
+            "script_availability_status": script_availability.get("status"),
         },
         "required_jobs": required,
         "missing_required_jobs": missing,
         "dangerous_enabled_jobs": dangerous,
         "alert_delivery": alert_delivery,
+        "script_availability": script_availability,
         "installation_plan": installation_plan,
         "recommendations": recommendations,
         "warnings": warnings,
         "hermes_use": [
             "Use this to detect drift between documented read-only jobs and the actual crontab.",
             "Missing read-only jobs explain stale or missing readiness inputs; do not treat the absence as execution permission.",
+            "Present cron lines still need deployed scripts; missing scripts mean the line cannot refresh the report it advertises.",
             "Any dangerous enabled job must be disabled before considering simulation execution.",
             "Use alert_delivery to verify the notify bridge, optional Feishu credentials, and sent-state health without sending messages.",
         ],
@@ -676,6 +774,12 @@ def build_text_report(payload):
     dangerous = payload.get("dangerous_enabled_jobs") or []
     if dangerous:
         lines.append("Dangerous enabled jobs: " + ", ".join(row["pattern"] for row in dangerous))
+    script_availability = payload.get("script_availability") or {}
+    if script_availability.get("status") == "WARN":
+        missing = []
+        for row in script_availability.get("missing_jobs") or []:
+            missing.append(f"{row.get('name')}:{','.join(row.get('missing_scripts') or [])}")
+        lines.append("Missing deployed scripts: " + "; ".join(missing))
     delivery = payload.get("alert_delivery") or {}
     if delivery:
         lines.append(
@@ -702,6 +806,7 @@ def build_text_report(payload):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--crontab-file", help="audit this file instead of live crontab")
+    parser.add_argument("--script-root", default=os.environ.get("CRON_AUDIT_SCRIPT_ROOT", "/root"))
     parser.add_argument("--output", default=REPORT_FILE)
     parser.add_argument("--json", action="store_true", help="emit JSON only")
     parser.add_argument("--text", action="store_true", help="emit text only")
@@ -719,7 +824,7 @@ def main():
         except Exception as exc:
             crontab_text = ""
             warnings.append(f"crontab_file_read_failed:{exc}")
-    payload = build_report(crontab_text=crontab_text, warnings=warnings)
+    payload = build_report(crontab_text=crontab_text, warnings=warnings, script_root=args.script_root)
     if args.output:
         save_json_atomic(args.output, payload)
     if args.json:

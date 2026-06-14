@@ -62,9 +62,70 @@ class CronAuditReportTests(unittest.TestCase):
         self.assertFalse(payload["source"]["changes_crontab"])
         self.assertEqual(payload["summary"]["missing_required_job_count"], 0)
         self.assertEqual(payload["summary"]["dangerous_enabled_count"], 0)
+        self.assertEqual(payload["summary"]["script_availability_status"], "NOT_CHECKED")
         self.assertEqual(payload["installation_plan"]["status"], "not_required")
         self.assertFalse(payload["installation_plan"]["operator_contract"]["submits_orders"])
         self.assertTrue(payload["installation_plan"]["operator_contract"]["does_not_edit_crontab"])
+
+    def test_present_cron_with_missing_deployed_script_warns(self):
+        payload = report.build_report(
+            FULL_CRON,
+            available_scripts=[
+                "system_health_check.py",
+                "data_health_report.py",
+                "data_source_inventory_report.py",
+                "kline_source_granularity_report.py",
+                "intraday_kline_batch.py",
+                "intraday_context_report.py",
+                "intraday_timeframe_quality_report.py",
+                "intraday_market_session_overrides_report.py",
+                "source_reliability_report.py",
+                "trusted_source_discovery_report.py",
+                "market_context_report.py",
+                "portfolio_report.py",
+                "watchlist_diff_report.py",
+                "alert_quality_report.py",
+                "rt_signal_outcome_report.py",
+                "rt_alert_event_store.py",
+                "rt_signal_outcome_event_store.py",
+                "kline_daily_gap_repair.py",
+                "market_index_context_producer.py",
+                "universe_hygiene_report.py",
+                "kline_gap_source_diagnostic_report.py",
+                "kline_gap_alternate_provider_probe.py",
+                "kline_gap_alternate_provider_repair_plan.py",
+                "strategy_learning_report.py",
+                "simulation_performance_report.py",
+                "simulation_postmortem_audit_report.py",
+                "simulation_postmortem_note_draft_report.py",
+                "execution_readiness_report.py",
+                "operator_action_queue_report.py",
+                "hermes_judgment_audit_report.py",
+                "hermes_judgment_event_store.py",
+                "rt_order_intake_event_store.py",
+                "hermes_position_judgment_audit_report.py",
+                "hermes_review_packet.py",
+                "rt_alert_bridge.py",
+                "external_market_context_producer.py",
+                "external_market_context_report.py",
+                "event_catalyst_report.py",
+                "event_catalyst_signal_report.py",
+                "market_sentiment_producer.py",
+                "market_sentiment_report.py",
+            ],
+        )
+
+        self.assertEqual(payload["status"], "WARN")
+        availability = payload["script_availability"]
+        self.assertEqual(availability["status"], "WARN")
+        self.assertEqual(availability["missing_script_count"], 1)
+        missing_by_job = {row["name"]: row["missing_scripts"] for row in availability["missing_jobs"]}
+        self.assertEqual(missing_by_job["trusted_source_preflight"], ["trusted_source_preflight.py"])
+        self.assertIn(
+            "deploy_missing_read_only_scripts_before_claiming_cron_coverage",
+            payload["recommendations"],
+        )
+        self.assertIn("Missing deployed scripts:", report.build_text_report(payload))
 
     def test_missing_read_only_jobs_warn(self):
         payload = report.build_report("*/5 * * * * /usr/bin/python3 /root/data_health_report.py --output /tmp/data_health_report.json")

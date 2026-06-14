@@ -401,6 +401,11 @@ def command_for_step(step, scripts_dir):
     return [sys.executable, script] + list(step["cmd"][1:])
 
 
+def missing_step_script(step, scripts_dir):
+    script = os.path.join(scripts_dir, step["cmd"][0])
+    return None if os.path.exists(script) else script
+
+
 def run_step(step, scripts_dir, timeout_seconds=DEFAULT_TIMEOUT_SECONDS, dry_run=False):
     cmd = command_for_step(step, scripts_dir)
     if dry_run:
@@ -412,6 +417,18 @@ def run_step(step, scripts_dir, timeout_seconds=DEFAULT_TIMEOUT_SECONDS, dry_run
             "duration_seconds": 0.0,
             "stdout_tail": "",
             "stderr_tail": "",
+        }
+    missing_script = missing_step_script(step, scripts_dir)
+    if missing_script:
+        return {
+            "name": step["name"],
+            "status": "FAIL",
+            "cmd": cmd,
+            "returncode": None,
+            "duration_seconds": 0.0,
+            "stdout_tail": "",
+            "stderr_tail": f"missing_refresh_script:{missing_script}",
+            "missing_script": missing_script,
         }
     started = datetime.now()
     try:
@@ -487,7 +504,13 @@ def recommendations(status, failed_steps, dry_run=False):
         return ["review_planned_read_only_refresh_steps_before_running"]
     if status == "OK":
         return ["read_only_evidence_refresh_completed"]
-    return [f"inspect_failed_refresh_step:{step['name']}" for step in failed_steps]
+    recs = []
+    for step in failed_steps:
+        if step.get("missing_script"):
+            recs.append(f"deploy_missing_refresh_script:{step['name']}")
+        else:
+            recs.append(f"inspect_failed_refresh_step:{step['name']}")
+    return recs
 
 
 def build_text_report(payload):

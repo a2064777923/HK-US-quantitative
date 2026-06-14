@@ -143,6 +143,17 @@ class ReadinessRefreshTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "FAIL")
         self.assertEqual(payload["summary"]["failed_count"], 1)
+        self.assertIn("deploy_missing_refresh_script:bad", payload["recommendations"])
+        self.assertIn("missing_script.py", payload["failed_steps"][0]["missing_script"])
+
+    def test_existing_script_failure_is_still_runtime_failure(self):
+        steps = [{"name": "bad", "cmd": ["readiness_refresh.py", "--bad-arg"], "network": False}]
+
+        payload = refresh.build_report(steps=steps, scripts_dir="scripts", timeout_seconds=5)
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertEqual(payload["summary"]["failed_count"], 1)
+        self.assertNotIn("missing_script", payload["failed_steps"][0])
         self.assertIn("inspect_failed_refresh_step:bad", payload["recommendations"])
 
 

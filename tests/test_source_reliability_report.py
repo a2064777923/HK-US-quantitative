@@ -993,6 +993,27 @@ class SourceReliabilityReportTests(unittest.TestCase):
         self.assertEqual(cron["reliability_status"], "FAIL")
         self.assertIn("dangerous_execution_cron_enabled", cron["reasons"])
 
+    def test_missing_deployed_scripts_degrade_cron_source_reliability(self):
+        inputs = ok_payloads()
+        inputs["cron_audit"] = payload(
+            "cron_audit_report_v1",
+            status="WARN",
+            summary={
+                "missing_required_job_count": 0,
+                "dangerous_enabled_count": 0,
+                "missing_script_count": 2,
+            },
+        )
+
+        result = report.build_report(inputs, now=NOW)
+        cron = [row for row in result["components"] if row["name"] == "cron_audit"][0]
+
+        self.assertEqual(result["status"], "DEGRADED")
+        self.assertEqual(cron["reliability_status"], "DEGRADED")
+        self.assertEqual(cron["missing_script_count"], 2)
+        self.assertIn("cron_script_availability_warnings", cron["reasons"])
+        self.assertIn("deploy_missing_read_only_scripts_before_claiming_cron_coverage", result["recommendations"])
+
     def test_trusted_source_preflight_warning_degrades_source_reliability(self):
         inputs = ok_payloads()
         inputs["trusted_source_preflight"] = payload(
