@@ -52,6 +52,29 @@ def healthy_inputs():
                     "win_rate_pct": 40.0,
                 },
             },
+            "execution_candidate_scope": {
+                "schema": "strategy_learning_execution_candidate_scope_v1",
+                "joined_signal_count": 8,
+                "execution_candidate_count": 8,
+                "non_execution_candidate_count": 0,
+                "downgraded_directional_count": 0,
+                "unknown_execution_candidate_count": 0,
+                "execution_candidate": {"resolved_count": 8},
+                "promotion_evidence_requirement": "standard_audit_pass_learning",
+            },
+            "execution_candidate_audit_pass_judgment_effect": {
+                "sample_filter": "execution_candidate_true_and_judgment_audit_status_PASS",
+                "approved_or_reduced": {
+                    "resolved_count": 5,
+                    "avg_signed_return_pct": 1.5,
+                    "win_rate_pct": 60.0,
+                },
+                "rejected_or_held": {
+                    "resolved_count": 5,
+                    "avg_signed_return_pct": -0.2,
+                    "win_rate_pct": 40.0,
+                },
+            },
             "intake_coverage": {
                 "coverage_pct": 50.0,
                 "directional": {"coverage_pct": 100.0, "joined_signal_count": 8},
@@ -537,6 +560,28 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "hermes_judgment_effect"][0]
         self.assertTrue(gate["data"]["uses_audit_pass_judgment_effect"])
         self.assertEqual(gate["data"]["sample_filter"], "judgment_audit_status_PASS")
+        self.assertIn("does not outperform", gate["detail"])
+
+    def test_readiness_uses_executable_only_audit_effect_when_diagnostic_rows_exist(self):
+        inputs = healthy_inputs()
+        inputs["strategy_learning"]["audit_pass_judgment_effect"]["approved_or_reduced"]["avg_signed_return_pct"] = 2.5
+        inputs["strategy_learning"]["audit_pass_judgment_effect"]["rejected_or_held"]["avg_signed_return_pct"] = -0.5
+        inputs["strategy_learning"]["execution_candidate_scope"]["downgraded_directional_count"] = 4
+        inputs["strategy_learning"]["execution_candidate_scope"]["non_execution_candidate_count"] = 4
+        inputs["strategy_learning"]["execution_candidate_audit_pass_judgment_effect"]["approved_or_reduced"][
+            "avg_signed_return_pct"
+        ] = 0.1
+        inputs["strategy_learning"]["execution_candidate_audit_pass_judgment_effect"]["rejected_or_held"][
+            "avg_signed_return_pct"
+        ] = 0.4
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "BLOCKED")
+        gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "hermes_judgment_effect"][0]
+        self.assertTrue(gate["data"]["uses_execution_candidate_audit_pass_judgment_effect"])
+        self.assertEqual(gate["data"]["sample_filter"], "execution_candidate_true_and_judgment_audit_status_PASS")
+        self.assertEqual(gate["data"]["downgraded_directional_count"], 4)
         self.assertIn("does not outperform", gate["detail"])
 
     def test_insufficient_simulation_closed_trades_blocks(self):

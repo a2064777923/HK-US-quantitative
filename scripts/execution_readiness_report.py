@@ -237,6 +237,16 @@ def simulation_portfolio_report(portfolio_report):
 
 
 def judgment_effect_metrics(strategy_learning):
+    execution_scope = (
+        strategy_learning.get("execution_candidate_scope")
+        if isinstance(strategy_learning.get("execution_candidate_scope"), dict)
+        else {}
+    )
+    execution_audit_effect = (
+        strategy_learning.get("execution_candidate_audit_pass_judgment_effect")
+        if isinstance(strategy_learning.get("execution_candidate_audit_pass_judgment_effect"), dict)
+        else {}
+    )
     audit_effect = (
         strategy_learning.get("audit_pass_judgment_effect")
         if isinstance(strategy_learning.get("audit_pass_judgment_effect"), dict)
@@ -247,12 +257,17 @@ def judgment_effect_metrics(strategy_learning):
         if isinstance(strategy_learning.get("judgment_effect"), dict)
         else {}
     )
-    effect = audit_effect or raw_effect
+    downgraded_directional_count = int(execution_scope.get("downgraded_directional_count") or 0)
+    use_execution_candidate_effect = downgraded_directional_count > 0 and bool(execution_audit_effect)
+    effect = execution_audit_effect if use_execution_candidate_effect else audit_effect or raw_effect
     approved = effect.get("approved_or_reduced") if isinstance(effect.get("approved_or_reduced"), dict) else {}
     rejected = effect.get("rejected_or_held") if isinstance(effect.get("rejected_or_held"), dict) else {}
     return {
         "sample_filter": effect.get("sample_filter") or ("judgment_audit_status_PASS" if audit_effect else "raw_judgment_decision"),
+        "downgraded_directional_count": downgraded_directional_count,
+        "uses_execution_candidate_audit_pass_judgment_effect": use_execution_candidate_effect,
         "uses_audit_pass_judgment_effect": bool(audit_effect),
+        "execution_candidate_audit_pass_judgment_effect_present": bool(execution_audit_effect),
         "raw_judgment_effect_present": bool(raw_effect),
         "approved_resolved_count": int(approved.get("resolved_count") or 0),
         "approved_avg_signed_return_pct": approved.get("avg_signed_return_pct"),
