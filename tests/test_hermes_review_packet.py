@@ -2726,6 +2726,40 @@ class HermesReviewPacketTests(unittest.TestCase):
             brief["hermes_alpha_evidence"]["reasons"],
         )
 
+    def test_strategy_learning_brief_uses_execution_candidate_outcome_cohort_when_available(self):
+        brief = packet.strategy_learning_brief(
+            {
+                "schema": "strategy_learning_report_v1",
+                "sample_scope": {},
+                "overall": {
+                    "resolved_count": 40,
+                    "avg_signed_return_pct": 0.2,
+                    "win_rate_pct": 52.5,
+                },
+                "execution_candidate_scope": {
+                    "execution_candidate": {
+                        "resolved_count": 6,
+                        "avg_signed_return_pct": 1.4,
+                        "win_rate_pct": 66.7,
+                    }
+                },
+                "intake_coverage": {},
+                "source": {"read_only": True, "submits_orders": False},
+            }
+        )
+
+        self.assertEqual(
+            brief["outcome_evidence"]["source"],
+            "execution_candidate_scope.execution_candidate",
+        )
+        self.assertEqual(brief["outcome_evidence"]["resolved_count"], 6)
+        self.assertEqual(brief["outcome_evidence"]["avg_signed_return_pct"], 1.4)
+        self.assertEqual(brief["outcome_evidence"]["win_rate_pct"], 66.7)
+        self.assertTrue(brief["outcome_evidence"]["minimum_sample_met"])
+        self.assertEqual(brief["outcome_evidence_all_candidates"]["resolved_count"], 40)
+        self.assertEqual(brief["outcome_evidence_all_candidates"]["avg_signed_return_pct"], 0.2)
+        self.assertEqual(brief["outcome_evidence_all_candidates"]["source"], "strategy_learning_report.overall")
+
     def test_strategy_learning_intraday_alignment_brief_normalizes_legacy_labels(self):
         brief = packet.strategy_learning_intraday_alignment_brief(
             {

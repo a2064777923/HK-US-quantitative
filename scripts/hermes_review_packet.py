@@ -2600,6 +2600,19 @@ def merged_outcome_maturity(learning_maturity, outcome_report_payload):
     return maturity
 
 
+def outcome_evidence_cohort(strategy_learning_payload):
+    payload = strategy_learning_payload if isinstance(strategy_learning_payload, dict) else {}
+    execution_scope = payload.get("execution_candidate_scope") if isinstance(payload.get("execution_candidate_scope"), dict) else {}
+    if execution_scope:
+        execution_candidate = execution_scope.get("execution_candidate")
+        if isinstance(execution_candidate, dict):
+            return execution_candidate, "execution_candidate_scope.execution_candidate"
+    return (
+        payload.get("overall") if isinstance(payload.get("overall"), dict) else {},
+        "overall",
+    )
+
+
 def normalize_intraday_signal_alignment(value):
     text = str(value or "unavailable_or_stale").strip() or "unavailable_or_stale"
     return INTRADAY_ALIGNMENT_ALIASES.get(text, text)
@@ -3186,6 +3199,7 @@ def strategy_learning_brief(
         else {}
     )
     recommendations = payload.get("recommendations") if isinstance(payload.get("recommendations"), list) else []
+    outcome_evidence, outcome_evidence_source = outcome_evidence_cohort(payload)
     missing_symbol_diagnostics = (
         outcome_maturity.get("missing_symbol_kline_diagnostics")
         if isinstance(outcome_maturity.get("missing_symbol_kline_diagnostics"), list)
@@ -3246,10 +3260,18 @@ def strategy_learning_brief(
             "excluded_joined_signal_count": sample_scope.get("excluded_joined_signal_count"),
         },
         "outcome_evidence": {
+            "resolved_count": outcome_evidence.get("resolved_count"),
+            "avg_signed_return_pct": outcome_evidence.get("avg_signed_return_pct"),
+            "win_rate_pct": outcome_evidence.get("win_rate_pct"),
+            "minimum_sample_met": (outcome_evidence.get("resolved_count") or 0) >= 5,
+            "source": outcome_evidence_source,
+        },
+        "outcome_evidence_all_candidates": {
             "resolved_count": overall.get("resolved_count"),
             "avg_signed_return_pct": overall.get("avg_signed_return_pct"),
             "win_rate_pct": overall.get("win_rate_pct"),
             "minimum_sample_met": (overall.get("resolved_count") or 0) >= 5,
+            "source": "strategy_learning_report.overall",
         },
         "outcome_maturity": {
             "primary_horizon": outcome_maturity.get("primary_horizon"),
