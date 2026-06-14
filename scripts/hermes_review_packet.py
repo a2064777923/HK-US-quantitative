@@ -94,6 +94,10 @@ FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE = os.environ.get(
     "/tmp/factor_contract_alignment_report.json",
 )
 V5_LOCAL_REPLAY_REPORT_FILE = os.environ.get("V5_LOCAL_REPLAY_REPORT_FILE", "/tmp/v5_local_replay_report.json")
+V5_REPLAY_STRATEGY_REVIEW_REPORT_FILE = os.environ.get(
+    "V5_REPLAY_STRATEGY_REVIEW_REPORT_FILE",
+    "/tmp/v5_replay_strategy_review_report.json",
+)
 OPERATOR_ACTION_QUEUE_REPORT_FILE = os.environ.get(
     "OPERATOR_ACTION_QUEUE_REPORT_FILE",
     "/tmp/operator_action_queue_report.json",
@@ -2847,6 +2851,89 @@ def v5_local_replay_brief(v5_local_replay_payload):
     }
 
 
+def v5_replay_strategy_review_brief(v5_replay_strategy_review_payload):
+    payload = v5_replay_strategy_review_payload if isinstance(v5_replay_strategy_review_payload, dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    overall = payload.get("overall_policy") if isinstance(payload.get("overall_policy"), dict) else {}
+    operator_contract = (
+        payload.get("operator_contract") if isinstance(payload.get("operator_contract"), dict) else {}
+    )
+    strategy_rows = (
+        payload.get("strategy_trigger_summary")
+        if isinstance(payload.get("strategy_trigger_summary"), list)
+        else []
+    )
+    checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
+    warn_or_fail = [item for item in checks if isinstance(item, dict) and item.get("status") in ("WARN", "FAIL")]
+    return {
+        "read_only": True,
+        "submits_orders": False,
+        "changes_strategy_config": False,
+        "schema": payload.get("schema") or "v5_replay_strategy_review_report_v1",
+        "status": summary.get("status") or "MISSING",
+        "promotion_ready": summary.get("promotion_ready"),
+        "promotion_eligible": summary.get("promotion_eligible"),
+        "overall_policy": {
+            "policy": overall.get("policy"),
+            "execution_allowed_by_report": overall.get("execution_allowed_by_report"),
+            "promotion_eligible": overall.get("promotion_eligible"),
+            "reasons": overall.get("reasons") or [],
+            "metrics": overall.get("metrics") or {},
+        },
+        "policy_counts": {
+            "trigger_policy_count": summary.get("trigger_policy_count"),
+            "strategy_trigger_count": summary.get("strategy_trigger_count"),
+            "tighten_thresholds_count": summary.get("tighten_thresholds_count"),
+            "shadow_only_count": summary.get("shadow_only_count"),
+            "diagnostic_only_count": summary.get("diagnostic_only_count"),
+            "candidate_allow_count": summary.get("candidate_allow_count"),
+        },
+        "top_strategy_trigger_policies": [
+            {
+                "strategy_key": row.get("strategy_key"),
+                "policy": row.get("policy"),
+                "promotion_eligible": row.get("promotion_eligible"),
+                "markets": row.get("markets") or [],
+                "reasons": row.get("reasons") or [],
+                "metrics": {
+                    "alert_count": (row.get("metrics") or {}).get("alert_count"),
+                    "alert_rate_per_100_bars": (row.get("metrics") or {}).get("alert_rate_per_100_bars"),
+                    "execution_candidate_count": (row.get("metrics") or {}).get("execution_candidate_count"),
+                    "execution_candidate_rate_per_100_bars": (row.get("metrics") or {}).get(
+                        "execution_candidate_rate_per_100_bars"
+                    ),
+                    "directional_confirmation_ratio_pct": (row.get("metrics") or {}).get(
+                        "directional_confirmation_ratio_pct"
+                    ),
+                    "directional_downgrade_ratio_pct": (row.get("metrics") or {}).get(
+                        "directional_downgrade_ratio_pct"
+                    ),
+                },
+            }
+            for row in strategy_rows[:8]
+            if isinstance(row, dict)
+        ],
+        "operator_contract": {
+            "read_only": operator_contract.get("read_only", True),
+            "submits_orders": operator_contract.get("submits_orders", False),
+            "writes_alert_queue": operator_contract.get("writes_alert_queue", False),
+            "changes_strategy_config": operator_contract.get("changes_strategy_config", False),
+            "changes_execution_mode": operator_contract.get("changes_execution_mode", False),
+            "promotion_eligible": operator_contract.get("promotion_eligible", False),
+            "requires_forward_outcome_before_promotion": operator_contract.get(
+                "requires_forward_outcome_before_promotion",
+                True,
+            ),
+        },
+        "warn_or_fail_checks": [
+            {"code": item.get("code"), "status": item.get("status"), "detail": item.get("detail")}
+            for item in warn_or_fail[:8]
+        ],
+        "recommendations": (payload.get("recommendations") or [])[:10],
+        "hermes_note": "Replay-derived strategy review is challenge context only; do not promote config from it without forward outcomes.",
+    }
+
+
 def number_or_none(value):
     try:
         if value in (None, ""):
@@ -2933,6 +3020,7 @@ def strategy_learning_brief(
     local_backtest_reliability_payload=None,
     factor_contract_alignment_payload=None,
     v5_local_replay_payload=None,
+    v5_replay_strategy_review_payload=None,
 ):
     payload = strategy_learning_payload if isinstance(strategy_learning_payload, dict) else {}
     watchlist_diff_payload = watchlist_diff_payload if isinstance(watchlist_diff_payload, dict) else {}
@@ -3180,6 +3268,7 @@ def strategy_learning_brief(
         "local_backtest_reliability": local_backtest_reliability_brief(local_backtest_reliability_payload),
         "factor_contract_alignment": factor_contract_alignment_brief(factor_contract_alignment_payload),
         "v5_local_replay": v5_local_replay_brief(v5_local_replay_payload),
+        "v5_replay_strategy_review": v5_replay_strategy_review_brief(v5_replay_strategy_review_payload),
         "context_review_effect": {
             "quality": {
                 "approved_or_reduced_count": context_review_quality.get("approved_or_reduced_count"),
@@ -3231,6 +3320,7 @@ def strategy_learning_brief(
             "Treat context-reviewed approval outcomes as unproven until the complete-context cohort outperforms rejected/held judgments on resolved forward returns.",
             "Use intraday_signal_alignment as read-only learning evidence; daily K-lines remain the forward-return authority.",
             "Use v5_local_replay as read-only replay context for v5 trigger, confirmation, WATCH downgrade, and risk-geometry distributions; it is not PnL evidence or execution permission.",
+            "Use v5_replay_strategy_review as replay-derived challenge context only; it is not forward-outcome evidence and cannot promote config by itself.",
             "Treat sizing blocker remediation as manual watchlist proposal context only; do not apply or restart services from this packet.",
         ],
     }
@@ -3353,6 +3443,7 @@ def build_packet(
     local_backtest_reliability_payload=None,
     factor_contract_alignment_payload=None,
     v5_local_replay_payload=None,
+    v5_replay_strategy_review_payload=None,
     execution_readiness_payload=None,
     simulation_performance_payload=None,
     external_market_context_payload=None,
@@ -3437,6 +3528,8 @@ def build_packet(
         factor_contract_alignment_payload = load_json_file(FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE)
     if v5_local_replay_payload is None:
         v5_local_replay_payload = load_json_file(V5_LOCAL_REPLAY_REPORT_FILE)
+    if v5_replay_strategy_review_payload is None:
+        v5_replay_strategy_review_payload = load_json_file(V5_REPLAY_STRATEGY_REVIEW_REPORT_FILE)
     if execution_readiness_payload is None:
         execution_readiness_payload = load_json_file(EXECUTION_READINESS_REPORT_FILE)
     if simulation_performance_payload is None:
@@ -3581,10 +3674,12 @@ def build_packet(
             local_backtest_reliability_payload,
             factor_contract_alignment_payload,
             v5_local_replay_payload,
+            v5_replay_strategy_review_payload,
         ),
         "local_backtest_reliability": local_backtest_reliability_payload,
         "factor_contract_alignment": factor_contract_alignment_payload,
         "v5_local_replay": v5_local_replay_payload,
+        "v5_replay_strategy_review": v5_replay_strategy_review_payload,
         "simulation_trade_review_brief": simulation_trade_review_brief(portfolio_payload),
         "execution_readiness": execution_readiness_payload,
         "simulation_performance": simulation_performance_payload,
@@ -3698,6 +3793,7 @@ def parse_args():
     parser.add_argument("--local-backtest-reliability-file", default=LOCAL_BACKTEST_RELIABILITY_REPORT_FILE)
     parser.add_argument("--factor-contract-alignment-file", default=FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE)
     parser.add_argument("--v5-local-replay-file", default=V5_LOCAL_REPLAY_REPORT_FILE)
+    parser.add_argument("--v5-replay-strategy-review-file", default=V5_REPLAY_STRATEGY_REVIEW_REPORT_FILE)
     parser.add_argument("--simulation-performance-file", default=SIMULATION_PERFORMANCE_REPORT_FILE)
     parser.add_argument("--external-market-context-file", default=EXTERNAL_MARKET_CONTEXT_FILE)
     parser.add_argument("--event-catalyst-file", default=EVENT_CATALYST_REPORT_FILE)
@@ -3792,6 +3888,7 @@ def main():
         local_backtest_reliability_payload=load_json_file(args.local_backtest_reliability_file),
         factor_contract_alignment_payload=load_json_file(args.factor_contract_alignment_file),
         v5_local_replay_payload=load_json_file(args.v5_local_replay_file),
+        v5_replay_strategy_review_payload=load_json_file(args.v5_replay_strategy_review_file),
         execution_readiness_payload=load_json_file(args.execution_readiness_file),
         simulation_performance_payload=load_json_file(args.simulation_performance_file),
         external_market_context_payload=load_json_file(args.external_market_context_file),

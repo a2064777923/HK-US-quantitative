@@ -131,10 +131,14 @@ python3 scripts/v5_local_replay_report.py \
   --hk-csv /tmp/hk_klines_v2.csv \
   --us-csv /tmp/us_klines.csv \
   --output /tmp/v5_local_replay_report.json --text
+python3 scripts/v5_replay_strategy_review_report.py \
+  --v5-local-replay-file /tmp/v5_local_replay_report.json \
+  --output /tmp/v5_replay_strategy_review_report.json --text
 ```
 
 這份 replay 也是研究上下文，不是 PnL 回測，不會寫 alert queue、下單、或改生產門檻。
 它還會把 alert 密度、確認率、降級率、同日多 trigger 堆疊，以及按 trigger/market 的噪音分解標成 quality 風險，方便 Hermes 保持批判態度。
+`v5_replay_strategy_review_report.py` 會把 replay 噪音轉成 Hermes 可讀的 trigger policy hints，但仍是 promotion-ineligible research context，不能單獨推送策略配置。
 
 檢查本地回測與 v5 實時引擎的因子契約是否對齊：
 

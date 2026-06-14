@@ -260,6 +260,65 @@ def v5_local_replay(status="V5_REPLAY_RESEARCH_ONLY", promotion_ready=False):
     }
 
 
+def v5_replay_strategy_review():
+    return {
+        "schema": "v5_replay_strategy_review_report_v1",
+        "generated_at": "2026-06-14T13:05:00",
+        "source": {
+            "read_only": True,
+            "auto_applies_strategy_changes": False,
+            "promotion_eligible": False,
+            "v5_local_replay_schema": "v5_local_replay_report_v1",
+        },
+        "operator_contract": {
+            "read_only": True,
+            "submits_orders": False,
+            "writes_alert_queue": False,
+            "changes_strategy_config": False,
+            "changes_execution_mode": False,
+            "promotion_eligible": False,
+            "requires_forward_outcome_before_promotion": True,
+        },
+        "overall_policy": {
+            "policy": "keep_shadow_or_dry_run",
+            "execution_allowed_by_report": False,
+            "promotion_eligible": False,
+            "reasons": ["v5_local_replay_quality_warn"],
+            "metrics": {"quality_status": "WARN"},
+        },
+        "summary": {
+            "status": "RESEARCH_REVIEW_ONLY",
+            "promotion_ready": False,
+            "promotion_eligible": False,
+            "trigger_policy_count": 12,
+            "strategy_trigger_count": 6,
+            "tighten_thresholds_count": 2,
+            "shadow_only_count": 4,
+            "diagnostic_only_count": 0,
+            "candidate_allow_count": 0,
+        },
+        "strategy_trigger_summary": [
+            {
+                "strategy_key": "BUY:站上MA5",
+                "policy": "tighten_thresholds",
+                "promotion_eligible": False,
+                "markets": ["HK", "US"],
+                "reasons": ["replay_execution_candidate_density_high"],
+                "metrics": {
+                    "alert_count": 180,
+                    "alert_rate_per_100_bars": 11.3,
+                    "execution_candidate_count": 55,
+                    "execution_candidate_rate_per_100_bars": 3.4,
+                    "directional_confirmation_ratio_pct": 25.0,
+                    "directional_downgrade_ratio_pct": 75.0,
+                },
+            }
+        ],
+        "checks": [],
+        "recommendations": ["do_not_promote_strategy_config_from_replay_only"],
+    }
+
+
 def watch_alert(signal_id="watch-1"):
     item = alert(signal_id)
     item["signal_type"] = "WATCH"
@@ -957,6 +1016,7 @@ class HermesReviewPacketTests(unittest.TestCase):
             local_backtest_reliability_payload=local_backtest_reliability(),
             factor_contract_alignment_payload=factor_contract_alignment(),
             v5_local_replay_payload=v5_local_replay(),
+            v5_replay_strategy_review_payload=v5_replay_strategy_review(),
         )
 
         self.assertEqual(payload["schema"], "hermes_signal_review_packet_v1")
@@ -985,6 +1045,14 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertTrue(payload["signal_outcome_event_store"]["safety"]["does_not_change_strategy_config"])
         self.assertEqual(payload["strategy_review"]["schema"], "strategy_review_report_v1")
         self.assertEqual(payload["strategy_review"]["overall_policy"]["policy"], "keep_shadow_or_dry_run")
+        self.assertEqual(payload["v5_replay_strategy_review"]["schema"], "v5_replay_strategy_review_report_v1")
+        self.assertFalse(payload["v5_replay_strategy_review"]["operator_contract"]["changes_strategy_config"])
+        self.assertEqual(
+            payload["strategy_learning_brief"]["v5_replay_strategy_review"]["policy_counts"][
+                "tighten_thresholds_count"
+            ],
+            2,
+        )
         self.assertEqual(payload["trusted_source_preflight"]["schema"], "trusted_source_preflight_report_v1")
         self.assertEqual(payload["trusted_source_preflight"]["status"], "WARN")
         self.assertFalse(payload["trusted_source_preflight"]["source"]["writes_ingest_files"])
@@ -2821,6 +2889,7 @@ class HermesReviewPacketTests(unittest.TestCase):
             local_backtest_reliability_payload=local_backtest_reliability(),
             factor_contract_alignment_payload=factor_contract_alignment(),
             v5_local_replay_payload=v5_local_replay(),
+            v5_replay_strategy_review_payload=v5_replay_strategy_review(),
         )
 
         local = brief["local_backtest_reliability"]
@@ -2853,6 +2922,15 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(replay["breakdown"]["top_noisy_triggers"][0]["key"], "HK:BUY:站上MA5")
         self.assertFalse(replay["promotion_ready"])
         self.assertTrue(replay["storage_policy"]["raw_data_local_only"])
+        replay_strategy = brief["v5_replay_strategy_review"]
+        self.assertTrue(replay_strategy["read_only"])
+        self.assertFalse(replay_strategy["submits_orders"])
+        self.assertFalse(replay_strategy["changes_strategy_config"])
+        self.assertEqual(replay_strategy["status"], "RESEARCH_REVIEW_ONLY")
+        self.assertFalse(replay_strategy["promotion_eligible"])
+        self.assertEqual(replay_strategy["policy_counts"]["tighten_thresholds_count"], 2)
+        self.assertEqual(replay_strategy["top_strategy_trigger_policies"][0]["strategy_key"], "BUY:站上MA5")
+        self.assertFalse(replay_strategy["operator_contract"]["promotion_eligible"])
 
         missing = packet.strategy_learning_brief({})["local_backtest_reliability"]
         self.assertEqual(missing["status"], "MISSING")
@@ -2867,6 +2945,11 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertTrue(missing_replay["read_only"])
         self.assertFalse(missing_replay["submits_orders"])
         self.assertFalse(missing_replay["writes_alert_queue"])
+        missing_replay_strategy = packet.strategy_learning_brief({})["v5_replay_strategy_review"]
+        self.assertEqual(missing_replay_strategy["status"], "MISSING")
+        self.assertTrue(missing_replay_strategy["read_only"])
+        self.assertFalse(missing_replay_strategy["submits_orders"])
+        self.assertFalse(missing_replay_strategy["changes_strategy_config"])
 
     def test_health_fail_forces_reject_or_hold_even_when_intake_has_plan(self):
         health = {"status": "FAIL", "checked_at": "2026-06-12T10:01:00", "checks": []}
