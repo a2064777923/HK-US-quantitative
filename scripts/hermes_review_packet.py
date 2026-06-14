@@ -93,6 +93,7 @@ FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE = os.environ.get(
     "FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE",
     "/tmp/factor_contract_alignment_report.json",
 )
+V5_LOCAL_REPLAY_REPORT_FILE = os.environ.get("V5_LOCAL_REPLAY_REPORT_FILE", "/tmp/v5_local_replay_report.json")
 OPERATOR_ACTION_QUEUE_REPORT_FILE = os.environ.get(
     "OPERATOR_ACTION_QUEUE_REPORT_FILE",
     "/tmp/operator_action_queue_report.json",
@@ -2739,6 +2740,68 @@ def factor_contract_alignment_brief(factor_contract_alignment_payload):
     }
 
 
+def v5_local_replay_brief(v5_local_replay_payload):
+    payload = v5_local_replay_payload if isinstance(v5_local_replay_payload, dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    replay_contract = payload.get("replay_contract") if isinstance(payload.get("replay_contract"), dict) else {}
+    alert_summary = payload.get("alert_summary") if isinstance(payload.get("alert_summary"), dict) else {}
+    storage_policy = payload.get("storage_policy") if isinstance(payload.get("storage_policy"), dict) else {}
+    checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
+    warn_or_fail = [item for item in checks if isinstance(item, dict) and item.get("status") in ("WARN", "FAIL")]
+    return {
+        "read_only": True,
+        "submits_orders": False,
+        "writes_alert_queue": False,
+        "schema": payload.get("schema") or "v5_local_replay_report_v1",
+        "status": summary.get("overall_status") or "MISSING",
+        "promotion_ready": summary.get("promotion_ready"),
+        "hermes_use": summary.get("hermes_use") or "v5_replay_research_context_only",
+        "scope": {
+            "market_count": summary.get("market_count"),
+            "symbol_count": summary.get("symbol_count"),
+            "total_row_count": summary.get("total_row_count"),
+            "evaluated_bars": summary.get("evaluated_bars"),
+            "skipped_bars": summary.get("skipped_bars"),
+        },
+        "alerts": {
+            "alert_count": alert_summary.get("alert_count"),
+            "execution_candidate_count": alert_summary.get("execution_candidate_count"),
+            "confirmed_directional_count": alert_summary.get("confirmed_directional_count"),
+            "downgraded_directional_count": alert_summary.get("downgraded_directional_count"),
+            "by_signal_type": alert_summary.get("by_signal_type") or {},
+            "by_candidate_signal_type": alert_summary.get("by_candidate_signal_type") or {},
+            "top_triggers": dict(list((alert_summary.get("by_trigger") or {}).items())[:8]),
+            "execution_blocked_reason_counts": dict(
+                list((alert_summary.get("execution_blocked_reason_counts") or {}).items())[:8]
+            ),
+            "risk_geometry_reason_counts": dict(
+                list((alert_summary.get("risk_geometry_reason_counts") or {}).items())[:8]
+            ),
+        },
+        "replay_contract": {
+            "engine": replay_contract.get("engine"),
+            "indicator_model": replay_contract.get("indicator_model"),
+            "trigger_model": replay_contract.get("trigger_model"),
+            "data_basis": replay_contract.get("data_basis"),
+            "respect_cooldown": replay_contract.get("respect_cooldown"),
+            "min_history_bars": replay_contract.get("min_history_bars"),
+            "strategy_config_id": replay_contract.get("strategy_config_id"),
+            "strategy_config_source": replay_contract.get("strategy_config_source"),
+            "strategy_config_version": replay_contract.get("strategy_config_version"),
+        },
+        "storage_policy": {
+            "raw_data_local_only": storage_policy.get("raw_data_local_only"),
+            "commit_raw_csv_to_git": storage_policy.get("commit_raw_csv_to_git"),
+            "copy_to_server_by_default": storage_policy.get("copy_to_server_by_default"),
+        },
+        "warn_or_fail_checks": [
+            {"code": item.get("code"), "status": item.get("status"), "detail": item.get("detail")}
+            for item in warn_or_fail[:8]
+        ],
+        "hermes_note": summary.get("message") or "v5_local_replay_is_research_context_only",
+    }
+
+
 def number_or_none(value):
     try:
         if value in (None, ""):
@@ -2824,6 +2887,7 @@ def strategy_learning_brief(
     outcome_report_payload=None,
     local_backtest_reliability_payload=None,
     factor_contract_alignment_payload=None,
+    v5_local_replay_payload=None,
 ):
     payload = strategy_learning_payload if isinstance(strategy_learning_payload, dict) else {}
     watchlist_diff_payload = watchlist_diff_payload if isinstance(watchlist_diff_payload, dict) else {}
@@ -3070,6 +3134,7 @@ def strategy_learning_brief(
         "hermes_alpha_evidence": alpha_summary,
         "local_backtest_reliability": local_backtest_reliability_brief(local_backtest_reliability_payload),
         "factor_contract_alignment": factor_contract_alignment_brief(factor_contract_alignment_payload),
+        "v5_local_replay": v5_local_replay_brief(v5_local_replay_payload),
         "context_review_effect": {
             "quality": {
                 "approved_or_reduced_count": context_review_quality.get("approved_or_reduced_count"),
@@ -3120,6 +3185,7 @@ def strategy_learning_brief(
             "Treat audit-failed or audit-missing approvals as excluded from Hermes alpha even when their forward returns are positive.",
             "Treat context-reviewed approval outcomes as unproven until the complete-context cohort outperforms rejected/held judgments on resolved forward returns.",
             "Use intraday_signal_alignment as read-only learning evidence; daily K-lines remain the forward-return authority.",
+            "Use v5_local_replay as read-only replay context for v5 trigger, confirmation, WATCH downgrade, and risk-geometry distributions; it is not PnL evidence or execution permission.",
             "Treat sizing blocker remediation as manual watchlist proposal context only; do not apply or restart services from this packet.",
         ],
     }
@@ -3241,6 +3307,7 @@ def build_packet(
     strategy_learning_payload=None,
     local_backtest_reliability_payload=None,
     factor_contract_alignment_payload=None,
+    v5_local_replay_payload=None,
     execution_readiness_payload=None,
     simulation_performance_payload=None,
     external_market_context_payload=None,
@@ -3323,6 +3390,8 @@ def build_packet(
         local_backtest_reliability_payload = load_json_file(LOCAL_BACKTEST_RELIABILITY_REPORT_FILE)
     if factor_contract_alignment_payload is None:
         factor_contract_alignment_payload = load_json_file(FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE)
+    if v5_local_replay_payload is None:
+        v5_local_replay_payload = load_json_file(V5_LOCAL_REPLAY_REPORT_FILE)
     if execution_readiness_payload is None:
         execution_readiness_payload = load_json_file(EXECUTION_READINESS_REPORT_FILE)
     if simulation_performance_payload is None:
@@ -3466,9 +3535,11 @@ def build_packet(
             strategy_evidence_payload,
             local_backtest_reliability_payload,
             factor_contract_alignment_payload,
+            v5_local_replay_payload,
         ),
         "local_backtest_reliability": local_backtest_reliability_payload,
         "factor_contract_alignment": factor_contract_alignment_payload,
+        "v5_local_replay": v5_local_replay_payload,
         "simulation_trade_review_brief": simulation_trade_review_brief(portfolio_payload),
         "execution_readiness": execution_readiness_payload,
         "simulation_performance": simulation_performance_payload,
@@ -3516,6 +3587,7 @@ def build_packet(
             "Strategy learning brief is a top-level summary for Hermes attention only; the full strategy_learning object remains authoritative.",
             "Local backtest reliability is read-only research evidence; it helps Hermes compare local HK/US data breadth and baseline backtest behavior, but it does not approve execution, change thresholds, or replace live readiness and source-reliability gates.",
             "Factor contract alignment is read-only research evidence; it helps Hermes see whether local backtests share the v5 factor contract closely enough to be comparable, but it does not approve execution or replace replay validation.",
+            "v5 local replay is read-only research evidence over local CSVs; it helps Hermes inspect v5 trigger, confirmation, WATCH downgrade, and risk-geometry distributions, but it is not PnL evidence and must not write alert queues, submit orders, copy raw data to GitHub/server, or bypass live gates.",
             "Simulation trade review brief is realized simulation portfolio context; it does not approve execution by itself.",
             "Execution readiness is read-only dashboard context; READY is necessary but not sufficient for execute mode.",
             "rt_order_intake.py execute mode also enforces execution_readiness.status=READY before submitting orders.",
@@ -3580,6 +3652,7 @@ def parse_args():
     parser.add_argument("--strategy-learning-file", default=STRATEGY_LEARNING_REPORT_FILE)
     parser.add_argument("--local-backtest-reliability-file", default=LOCAL_BACKTEST_RELIABILITY_REPORT_FILE)
     parser.add_argument("--factor-contract-alignment-file", default=FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE)
+    parser.add_argument("--v5-local-replay-file", default=V5_LOCAL_REPLAY_REPORT_FILE)
     parser.add_argument("--simulation-performance-file", default=SIMULATION_PERFORMANCE_REPORT_FILE)
     parser.add_argument("--external-market-context-file", default=EXTERNAL_MARKET_CONTEXT_FILE)
     parser.add_argument("--event-catalyst-file", default=EVENT_CATALYST_REPORT_FILE)
@@ -3673,6 +3746,7 @@ def main():
         strategy_learning_payload=load_json_file(args.strategy_learning_file),
         local_backtest_reliability_payload=load_json_file(args.local_backtest_reliability_file),
         factor_contract_alignment_payload=load_json_file(args.factor_contract_alignment_file),
+        v5_local_replay_payload=load_json_file(args.v5_local_replay_file),
         execution_readiness_payload=load_json_file(args.execution_readiness_file),
         simulation_performance_payload=load_json_file(args.simulation_performance_file),
         external_market_context_payload=load_json_file(args.external_market_context_file),

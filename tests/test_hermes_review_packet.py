@@ -153,6 +153,61 @@ def factor_contract_alignment(status="PARTIAL_ALIGNMENT_REQUIRES_CAUTION", promo
     }
 
 
+def v5_local_replay(status="V5_REPLAY_RESEARCH_ONLY", promotion_ready=False):
+    return {
+        "schema": "v5_local_replay_report_v1",
+        "generated_at": "2026-06-14T12:50:00",
+        "summary": {
+            "overall_status": status,
+            "promotion_ready": promotion_ready,
+            "hermes_use": "v5_replay_research_context_only",
+            "market_count": 2,
+            "symbol_count": 95,
+            "total_row_count": 126069,
+            "evaluated_bars": 123000,
+            "skipped_bars": 3069,
+            "alert_count": 500,
+            "execution_candidate_count": 37,
+            "downgraded_directional_count": 120,
+            "message": "v5 replay evidence only",
+        },
+        "replay_contract": {
+            "engine": "rt_signal_engine_v5",
+            "indicator_model": "IncrementalIndicators with prior completed bars plus one synthetic close-time quote",
+            "trigger_model": "TriggerEngine.check",
+            "data_basis": "local_daily_csv_replay",
+            "respect_cooldown": False,
+            "min_history_bars": 30,
+            "strategy_config_id": "cfg-v5",
+            "strategy_config_source": "fallback_default",
+            "strategy_config_version": "default-v5-compatible",
+        },
+        "storage_policy": {
+            "raw_data_local_only": True,
+            "commit_raw_csv_to_git": False,
+            "copy_to_server_by_default": False,
+        },
+        "alert_summary": {
+            "alert_count": 500,
+            "execution_candidate_count": 37,
+            "confirmed_directional_count": 100,
+            "downgraded_directional_count": 120,
+            "by_signal_type": {"WATCH": 463, "BUY": 37},
+            "by_candidate_signal_type": {"BUY": 260, "SELL": 160, "WATCH": 80},
+            "by_trigger": {"RSI超賣": 180, "布林下軌突破": 110},
+            "execution_blocked_reason_counts": {"not_confirmed": 90},
+            "risk_geometry_reason_counts": {"missing_or_invalid_atr": 12},
+        },
+        "checks": [
+            {
+                "status": "WARN",
+                "code": "daily_close_synthetic_quote_not_intraday_path",
+                "detail": "Replay uses completed daily rows as synthetic close-time quotes.",
+            }
+        ],
+    }
+
+
 def watch_alert(signal_id="watch-1"):
     item = alert(signal_id)
     item["signal_type"] = "WATCH"
@@ -849,6 +904,7 @@ class HermesReviewPacketTests(unittest.TestCase):
             },
             local_backtest_reliability_payload=local_backtest_reliability(),
             factor_contract_alignment_payload=factor_contract_alignment(),
+            v5_local_replay_payload=v5_local_replay(),
         )
 
         self.assertEqual(payload["schema"], "hermes_signal_review_packet_v1")
@@ -1023,6 +1079,15 @@ class HermesReviewPacketTests(unittest.TestCase):
         )
         self.assertFalse(payload["strategy_learning_brief"]["factor_contract_alignment"]["promotion_ready"])
         self.assertEqual(
+            payload["strategy_learning_brief"]["v5_local_replay"]["schema"],
+            "v5_local_replay_report_v1",
+        )
+        self.assertEqual(
+            payload["strategy_learning_brief"]["v5_local_replay"]["status"],
+            "V5_REPLAY_RESEARCH_ONLY",
+        )
+        self.assertFalse(payload["strategy_learning_brief"]["v5_local_replay"]["promotion_ready"])
+        self.assertEqual(
             payload["local_backtest_reliability"]["summary"]["best_backtest_by_sharpe"],
             "portfolio_backtest_realistic",
         )
@@ -1030,6 +1095,7 @@ class HermesReviewPacketTests(unittest.TestCase):
             payload["factor_contract_alignment"]["summary"]["overall_status"],
             "PARTIAL_ALIGNMENT_REQUIRES_CAUTION",
         )
+        self.assertEqual(payload["v5_local_replay"]["summary"]["overall_status"], "V5_REPLAY_RESEARCH_ONLY")
         self.assertEqual(payload["strategy_learning_brief"]["sample_scope"]["strategy_config_id"], "cfg-1")
         self.assertEqual(payload["strategy_learning_brief"]["intake_coverage"]["directional_pct"], 100.0)
         self.assertEqual(
@@ -1154,6 +1220,7 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertTrue(any("Intraday K-line batch" in note for note in payload["operator_notes"]))
         self.assertTrue(any("Local backtest reliability is read-only research evidence" in note for note in payload["operator_notes"]))
         self.assertTrue(any("Factor contract alignment is read-only research evidence" in note for note in payload["operator_notes"]))
+        self.assertTrue(any("v5 local replay is read-only research evidence" in note for note in payload["operator_notes"]))
         producer_digest = payload["review_items"][0]["context_digest"]["intraday_minute_producer"]
         self.assertEqual(producer_digest["schema"], "hermes_review_item_intraday_minute_producer_digest_v1")
         self.assertEqual(producer_digest["status"], "ACTIONABLE")
@@ -1173,6 +1240,8 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(payload["local_backtest_reliability"]["schema"], "local_backtest_reliability_report_v1")
         self.assertEqual(payload["local_backtest_reliability"]["summary"]["overall_status"], "RESEARCH_USEFUL_WITH_LIMITATIONS")
         self.assertFalse(payload["local_backtest_reliability"]["summary"]["promotion_ready"])
+        self.assertEqual(payload["v5_local_replay"]["schema"], "v5_local_replay_report_v1")
+        self.assertFalse(payload["v5_local_replay"]["summary"]["promotion_ready"])
         self.assertEqual(
             payload["strategy_learning_brief"]["local_backtest_reliability"]["dataset"]["us_feed"],
             "iex",
@@ -2698,6 +2767,7 @@ class HermesReviewPacketTests(unittest.TestCase):
             {},
             local_backtest_reliability_payload=local_backtest_reliability(),
             factor_contract_alignment_payload=factor_contract_alignment(),
+            v5_local_replay_payload=v5_local_replay(),
         )
 
         local = brief["local_backtest_reliability"]
@@ -2714,6 +2784,16 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(alignment["status"], "PARTIAL_ALIGNMENT_REQUIRES_CAUTION")
         self.assertEqual(alignment["hermes_use"], "research_alignment_context_only")
         self.assertFalse(alignment["promotion_ready"])
+        replay = brief["v5_local_replay"]
+        self.assertTrue(replay["read_only"])
+        self.assertFalse(replay["submits_orders"])
+        self.assertFalse(replay["writes_alert_queue"])
+        self.assertEqual(replay["status"], "V5_REPLAY_RESEARCH_ONLY")
+        self.assertEqual(replay["hermes_use"], "v5_replay_research_context_only")
+        self.assertEqual(replay["scope"]["symbol_count"], 95)
+        self.assertEqual(replay["alerts"]["execution_candidate_count"], 37)
+        self.assertFalse(replay["promotion_ready"])
+        self.assertTrue(replay["storage_policy"]["raw_data_local_only"])
 
         missing = packet.strategy_learning_brief({})["local_backtest_reliability"]
         self.assertEqual(missing["status"], "MISSING")
@@ -2723,6 +2803,11 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(missing_alignment["status"], "MISSING")
         self.assertTrue(missing_alignment["read_only"])
         self.assertFalse(missing_alignment["submits_orders"])
+        missing_replay = packet.strategy_learning_brief({})["v5_local_replay"]
+        self.assertEqual(missing_replay["status"], "MISSING")
+        self.assertTrue(missing_replay["read_only"])
+        self.assertFalse(missing_replay["submits_orders"])
+        self.assertFalse(missing_replay["writes_alert_queue"])
 
     def test_health_fail_forces_reject_or_hold_even_when_intake_has_plan(self):
         health = {"status": "FAIL", "checked_at": "2026-06-12T10:01:00", "checks": []}

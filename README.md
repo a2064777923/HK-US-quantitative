@@ -124,6 +124,17 @@ python3 scripts/local_backtest_reliability_report.py \
 
 這份報告只用來支撐研究判斷，不會改 v5、Hermes、模擬倉或任何 cron。
 
+再做一層 v5 本地 replay，只把觸發/確認/風控分布喂給 Hermes：
+
+```bash
+python3 scripts/v5_local_replay_report.py \
+  --hk-csv /tmp/hk_klines_v2.csv \
+  --us-csv /tmp/us_klines.csv \
+  --output /tmp/v5_local_replay_report.json --text
+```
+
+這份 replay 也是研究上下文，不是 PnL 回測，不會寫 alert queue、下單、或改生產門檻。
+
 檢查本地回測與 v5 實時引擎的因子契約是否對齊：
 
 ```bash
