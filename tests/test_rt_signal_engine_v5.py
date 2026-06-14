@@ -1927,6 +1927,84 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertTrue(ma5_alerts[1]["confirmed"])
         self.assertTrue(ma5_alerts[1]["execution_candidate"])
 
+    def test_same_scan_duplicate_directional_candidates_are_diagnostic_watch(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.bb_upper = 120
+        indicators.bb_lower = 102
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 101,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        buy_candidates = [
+            item for item in engine.alerts
+            if item["candidate_signal_type"] == "BUY"
+        ]
+        self.assertEqual(
+            [item["trigger"] for item in buy_candidates],
+            ["RSI超賣", "布林下軌突破", "站上MA5"],
+        )
+        executable = [item for item in buy_candidates if item["execution_candidate"]]
+        self.assertEqual(len(executable), 1)
+        self.assertEqual(executable[0]["trigger"], "RSI超賣")
+        self.assertEqual(executable[0]["signal_type"], "BUY")
+        self.assertIsNone(executable[0]["suppressed_directional_reason"])
+
+        duplicates = [item for item in buy_candidates if not item["execution_candidate"]]
+        self.assertEqual([item["trigger"] for item in duplicates], ["布林下軌突破", "站上MA5"])
+        for alert in duplicates:
+            self.assertTrue(alert["confirmed"])
+            self.assertEqual(alert["signal_type"], "WATCH")
+            self.assertEqual(alert["suppressed_directional_reason"], "same_scan_directional_duplicate")
+            self.assertIn("same_scan_directional_duplicate", alert["execution_blocked_reasons"])
+            self.assertIsNone(alert["entry_price"])
+            self.assertIsNone(alert["stop_loss"])
+            self.assertIsNone(alert["take_profit"])
+            self.assertIsNotNone(alert["candidate_entry_price"])
+            self.assertIsNotNone(alert["candidate_stop_loss"])
+            self.assertIsNotNone(alert["candidate_take_profit"])
+
+    def test_unconfirmed_same_scan_directional_does_not_consume_duplicate_slot(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "trigger_overrides": {
+                    "BUY:RSI超賣": {"min_full_score": 0.9},
+                }
+            }
+        )
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 101,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        by_trigger = {item["trigger"]: item for item in engine.alerts}
+        self.assertEqual(by_trigger["RSI超賣"]["signal_type"], "WATCH")
+        self.assertFalse(by_trigger["RSI超賣"]["execution_candidate"])
+        self.assertEqual(by_trigger["RSI超賣"]["suppressed_directional_reason"], "unconfirmed_directional")
+        self.assertEqual(by_trigger["站上MA5"]["signal_type"], "BUY")
+        self.assertTrue(by_trigger["站上MA5"]["execution_candidate"])
+        self.assertIsNone(by_trigger["站上MA5"]["suppressed_directional_reason"])
+
     def test_low_rr_directional_is_downgraded_to_watch(self):
         engine = rt.TriggerEngine(
             strategy_config={

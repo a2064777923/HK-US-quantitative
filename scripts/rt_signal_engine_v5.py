@@ -1528,6 +1528,7 @@ class TriggerEngine:
             triggered.append((direction, f"{quote['change_pct']:+.1f}%", "WATCH"))
 
         # 冷卻期檢查 + 觸發
+        emitted_directional_candidates = set()
         for trigger_name, detail, signal_type in triggered:
             trigger_review_mode = self.trigger_review_mode(signal_type, trigger_name)
             trigger_disabled_observation = self.trigger_disabled_observation(signal_type, trigger_name)
@@ -1606,11 +1607,6 @@ class TriggerEngine:
                 emitted_signal_type = "WATCH"
                 suppressed_directional_reason = risk_geometry_reason
 
-            key = self.alert_cooldown_key(symbol, emitted_signal_type, trigger_name)
-            if key in self.cooldowns and now - self.cooldowns[key] < cooldown_seconds:
-                continue
-            self.cooldowns[key] = now
-
             execution_candidate = (
                 emitted_signal_type in ("BUY", "SELL")
                 and confirmed
@@ -1629,6 +1625,12 @@ class TriggerEngine:
                 if not risk_geometry_valid:
                     execution_blocked_reasons.append(f"risk_geometry_invalid:{risk_geometry_reason}")
 
+            if execution_candidate and signal_type in emitted_directional_candidates:
+                emitted_signal_type = "WATCH"
+                suppressed_directional_reason = "same_scan_directional_duplicate"
+                execution_candidate = False
+                execution_blocked_reasons.append("same_scan_directional_duplicate")
+
             if execution_candidate:
                 entry_price = candidate_entry_price
                 stop_loss = candidate_stop_loss
@@ -1639,7 +1641,14 @@ class TriggerEngine:
                 stop_loss = None
                 take_profit = None
                 rr_ratio = None
-            
+
+            key = self.alert_cooldown_key(symbol, emitted_signal_type, trigger_name)
+            if key in self.cooldowns and now - self.cooldowns[key] < cooldown_seconds:
+                continue
+            self.cooldowns[key] = now
+            if execution_candidate:
+                emitted_directional_candidates.add(signal_type)
+
             market = quote.get("market", "")
             generated_at = datetime.now()
             signal_date = alert_signal_date(quote.get("time"), generated_at=generated_at, market=market)
