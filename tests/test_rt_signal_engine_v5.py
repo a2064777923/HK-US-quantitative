@@ -62,19 +62,24 @@ class RtSignalEngineV5Tests(unittest.TestCase):
 
         def fake_db(sql):
             captured["sql"] = sql
-            return "101|102|100|1100\n100|101|99|1000"
+            return "2026-06-11|101|102|100|1100\n2026-06-10|100|101|99|1000"
 
         ind = rt.IncrementalIndicators("AAPL")
         with patch.object(rt, "db", side_effect=fake_db):
-            ind.load_history(days=2)
+            ind.load_history(days=2, market="US", now=datetime(2026, 6, 12, 22, 0, 0))
 
         sql = captured["sql"]
         normalized = " ".join(sql.split())
         self.assertIn("WITH daily_bar AS", sql)
         self.assertIn("SELECT DISTINCT ON (timestamp::date)", sql)
+        self.assertIn("timestamp::date < DATE '2026-06-12'", normalized)
+        self.assertIn("SELECT trade_date, close_price, high_price, low_price, volume", normalized)
         self.assertIn("ORDER BY timestamp::date, timestamp DESC", normalized)
         self.assertIn("FROM daily_bar ORDER BY trade_date DESC LIMIT 2", normalized)
         self.assertEqual(ind.closes[-2:], [100.0, 101.0])
+        self.assertEqual(ind.history_market, "US")
+        self.assertEqual(ind.history_cutoff_date, "2026-06-12")
+        self.assertEqual(ind.latest_daily_date, "2026-06-11")
 
     def test_load_history_rejects_invalid_symbol_without_db_query(self):
         ind = rt.IncrementalIndicators("AAPL';DROP")
@@ -91,40 +96,73 @@ class RtSignalEngineV5Tests(unittest.TestCase):
 
         def fake_db(sql):
             captured["sql"] = sql
-            return "101|102|100|1100"
+            return "2026-06-11|101|102|100|1100"
 
         ind = rt.IncrementalIndicators("aapl")
         with patch.object(rt, "db", side_effect=fake_db):
-            loaded = ind.load_history(days="-5")
+            loaded = ind.load_history(days="-5", market="US", now=datetime(2026, 6, 12, 22, 0, 0))
 
         normalized = " ".join(captured["sql"].split())
         self.assertTrue(loaded)
         self.assertIn("WHERE symbol='AAPL' AND interval='day'", normalized)
+        self.assertIn("timestamp::date < DATE '2026-06-12'", normalized)
         self.assertIn("LIMIT 100", normalized)
 
     def test_load_history_skips_invalid_daily_bars(self):
         def fake_db(sql):
             return "\n".join(
                 [
-                    "101|102|100|1100",
-                    "100|99|101|1000",
-                    "NaN|103|99|1000",
-                    "0|101|99|1000",
-                    "99|101|100|1000",
-                    "98|100|97|-1",
-                    "97|99|96|900",
+                    "2026-06-11|101|102|100|1100",
+                    "2026-06-10|100|99|101|1000",
+                    "2026-06-09|NaN|103|99|1000",
+                    "2026-06-08|0|101|99|1000",
+                    "2026-06-07|99|101|100|1000",
+                    "2026-06-06|98|100|97|-1",
+                    "2026-06-05|97|99|96|900",
                 ]
             )
 
         ind = rt.IncrementalIndicators("AAPL")
         with patch.object(rt, "db", side_effect=fake_db):
-            loaded = ind.load_history(days=10)
+            loaded = ind.load_history(days=10, market="US", now=datetime(2026, 6, 12, 22, 0, 0))
 
         self.assertTrue(loaded)
         self.assertEqual(ind.closes, [97.0, 101.0])
         self.assertEqual(ind.highs, [99.0, 102.0])
         self.assertEqual(ind.lows, [96.0, 100.0])
         self.assertEqual(ind.volumes, [900.0, 1100.0])
+        self.assertEqual(ind.latest_daily_date, "2026-06-11")
+
+    def test_alert_includes_completed_daily_history_metadata(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+        indicators.history_market = "US"
+        indicators.history_cutoff_date = "2026-06-12"
+        indicators.latest_daily_date = "2026-06-11"
+        indicators.history_policy = "completed_daily_before_market_date"
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-12 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertEqual(alert["daily_history_policy"], "completed_daily_before_market_date")
+        self.assertEqual(alert["daily_history_market"], "US")
+        self.assertEqual(alert["daily_history_cutoff_date"], "2026-06-12")
+        self.assertEqual(alert["daily_history_latest_date"], "2026-06-11")
+        self.assertEqual(alert["daily_history_bar_count"], 30)
 
     def test_load_state_returns_default_for_missing_or_corrupt_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:

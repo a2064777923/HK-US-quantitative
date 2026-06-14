@@ -114,6 +114,14 @@ def valid_watchlist_symbol(symbol, market=None):
         return bool(US_SYMBOL_RE.match(symbol))
     return bool(HK_SYMBOL_RE.match(symbol) or US_SYMBOL_RE.match(symbol))
 
+def infer_market_from_symbol(symbol):
+    symbol = str(symbol or "").strip().upper()
+    if HK_SYMBOL_RE.match(symbol):
+        return "HK"
+    if US_SYMBOL_RE.match(symbol):
+        return "US"
+    return ""
+
 def normalize_symbol_list(value, market=None, rejected=None):
     if value is None:
         return []
@@ -448,6 +456,19 @@ def alert_timeframe_metadata():
         "realtime_input": "single_quote_temporary_bar",
         "intraday_minute_bars_used": False,
         "intraday_evidence_policy": "external_read_only_context_only",
+    }
+
+def alert_daily_history_metadata(indicators):
+    return {
+        "daily_history_policy": getattr(
+            indicators,
+            "history_policy",
+            "completed_daily_before_market_date",
+        ),
+        "daily_history_market": getattr(indicators, "history_market", None),
+        "daily_history_cutoff_date": getattr(indicators, "history_cutoff_date", None),
+        "daily_history_latest_date": getattr(indicators, "latest_daily_date", None),
+        "daily_history_bar_count": indicator_history_bar_count(indicators),
     }
 
 # ========== 數據層 ==========
@@ -917,17 +938,29 @@ class IncrementalIndicators:
         self.rt_low = None
         self.rt_volume = None
         self.rt_updated_at = None
+        self.history_market = infer_market_from_symbol(symbol)
+        self.history_cutoff_date = None
+        self.latest_daily_date = None
+        self.history_policy = "completed_daily_before_market_date"
         self.loaded = False
 
-    def load_history(self, days=100):
+    def load_history(self, days=100, market=None, now=None):
         """從DB載入歷史K線"""
         query_symbol = str(self.symbol or "").upper()
         if not valid_watchlist_symbol(query_symbol):
             self.loaded = False
             return False
+        self.history_market = str(market or infer_market_from_symbol(query_symbol)).upper()
+        market_now = market_local_now(self.history_market, now=now)
+        self.history_cutoff_date = market_now.date().isoformat() if market_now is not None else None
         days = as_int(days, 100)
         if days is None or days <= 0:
             days = 100
+        cutoff_clause = (
+            f"AND timestamp::date < DATE '{self.history_cutoff_date}'"
+            if self.history_cutoff_date
+            else ""
+        )
         raw = db(
             f"""
             WITH daily_bar AS (
@@ -936,9 +969,10 @@ class IncrementalIndicators:
                        close_price, high_price, low_price, volume
                 FROM klines
                 WHERE symbol='{query_symbol}' AND interval='day'
+                  {cutoff_clause}
                 ORDER BY timestamp::date, timestamp DESC
             )
-            SELECT close_price, high_price, low_price, volume
+            SELECT trade_date, close_price, high_price, low_price, volume
             FROM daily_bar
             ORDER BY trade_date DESC LIMIT {days}
             """
@@ -947,13 +981,24 @@ class IncrementalIndicators:
         for line in raw.split("\n"):
             if not line.strip(): continue
             p = line.split("|")
-            if len(p) >= 4:
+            if len(p) >= 5:
+                trade_date = str(p[0] or "")[:10]
+                row = normalize_daily_bar(p[1], p[2], p[3], p[4])
+            elif len(p) >= 4:
+                trade_date = None
                 row = normalize_daily_bar(p[0], p[1], p[2], p[3])
-                if row is not None:
-                    rows.append(row)
+            else:
+                row = None
+                trade_date = None
+            if row is not None:
+                rows.append((trade_date, row))
         rows.reverse()
-        for c, h, l, v in rows:
+        latest_daily_date = None
+        for trade_date, (c, h, l, v) in rows:
             self._update(c, h, l, v)
+            if trade_date:
+                latest_daily_date = trade_date
+        self.latest_daily_date = latest_daily_date
         self.loaded = True
         return True
 
@@ -1613,6 +1658,7 @@ class TriggerEngine:
                 **alert_watchlist_metadata(self.watchlist_context, market),
                 **alert_strategy_metadata(self.strategy_context),
                 **alert_timeframe_metadata(),
+                **alert_daily_history_metadata(indicators),
                 "trigger": trigger_name,
                 "detail": detail,
                 "signal_type": emitted_signal_type,
@@ -1743,7 +1789,7 @@ def main():
     skipped_history = []
     for sym, market in all_symbols:
         ind = IncrementalIndicators(sym)
-        loaded = ind.load_history(100)
+        loaded = ind.load_history(100, market=market)
         if indicator_signal_ready(ind):
             indicators[sym] = ind
         else:
