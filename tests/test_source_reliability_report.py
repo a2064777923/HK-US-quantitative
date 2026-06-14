@@ -296,6 +296,11 @@ class SourceReliabilityReportTests(unittest.TestCase):
         self.assertIn("data_source_inventory_weaknesses", inventory["reasons"])
         self.assertEqual(inventory["coverage"]["required_context_file_status_counts"], {"present": 10, "missing": 2})
         self.assertEqual(inventory["coverage"]["weakness_codes"], ["context_reports_missing", "kline_data_source_missing"])
+        self.assertEqual(
+            inventory["coverage"]["blocking_weakness_codes"],
+            ["context_reports_missing", "kline_data_source_missing"],
+        )
+        self.assertEqual(inventory["coverage"]["optional_research_weakness_codes"], [])
         self.assertIn(
             "review_data_source_inventory_weaknesses_before_hermes_review",
             result["recommendations"],
@@ -372,6 +377,11 @@ class SourceReliabilityReportTests(unittest.TestCase):
         self.assertEqual(result["status"], "OK")
         self.assertEqual(inventory["reliability_status"], "OK")
         self.assertIn("optional_context_reports_not_ready", inventory["coverage"]["weakness_codes"])
+        self.assertEqual(inventory["coverage"]["blocking_weakness_codes"], [])
+        self.assertEqual(
+            inventory["coverage"]["optional_research_weakness_codes"],
+            ["optional_context_reports_not_ready"],
+        )
         self.assertEqual(
             inventory["coverage"]["required_context_file_status_counts"],
             {"present": 12},

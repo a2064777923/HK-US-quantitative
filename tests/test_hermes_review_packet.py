@@ -3164,6 +3164,8 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(inventory["optional_research_context"][0]["name"], "local_backtest_reliability")
         self.assertFalse(inventory["optional_research_context"][0]["exists"])
         self.assertIn("optional_context_reports_not_ready", inventory["weakness_codes"])
+        self.assertEqual(inventory["blocking_weakness_codes"], ["kline_data_source_missing"])
+        self.assertEqual(inventory["optional_research_weakness_codes"], ["optional_context_reports_not_ready"])
         local = brief["local_backtest_reliability"]
         self.assertTrue(local["read_only"])
         self.assertFalse(local["submits_orders"])

@@ -251,6 +251,20 @@ def apply_data_source_inventory(component, payload):
     error_count = int(summary.get("error_weakness_count") or 0)
     warning_count = int(summary.get("warning_weakness_count") or 0)
     weakness_codes = sorted({row.get("code") for row in weaknesses if isinstance(row, dict) and row.get("code")})
+    blocking_weakness_codes = sorted(
+        {
+            row.get("code")
+            for row in weaknesses
+            if isinstance(row, dict) and row.get("code") and row.get("severity") in ("ERROR", "WARN")
+        }
+    )
+    optional_research_weakness_codes = sorted(
+        {
+            row.get("code")
+            for row in weaknesses
+            if isinstance(row, dict) and row.get("code") and row.get("severity") == "INFO"
+        }
+    )
     optional_context_reports = []
     files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
     for row in files.get("optional_context_reports") or []:
@@ -285,6 +299,8 @@ def apply_data_source_inventory(component, payload):
         "present_input_payload_file_count": int(summary.get("present_input_payload_file_count") or 0),
         "kline_source_counts": summary.get("kline_source_counts") if isinstance(summary.get("kline_source_counts"), dict) else {},
         "weakness_codes": weakness_codes,
+        "blocking_weakness_codes": blocking_weakness_codes,
+        "optional_research_weakness_codes": optional_research_weakness_codes,
     }
     if error_count:
         component["reasons"].append("data_source_inventory_errors")

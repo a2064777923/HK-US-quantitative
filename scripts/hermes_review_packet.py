@@ -2806,6 +2806,20 @@ def data_source_inventory_brief(data_source_inventory_payload):
     weaknesses = payload.get("weaknesses") if isinstance(payload.get("weaknesses"), list) else []
     files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
     optional_context_rows = files.get("optional_context_reports") if isinstance(files.get("optional_context_reports"), list) else []
+    blocking_weakness_codes = sorted(
+        {
+            item.get("code")
+            for item in weaknesses
+            if isinstance(item, dict) and item.get("code") and item.get("severity") in ("ERROR", "WARN")
+        }
+    )[:8]
+    optional_research_weakness_codes = sorted(
+        {
+            item.get("code")
+            for item in weaknesses
+            if isinstance(item, dict) and item.get("code") and item.get("severity") == "INFO"
+        }
+    )[:8]
     return {
         "read_only": True,
         "submits_orders": False,
@@ -2822,6 +2836,8 @@ def data_source_inventory_brief(data_source_inventory_payload):
             for item in weaknesses[:8]
             if isinstance(item, dict) and item.get("code")
         ],
+        "blocking_weakness_codes": blocking_weakness_codes,
+        "optional_research_weakness_codes": optional_research_weakness_codes,
         "optional_research_context": [
             {
                 "name": item.get("name"),

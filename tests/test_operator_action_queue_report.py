@@ -139,6 +139,8 @@ def base_payloads():
                     "reasons": ["data_source_inventory_weaknesses"],
                     "coverage": {
                         "weakness_codes": ["kline_data_source_missing", "context_reports_missing"],
+                        "blocking_weakness_codes": ["kline_data_source_missing", "context_reports_missing"],
+                        "optional_research_weakness_codes": [],
                         "context_file_status_counts": {"present": 10, "missing": 2},
                         "kline_source_counts": {"missing": 2, "tencent": 1000},
                     },
@@ -683,6 +685,7 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertEqual(item["priority"], "P2")
         self.assertEqual(item["category"], "source_provider")
         self.assertEqual(item["evidence"]["coverage"]["weakness_codes"], ["kline_data_source_missing", "context_reports_missing"])
+        self.assertEqual(item["evidence"]["coverage"]["blocking_weakness_codes"], ["kline_data_source_missing", "context_reports_missing"])
         self.assertFalse(item["operator_effect"]["submits_orders"])
         self.assertFalse(item["operator_effect"]["changes_strategy"])
         self.assertFalse(item["operator_effect"]["changes_portfolio"])
