@@ -17,6 +17,9 @@ DB_NAME = os.environ.get("QM_DB_NAME", "quantmind")
 SAFE_AUTO_ACTIONS = {
     "candidate_remove_from_stock_universe",
 }
+MANUAL_REVIEW_ACTIONS = {
+    "candidate_deactivate_or_symbol_mapping",
+}
 _COLUMN_CACHE = {}
 
 
@@ -188,6 +191,87 @@ def selected_candidates(candidates, symbols, allow_actions):
     return selected, rejected
 
 
+def manual_review_required_candidates(candidates, symbols=None, allow_actions=None):
+    requested = {str(symbol).upper() for symbol in symbols or []}
+    allow_actions = set(allow_actions or SAFE_AUTO_ACTIONS)
+    rows = []
+    for item in candidates:
+        symbol = str(item.get("symbol") or "").upper()
+        action = item.get("recommended_action")
+        if requested and symbol not in requested:
+            continue
+        if action not in MANUAL_REVIEW_ACTIONS or action in allow_actions:
+            continue
+        rows.append(
+            {
+                "symbol": item.get("symbol"),
+                "market": item.get("market"),
+                "exchange": item.get("exchange"),
+                "name": item.get("name"),
+                "recommended_action": action,
+                "issues": item.get("issues") or [],
+                "latest_date": item.get("latest_date"),
+                "lag_days_vs_market_latest": item.get("lag_days_vs_market_latest"),
+                "history_rows_120d": item.get("history_rows_120d"),
+                "required_operator_decision": "refetch_or_fix_symbol_mapping_before_deactivate",
+                "why_not_auto_allowed": "ordinary_stale_symbol_may_be_mapping_or_provider_issue",
+            }
+        )
+    return rows
+
+
+def operator_review_plan(review_rows, proposal_digest):
+    if not review_rows:
+        return {
+            "schema": "stock_universe_hygiene_operator_review_plan_v1",
+            "status": "not_required",
+            "review_required_count": 0,
+            "items": [],
+            "commands": [],
+        }
+    symbols = [row["symbol"] for row in review_rows if row.get("symbol")]
+    commands = []
+    for symbol in symbols[:20]:
+        commands.append(
+            {
+                "symbol": symbol,
+                "dry_run_command": (
+                    "/usr/bin/python3 /root/stock_universe_hygiene_promote.py "
+                    "--report-file /tmp/universe_hygiene_report.json "
+                    f"--symbol {symbol} --allow-action candidate_deactivate_or_symbol_mapping --text"
+                ),
+                "hash_confirmed_apply_template": (
+                    "/usr/bin/python3 /root/stock_universe_hygiene_promote.py "
+                    "--report-file /tmp/universe_hygiene_report.json "
+                    f"--symbol {symbol} --allow-action candidate_deactivate_or_symbol_mapping "
+                    f"--apply --confirm-proposal-hash {proposal_digest} --text"
+                ),
+            }
+        )
+    return {
+        "schema": "stock_universe_hygiene_operator_review_plan_v1",
+        "status": "operator_review_required",
+        "review_required_count": len(review_rows),
+        "items": review_rows,
+        "commands": commands,
+        "pre_apply_checklist": [
+            "confirm_symbol_has_no_active_or_holding_position",
+            "confirm_symbol_not_required_by_user_portfolio_or_current_v5_watchlist",
+            "try_refetch_or_provider_symbol_mapping_before_deactivation",
+            "if_deactivation_is_chosen_pass_explicit_allow_action_and_matching_proposal_hash",
+            "rerun_universe_hygiene_data_health_outcome_readiness_and_hermes_packet_after_apply",
+        ],
+        "safety": {
+            "manual_review_required": True,
+            "does_not_auto_apply": True,
+            "does_not_submit_orders": True,
+            "does_not_change_watchlists": True,
+            "apply_requires_explicit_allow_action": True,
+            "apply_requires_confirm_proposal_hash": True,
+        },
+    }
+
+
 def fetch_open_position_symbols(symbols):
     symbols = [str(symbol).upper() for symbol in symbols if str(symbol or "").strip()]
     if not symbols:
@@ -288,6 +372,8 @@ def build_report(
     digest = proposal_hash(candidates)
     allow_actions = allow_action or list(SAFE_AUTO_ACTIONS)
     selected, rejected = selected_candidates(candidates, symbols, allow_actions)
+    review_rows = manual_review_required_candidates(candidates, symbols, allow_actions)
+    review_plan = operator_review_plan(review_rows, digest)
     protected_positions = []
     protection_warnings = []
     if apply and selected:
@@ -332,6 +418,8 @@ def build_report(
         "selected_count": len(selected),
         "selected_candidates": selected,
         "rejected_symbols": rejected,
+        "operator_review_required_candidates": review_rows,
+        "operator_review_plan": review_plan,
         "protected_positions": protected_positions,
         "protection_warnings": protection_warnings,
         "validation_reasons": reasons,
@@ -344,8 +432,65 @@ def build_report(
             "blocks_open_position_symbols": True,
             "backs_up_stocks_before_apply": True,
             "allowed_actions": sorted(allow_actions),
+            "default_allowed_actions": sorted(SAFE_AUTO_ACTIONS),
+            "manual_review_actions": sorted(MANUAL_REVIEW_ACTIONS),
             "does_not_submit_orders": True,
             "does_not_restart_services": True,
+            "does_not_change_watchlists": True,
+        },
+    }
+
+
+def build_plan_from_report_payload(report, symbols=None, allow_action=None):
+    """Build a read-only promotion plan from an already-loaded hygiene report."""
+    symbols = symbols or []
+    report = report if isinstance(report, dict) else {}
+    validation_reasons = validate_report(report)
+    candidates = proposal_candidates(report)
+    digest = proposal_hash(candidates)
+    allow_actions = allow_action or list(SAFE_AUTO_ACTIONS)
+    selected, rejected = selected_candidates(candidates, symbols, allow_actions)
+    review_rows = manual_review_required_candidates(candidates, symbols, allow_actions)
+    reasons = list(validation_reasons)
+    if rejected:
+        reasons.append("one_or_more_symbols_rejected")
+    status = "dry_run"
+    if reasons:
+        status = "invalid_selection" if not validation_reasons else "invalid_report"
+    return {
+        "schema": "stock_universe_hygiene_promotion_report_v1",
+        "generated_at": now_iso(),
+        "mode": "dry-run",
+        "status": status,
+        "report_file": None,
+        "proposal_hash": digest,
+        "confirm_proposal_hash": "",
+        "candidate_count": len(candidates),
+        "selected_count": len(selected),
+        "selected_candidates": selected,
+        "rejected_symbols": rejected,
+        "operator_review_required_candidates": review_rows,
+        "operator_review_plan": operator_review_plan(review_rows, digest),
+        "protected_positions": [],
+        "protection_warnings": [],
+        "validation_reasons": reasons,
+        "applied": False,
+        "apply_result": None,
+        "safety": {
+            "dry_run_by_default": True,
+            "read_only_payload_build": True,
+            "queries_database": False,
+            "requires_confirm_proposal_hash": True,
+            "requires_explicit_symbol_selection": True,
+            "blocks_open_position_symbols_on_apply": True,
+            "backs_up_stocks_before_apply": True,
+            "allowed_actions": sorted(allow_actions),
+            "default_allowed_actions": sorted(SAFE_AUTO_ACTIONS),
+            "manual_review_actions": sorted(MANUAL_REVIEW_ACTIONS),
+            "does_not_submit_orders": True,
+            "does_not_restart_services": True,
+            "does_not_change_watchlists": True,
+            "does_not_change_stock_universe": True,
         },
     }
 
@@ -367,6 +512,15 @@ def build_text_report(payload):
         )
     if payload.get("rejected_symbols"):
         lines.append("Rejected: " + json.dumps(payload["rejected_symbols"], ensure_ascii=False))
+    review_plan = payload.get("operator_review_plan") or {}
+    if review_plan.get("review_required_count"):
+        lines.append(
+            "Operator review required: "
+            + ", ".join(
+                f"{item.get('symbol')}:{item.get('recommended_action')}"
+                for item in (review_plan.get("items") or [])[:30]
+            )
+        )
     if payload.get("apply_result"):
         lines.append("apply_result=" + json.dumps(payload["apply_result"], ensure_ascii=False))
     return "\n".join(lines)
