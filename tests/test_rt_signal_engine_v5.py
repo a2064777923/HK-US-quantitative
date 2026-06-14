@@ -216,10 +216,11 @@ class RtSignalEngineV5Tests(unittest.TestCase):
     def test_volume_score_supports_up_volume_not_down_volume(self):
         up = rt.IncrementalIndicators("AAPL")
         down = rt.IncrementalIndicators("AAPL")
+        wide_neutral_history = [80, 120] * 13 + [100] * 4
         for ind in (up, down):
-            ind.closes = [100] * 30
-            ind.highs = [101] * 30
-            ind.lows = [99] * 30
+            ind.closes = list(wide_neutral_history)
+            ind.highs = [121] * 30
+            ind.lows = [79] * 30
             ind.volumes = [1000] * 30
 
         up.rt_close = 101
@@ -326,6 +327,27 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIn("短均線偏弱", reasons)
         self.assertIn("RSI偏弱(40)", reasons)
         self.assertIn("MACD柱轉負", reasons)
+
+    def test_realtime_bollinger_score_uses_completed_daily_band(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        bollinger_sample = [
+            86.35, 108.36, 112.17, 82.41, 98.14,
+            103.59, 84.52, 113.38, 91.74, 112.78,
+            86.62, 106.89, 111.41, 112.51, 101.92,
+            83.8, 87.46, 105.03, 106.06, 104.14,
+        ]
+        closes = [100] * 10 + bollinger_sample
+        for close in closes:
+            ind._update(close, close + 1, close - 1, 1000)
+
+        completed_upper, completed_lower = rt.completed_bollinger_bands(ind.closes)
+        price = completed_lower - 0.4
+        ind.update_realtime(price, price + 1, price - 1, 0)
+
+        self.assertLessEqual(price, completed_lower)
+        self.assertGreater(price, ind.bb_lower)
+        _score, reasons = ind.get_score({"market": "US", "time": "2026-06-11 10:00:00"})
+        self.assertIn("觸及布林下軌", reasons)
 
     def test_signal_readiness_requires_full_multifactor_history(self):
         indicators = FakeIndicators(score=0.8)
@@ -859,6 +881,42 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         )
 
         self.assertEqual(engine.alerts, [])
+
+    def test_realtime_bollinger_trigger_uses_completed_daily_band(self):
+        engine = rt.TriggerEngine()
+        indicators = rt.IncrementalIndicators("AAPL")
+        bollinger_sample = [
+            86.35, 108.36, 112.17, 82.41, 98.14,
+            103.59, 84.52, 113.38, 91.74, 112.78,
+            86.62, 106.89, 111.41, 112.51, 101.92,
+            83.8, 87.46, 105.03, 106.06, 104.14,
+        ]
+        closes = [100] * 10 + bollinger_sample
+        for close in closes:
+            indicators._update(close, close + 1, close - 1, 1000)
+
+        _completed_upper, completed_lower = rt.completed_bollinger_bands(indicators.closes)
+        price = completed_lower - 0.4
+        indicators.update_realtime(price, price + 1, price - 1, 0)
+
+        self.assertGreater(price, indicators.bb_lower)
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": price,
+                "high": price + 1,
+                "low": price - 1,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        bollinger_alerts = [item for item in engine.alerts if item["trigger"] == "布林下軌突破"]
+        self.assertEqual(len(bollinger_alerts), 1)
+        self.assertIn(f"下軌${completed_lower:.2f}", bollinger_alerts[0]["detail"])
 
     def test_ma5_trigger_uses_latest_historical_close_as_previous_state(self):
         engine = rt.TriggerEngine()

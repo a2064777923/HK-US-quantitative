@@ -748,6 +748,21 @@ def normalize_daily_bar(close, high, low, volume):
         return None
     return close, high, low, volume
 
+def completed_bollinger_bands(closes):
+    if not isinstance(closes, list) or len(closes) < 20:
+        return None, None
+    window = closes[-20:]
+    ma20 = sum(window) / 20
+    std = (sum((x - ma20)**2 for x in window) / 20) ** 0.5
+    return ma20 + 2 * std, ma20 - 2 * std
+
+def signal_bollinger_bands(indicators):
+    if getattr(indicators, "rt_close", None) is not None:
+        upper, lower = completed_bollinger_bands(getattr(indicators, "closes", []))
+        if upper is not None and lower is not None:
+            return upper, lower
+    return getattr(indicators, "bb_upper", None), getattr(indicators, "bb_lower", None)
+
 # ========== 增量指標計算 ==========
 class IncrementalIndicators:
     """每隻股票嘅增量指標 — 只更新最新數據點"""
@@ -1047,10 +1062,11 @@ class IncrementalIndicators:
                 score -= 0.1; reasons.append("MACD柱轉負")
 
         # 布林帶
-        if self.bb_upper and self.bb_lower:
-            if c <= self.bb_lower * 1.02:
+        bb_upper, bb_lower = signal_bollinger_bands(self)
+        if bb_upper and bb_lower:
+            if c <= bb_lower * 1.02:
                 score += 0.3; reasons.append("觸及布林下軌")
-            elif c >= self.bb_upper * 0.98:
+            elif c >= bb_upper * 0.98:
                 score -= 0.2; reasons.append("觸及布林上軌")
 
         # 成交量
@@ -1281,11 +1297,12 @@ class TriggerEngine:
                 triggered.append(("RSI超買", f"RSI={indicators.rsi_14:.0f}", "SELL"))
 
         # 2. 布林帶突破
-        if indicators.bb_upper and indicators.bb_lower:
-            if c <= indicators.bb_lower:
-                triggered.append(("布林下軌突破", f"價格${c} < 下軌${indicators.bb_lower:.2f}", "BUY"))
-            elif c >= indicators.bb_upper:
-                triggered.append(("布林上軌突破", f"價格${c} > 上軌${indicators.bb_upper:.2f}", "SELL"))
+        bb_upper, bb_lower = signal_bollinger_bands(indicators)
+        if bb_upper and bb_lower:
+            if c <= bb_lower:
+                triggered.append(("布林下軌突破", f"價格${c} < 下軌${bb_lower:.2f}", "BUY"))
+            elif c >= bb_upper:
+                triggered.append(("布林上軌突破", f"價格${c} > 上軌${bb_upper:.2f}", "SELL"))
 
         # 3. 均線金叉/死叉
         if indicators.ma5 and indicators.ma10 and len(indicators.closes) >= 5:
