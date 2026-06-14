@@ -2673,6 +2673,39 @@ class HermesReviewPacketTests(unittest.TestCase):
             payload["review_item_suppression"]["recommendations"],
         )
 
+    def test_alert_marked_non_execution_candidate_is_observation_even_if_intake_result_is_inconsistent(self):
+        health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
+        portfolio = {"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []}
+        research = alert("research-shadow")
+        research.update(
+            {
+                "confirmed": False,
+                "execution_candidate": False,
+                "execution_blocked_reasons": ["not_confirmed"],
+                "entry_price": None,
+                "stop_loss": None,
+                "take_profit": None,
+                "rr_ratio": None,
+            }
+        )
+        inconsistent = {
+            "signal_id": "research-shadow",
+            "status": "dry_run",
+            "reasons": [],
+            "plan": {"symbol": "00700"},
+        }
+
+        payload = packet.build_packet(
+            [research],
+            health_payload=health,
+            portfolio_payload=portfolio,
+            intake_results=[inconsistent],
+        )
+
+        self.assertEqual(payload["review_items"], [])
+        self.assertEqual(payload["non_actionable_observation_count"], 1)
+        self.assertEqual(payload["non_actionable_observations"][0]["reason"], "not_execution_candidate")
+
     def test_sell_with_order_plan_remains_trade_review_item(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
         portfolio = {"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []}

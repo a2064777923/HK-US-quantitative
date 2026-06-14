@@ -517,6 +517,8 @@ def review_item(alert, result, health_status):
 def is_non_actionable_observation(alert, result):
     side = str((alert or {}).get("signal_type", "")).upper()
     reasons = set((result or {}).get("reasons") or [])
+    if (alert or {}).get("execution_candidate") is False:
+        return side in ("BUY", "SELL")
     if (result or {}).get("status") != "rejected":
         return False
     if "not_execution_candidate" in reasons:
@@ -529,6 +531,8 @@ def is_non_actionable_observation(alert, result):
 def non_actionable_reason(alert, result):
     side = str((alert or {}).get("signal_type", "")).upper()
     reasons = set((result or {}).get("reasons") or [])
+    if (alert or {}).get("execution_candidate") is False and side in ("BUY", "SELL"):
+        return "not_execution_candidate"
     if "not_execution_candidate" in reasons:
         return "not_execution_candidate"
     if "alert_too_old" in reasons:
