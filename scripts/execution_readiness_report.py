@@ -259,6 +259,8 @@ def judgment_effect_metrics(strategy_learning):
     )
     downgraded_directional_count = int(execution_scope.get("downgraded_directional_count") or 0)
     use_execution_candidate_effect = downgraded_directional_count > 0 and bool(execution_audit_effect)
+    execution_candidate_effect_required = downgraded_directional_count > 0
+    execution_candidate_effect_missing = execution_candidate_effect_required and not execution_audit_effect
     effect = execution_audit_effect if use_execution_candidate_effect else audit_effect or raw_effect
     approved = effect.get("approved_or_reduced") if isinstance(effect.get("approved_or_reduced"), dict) else {}
     rejected = effect.get("rejected_or_held") if isinstance(effect.get("rejected_or_held"), dict) else {}
@@ -266,6 +268,8 @@ def judgment_effect_metrics(strategy_learning):
         "sample_filter": effect.get("sample_filter") or ("judgment_audit_status_PASS" if audit_effect else "raw_judgment_decision"),
         "downgraded_directional_count": downgraded_directional_count,
         "uses_execution_candidate_audit_pass_judgment_effect": use_execution_candidate_effect,
+        "execution_candidate_audit_pass_judgment_effect_required": execution_candidate_effect_required,
+        "execution_candidate_audit_pass_judgment_effect_missing": execution_candidate_effect_missing,
         "uses_audit_pass_judgment_effect": bool(audit_effect),
         "execution_candidate_audit_pass_judgment_effect_present": bool(execution_audit_effect),
         "raw_judgment_effect_present": bool(raw_effect),
@@ -571,7 +575,10 @@ def build_report(
     approved_avg = as_float(hermes_effect.get("approved_avg_signed_return_pct"))
     approved_win = as_float(hermes_effect.get("approved_win_rate_pct"))
     rejected_avg = as_float(hermes_effect.get("rejected_avg_signed_return_pct"))
-    if hermes_effect["approved_resolved_count"] < min_hermes_effect_sample:
+    if hermes_effect.get("execution_candidate_audit_pass_judgment_effect_missing"):
+        hermes_status = "BLOCK"
+        hermes_detail = "diagnostic directional rows exist but executable-only audit-pass Hermes judgment-effect cohort is missing"
+    elif hermes_effect["approved_resolved_count"] < min_hermes_effect_sample:
         hermes_status = "BLOCK"
         hermes_detail = (
             f"Hermes approved/reduced resolved sample {hermes_effect['approved_resolved_count']} "
