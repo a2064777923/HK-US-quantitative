@@ -89,6 +89,29 @@
 | 港股 | 242隻 | 2018-2026 (2000日) |
 | 美股 | 32隻 | 1962-2026 (16000+日) |
 
+### 本地回測數據
+
+Raw K線數據只應保存在本地資料目錄，默認 `/tmp`，不要提交到 GitHub，也不要默認同步到服務器。可重跑入口：
+
+```bash
+APCA_API_KEY_ID=... APCA_API_SECRET_KEY=... \
+python3 scripts/local_backtest_dataset.py --output-dir /tmp --start-date 2021-01-01 --end-date 2026-06-14
+```
+
+輸出文件：
+
+- `/tmp/hk_klines_v2.csv` - `portfolio_backtest_realistic.py` 的港股輸入；
+- `/tmp/us_klines.csv` - `portfolio_backtest_realistic.py` 的美股輸入；
+- `/tmp/all_klines.csv` - `portfolio_backtest_combined.py` 的合併輸入；
+- `/tmp/hk_us_dataset_metadata.json` - 來源、覆蓋、local-only 存儲策略。
+
+US Alpaca 默認使用 `feed=iex`，適合快速基線；需要機構級全市場覆蓋時應使用已授權的 SIP/高質量 vendor feed 並保留 metadata。可選的 US 小時線/分鐘線也應落本地 raw data 目錄，例如：
+
+```bash
+APCA_API_KEY_ID=... APCA_API_SECRET_KEY=... \
+python3 scripts/local_backtest_dataset.py --output-dir /tmp --us-intraday-timeframe 1Hour
+```
+
 ## 🚀 部署
 
 ### 依賴

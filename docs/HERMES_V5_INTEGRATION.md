@@ -3773,6 +3773,7 @@ Server rollout on 2026-06-12:
 
 ## Known Remaining Gaps
 
+- `local_backtest_dataset.py` is now the local-only research data entry point for reproducible HK/US backtests. It writes `/tmp/hk_klines_v2.csv`, `/tmp/us_klines.csv`, `/tmp/all_klines.csv`, and `/tmp/hk_us_dataset_metadata.json` from Tencent HK daily bars plus Alpaca US bars. Raw CSV/bar files are intentionally local-only: do not commit them to GitHub, do not copy them to the production server by default, and do not treat local research data as a live execution gate. Hermes can use the metadata and resulting backtest JSON as research evidence only; this does not change v5 alert generation, order intake, simulation execution, cron wiring, or live data-health authority.
 - v5 still reads history directly through `docker exec psql`; this should eventually move behind a database adapter.
 - v5 watchlists now load from `/root/rt_signal_watchlist.json`, and `universe_rank_report.py` produces a ranked candidate file, but live watchlist promotion is still manual and does not yet include full walk-forward universe validation.
 - The existing v4 cron path still exists. Keep it until Hermes confirms v5 output is reliable enough to become the only signal path.

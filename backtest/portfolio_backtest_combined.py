@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """組合回測 v4 — 每5日掃描一次信號，高效版"""
-import csv, json, statistics
+import csv, json, statistics, sys
 from collections import defaultdict
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 print("載入CSV...", flush=True)
 sd = defaultdict(lambda: {'d':[],'o':[],'h':[],'l':[],'c':[],'v':[]})

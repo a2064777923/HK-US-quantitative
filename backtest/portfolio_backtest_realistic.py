@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """現實版回測：固定本金、固定倉位、不複利、近5年"""
-import csv, json, statistics
+import csv, json, statistics, sys
 from collections import defaultdict
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 print("載入數據...", flush=True)
 sd = defaultdict(lambda: {'d':[],'o':[],'h':[],'l':[],'c':[],'v':[],'m':''})
