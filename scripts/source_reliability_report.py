@@ -487,8 +487,22 @@ def apply_intraday_timeframe_quality(component, payload):
     stale_symbols = int(summary.get("stale_symbol_count") or 0)
     degraded_symbols = int(summary.get("degraded_symbol_count") or 0)
     missing_symbols = int(summary.get("missing_symbol_count") or 0)
+    symbol_count = int(summary.get("symbol_count") or 0)
+    decision_use_counts = summary.get("decision_use_counts") if isinstance(summary.get("decision_use_counts"), dict) else {}
+    soft_confirmation_symbols = int(summary.get("soft_confirmation_eligible_symbol_count") or 0)
+    cap_or_challenge_symbols = int(summary.get("cap_or_challenge_only_symbol_count") or 0)
+    diagnostic_only_symbols = int(summary.get("diagnostic_only_symbol_count") or 0)
+    decision_use_counts_present = any(
+        key in summary
+        for key in (
+            "decision_use_counts",
+            "soft_confirmation_eligible_symbol_count",
+            "cap_or_challenge_only_symbol_count",
+            "diagnostic_only_symbol_count",
+        )
+    )
     component["coverage"] = {
-        "symbol_count": int(summary.get("symbol_count") or 0),
+        "symbol_count": symbol_count,
         "degraded_symbol_count": degraded_symbols,
         "missing_symbol_count": missing_symbols,
         "limited_timeframe_symbol_count": limited_symbols,
@@ -499,6 +513,11 @@ def apply_intraday_timeframe_quality(component, payload):
         "missing_source_granularity_symbol_count": missing_granularity_symbols,
         "closed_symbol_count": closed_symbols,
         "stale_symbol_count": stale_symbols,
+        "decision_use_counts_present": decision_use_counts_present,
+        "decision_use_counts": decision_use_counts,
+        "soft_confirmation_eligible_symbol_count": soft_confirmation_symbols,
+        "cap_or_challenge_only_symbol_count": cap_or_challenge_symbols,
+        "diagnostic_only_symbol_count": diagnostic_only_symbols,
         "timeframes": timeframes,
         "input_file": source.get("input_file"),
         "decision_policy_present": bool(policy),
@@ -542,6 +561,12 @@ def apply_intraday_timeframe_quality(component, payload):
         component["reasons"].append("intraday_timeframe_stale_symbols")
     if degraded_symbols:
         component["reasons"].append("intraday_timeframe_quality_degraded_symbols")
+    if symbol_count and not decision_use_counts_present:
+        component["reasons"].append("intraday_timeframe_decision_use_counts_missing")
+    elif diagnostic_only_symbols:
+        component["reasons"].append("intraday_timeframe_diagnostic_only_symbols")
+    elif symbol_count and soft_confirmation_symbols <= 0:
+        component["reasons"].append("intraday_timeframe_no_soft_confirmation_symbols")
     if any(reason.startswith("intraday_timeframe_") for reason in component["reasons"]):
         component["reliability_status"] = worse_reliability(component["reliability_status"], "DEGRADED")
 
@@ -879,6 +904,12 @@ def build_recommendations(status, components):
                 recs.append("refresh_intraday_timeframe_quality_before_trade_judgment")
             elif reason == "intraday_timeframe_quality_degraded_symbols":
                 recs.append("cap_hermes_confidence_when_intraday_timeframe_quality_is_degraded")
+            elif reason == "intraday_timeframe_decision_use_counts_missing":
+                recs.append("rerun_intraday_timeframe_quality_before_using_decision_use_contract")
+            elif reason == "intraday_timeframe_diagnostic_only_symbols":
+                recs.append("treat_diagnostic_only_intraday_timeframes_as_unavailable_for_confirmation")
+            elif reason == "intraday_timeframe_no_soft_confirmation_symbols":
+                recs.append("do_not_use_intraday_timeframes_to_raise_confidence_without_soft_confirmation_symbols")
             elif reason == "intraday_kline_batch_safety_contract_unsafe":
                 recs.append("disable_or_fix_intraday_kline_batch_before_using_minute_data")
             elif reason == "intraday_kline_batch_unofficial_public_provider":

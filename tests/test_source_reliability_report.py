@@ -101,6 +101,10 @@ def ok_payloads():
                 "missing_source_granularity_symbol_count": 0,
                 "closed_symbol_count": 0,
                 "stale_symbol_count": 0,
+                "decision_use_counts": {"soft_confirmation_eligible": 4},
+                "soft_confirmation_eligible_symbol_count": 4,
+                "cap_or_challenge_only_symbol_count": 0,
+                "diagnostic_only_symbol_count": 0,
                 "timeframes": {
                     "5m": {"ok_symbol_count": 4, "limited_symbol_count": 0, "missing_symbol_count": 0},
                     "15m": {"ok_symbol_count": 4, "limited_symbol_count": 0, "missing_symbol_count": 0},
@@ -473,6 +477,10 @@ class SourceReliabilityReportTests(unittest.TestCase):
                 "missing_source_granularity_symbol_count": 1,
                 "closed_symbol_count": 1,
                 "stale_symbol_count": 0,
+                "decision_use_counts": {"cap_or_challenge_only": 2, "diagnostic_only": 1},
+                "soft_confirmation_eligible_symbol_count": 0,
+                "cap_or_challenge_only_symbol_count": 2,
+                "diagnostic_only_symbol_count": 1,
                 "timeframes": {
                     "30m": {"ok_symbol_count": 1, "limited_symbol_count": 2, "missing_symbol_count": 0},
                     "60m": {"ok_symbol_count": 1, "limited_symbol_count": 1, "missing_symbol_count": 1},
@@ -506,6 +514,10 @@ class SourceReliabilityReportTests(unittest.TestCase):
         self.assertEqual(quality["reliability_status"], "DEGRADED")
         self.assertEqual(quality["coverage"]["limited_timeframe_symbol_count"], 2)
         self.assertEqual(quality["coverage"]["confidence_use"], "cap_or_challenge_only")
+        self.assertTrue(quality["coverage"]["decision_use_counts_present"])
+        self.assertEqual(quality["coverage"]["soft_confirmation_eligible_symbol_count"], 0)
+        self.assertEqual(quality["coverage"]["cap_or_challenge_only_symbol_count"], 2)
+        self.assertEqual(quality["coverage"]["diagnostic_only_symbol_count"], 1)
         self.assertFalse(quality["coverage"]["may_raise_confidence"])
         self.assertFalse(quality["coverage"]["can_override_daily_gates"])
         self.assertFalse(quality["coverage"]["execution_permission"])
@@ -516,9 +528,66 @@ class SourceReliabilityReportTests(unittest.TestCase):
         self.assertIn("intraday_timeframe_snapshot_like_minute_rows", quality["reasons"])
         self.assertIn("intraday_timeframe_source_granularity_missing", quality["reasons"])
         self.assertIn("intraday_timeframe_market_closed", quality["reasons"])
+        self.assertIn("intraday_timeframe_diagnostic_only_symbols", quality["reasons"])
         self.assertIn("do_not_raise_confidence_from_limited_30m_60m_coverage", result["recommendations"])
         self.assertIn("require_hermes_to_discuss_intraday_timeframe_conflicts", result["recommendations"])
         self.assertIn("avoid_using_snapshot_minute_timeframes_as_full_ohlcv_evidence", result["recommendations"])
+        self.assertIn(
+            "treat_diagnostic_only_intraday_timeframes_as_unavailable_for_confirmation",
+            result["recommendations"],
+        )
+
+    def test_intraday_timeframe_missing_decision_use_counts_degrades_source_reliability(self):
+        inputs = ok_payloads()
+        inputs["intraday_timeframe_quality"] = payload(
+            "intraday_timeframe_quality_report_v1",
+            status="OK",
+            summary={
+                "market_count": 1,
+                "symbol_count": 2,
+                "degraded_symbol_count": 0,
+                "missing_symbol_count": 0,
+                "limited_timeframe_symbol_count": 0,
+                "missing_timeframe_symbol_count": 0,
+                "conflict_symbol_count": 0,
+                "low_fidelity_symbol_count": 0,
+                "snapshot_like_symbol_count": 0,
+                "missing_source_granularity_symbol_count": 0,
+                "closed_symbol_count": 0,
+                "stale_symbol_count": 0,
+                "timeframes": {"5m": {"ok_symbol_count": 2}},
+            },
+            source={
+                "read_only": True,
+                "input_file": "/tmp/intraday_context_report.json",
+                "queries_database": False,
+                "submits_orders": False,
+                "writes_database": False,
+                "changes_strategy": False,
+                "changes_crontab": False,
+            },
+            decision_policy={
+                "schema": "intraday_timeframe_decision_policy_v1",
+                "confidence_use": "soft_confirmation_eligible",
+                "may_raise_confidence": False,
+                "requires_forward_evidence_before_confidence_raise": True,
+                "can_override_daily_gates": False,
+                "execution_permission": False,
+                "allowed_effects": ["soft_confirm_signal", "cap_confidence", "challenge_signal"],
+                "reason_codes": [],
+            },
+        )
+
+        result = report.build_report(inputs, now=NOW)
+        quality = [row for row in result["components"] if row["name"] == "intraday_timeframe_quality"][0]
+
+        self.assertEqual(result["status"], "DEGRADED")
+        self.assertFalse(quality["coverage"]["decision_use_counts_present"])
+        self.assertIn("intraday_timeframe_decision_use_counts_missing", quality["reasons"])
+        self.assertIn(
+            "rerun_intraday_timeframe_quality_before_using_decision_use_contract",
+            result["recommendations"],
+        )
 
     def test_intraday_timeframe_unsafe_decision_policy_fails_source_reliability(self):
         inputs = ok_payloads()
