@@ -134,11 +134,16 @@ python3 scripts/v5_local_replay_report.py \
 python3 scripts/v5_replay_strategy_review_report.py \
   --v5-local-replay-file /tmp/v5_local_replay_report.json \
   --output /tmp/v5_replay_strategy_review_report.json --text
+python3 scripts/trigger_evidence_convergence_report.py \
+  --strategy-review-file /tmp/strategy_review_report.json \
+  --v5-replay-strategy-review-file /tmp/v5_replay_strategy_review_report.json \
+  --output /tmp/trigger_evidence_convergence_report.json --text
 ```
 
 這份 replay 也是研究上下文，不是 PnL 回測，不會寫 alert queue、下單、或改生產門檻。
 它還會把 alert 密度、確認率、降級率、同日多 trigger 堆疊，以及按 trigger/market 的噪音分解標成 quality 風險，方便 Hermes 保持批判態度。
 `v5_replay_strategy_review_report.py` 會把 replay 噪音轉成 Hermes 可讀的 trigger policy hints，但仍是 promotion-ineligible research context，不能單獨推送策略配置。
+`trigger_evidence_convergence_report.py` 會把 forward outcome 的 `strategy_review_report.py` 和 replay 噪音對齊，標出收斂風險、衝突和樣本不足；它同樣不輸出可被 promotion 消化的標準 `trigger_policies`。
 
 檢查本地回測與 v5 實時引擎的因子契約是否對齊：
 

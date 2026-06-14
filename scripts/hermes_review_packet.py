@@ -98,6 +98,10 @@ V5_REPLAY_STRATEGY_REVIEW_REPORT_FILE = os.environ.get(
     "V5_REPLAY_STRATEGY_REVIEW_REPORT_FILE",
     "/tmp/v5_replay_strategy_review_report.json",
 )
+TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE = os.environ.get(
+    "TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE",
+    "/tmp/trigger_evidence_convergence_report.json",
+)
 OPERATOR_ACTION_QUEUE_REPORT_FILE = os.environ.get(
     "OPERATOR_ACTION_QUEUE_REPORT_FILE",
     "/tmp/operator_action_queue_report.json",
@@ -2934,6 +2938,62 @@ def v5_replay_strategy_review_brief(v5_replay_strategy_review_payload):
     }
 
 
+def trigger_evidence_convergence_brief(trigger_evidence_convergence_payload):
+    payload = trigger_evidence_convergence_payload if isinstance(trigger_evidence_convergence_payload, dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    operator_contract = (
+        payload.get("operator_contract") if isinstance(payload.get("operator_contract"), dict) else {}
+    )
+    rows = payload.get("trigger_evidence") if isinstance(payload.get("trigger_evidence"), list) else []
+    checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
+    warn_or_fail = [item for item in checks if isinstance(item, dict) and item.get("status") in ("WARN", "FAIL")]
+    return {
+        "read_only": True,
+        "submits_orders": False,
+        "changes_strategy_config": False,
+        "schema": payload.get("schema") or "trigger_evidence_convergence_report_v1",
+        "status": summary.get("status") or "MISSING",
+        "promotion_ready": summary.get("promotion_ready"),
+        "promotion_eligible": summary.get("promotion_eligible"),
+        "counts": {
+            "trigger_count": summary.get("trigger_count"),
+            "status_counts": summary.get("status_counts") or {},
+            "confidence_counts": summary.get("confidence_counts") or {},
+            "converged_risk_count": summary.get("converged_risk_count"),
+            "replay_challenges_forward_count": summary.get("replay_challenges_forward_count"),
+            "insufficient_forward_sample_count": summary.get("insufficient_forward_sample_count"),
+        },
+        "top_trigger_evidence": [
+            {
+                "key": row.get("key"),
+                "status": row.get("status"),
+                "confidence": row.get("confidence"),
+                "reasons": row.get("reasons") or [],
+                "forward_policy": (row.get("forward") or {}).get("policy"),
+                "replay_policy": (row.get("replay") or {}).get("policy"),
+                "forward_metrics": (row.get("forward") or {}).get("metrics") or {},
+                "replay_metrics": (row.get("replay") or {}).get("metrics") or {},
+            }
+            for row in rows[:8]
+            if isinstance(row, dict)
+        ],
+        "operator_contract": {
+            "read_only": operator_contract.get("read_only", True),
+            "submits_orders": operator_contract.get("submits_orders", False),
+            "writes_alert_queue": operator_contract.get("writes_alert_queue", False),
+            "changes_strategy_config": operator_contract.get("changes_strategy_config", False),
+            "changes_execution_mode": operator_contract.get("changes_execution_mode", False),
+            "promotion_eligible": operator_contract.get("promotion_eligible", False),
+        },
+        "warn_or_fail_checks": [
+            {"code": item.get("code"), "status": item.get("status"), "detail": item.get("detail")}
+            for item in warn_or_fail[:8]
+        ],
+        "recommendations": (payload.get("recommendations") or [])[:10],
+        "hermes_note": "Use convergence as compact cross-evidence context; it is not an execution or promotion command.",
+    }
+
+
 def number_or_none(value):
     try:
         if value in (None, ""):
@@ -3021,6 +3081,7 @@ def strategy_learning_brief(
     factor_contract_alignment_payload=None,
     v5_local_replay_payload=None,
     v5_replay_strategy_review_payload=None,
+    trigger_evidence_convergence_payload=None,
 ):
     payload = strategy_learning_payload if isinstance(strategy_learning_payload, dict) else {}
     watchlist_diff_payload = watchlist_diff_payload if isinstance(watchlist_diff_payload, dict) else {}
@@ -3269,6 +3330,7 @@ def strategy_learning_brief(
         "factor_contract_alignment": factor_contract_alignment_brief(factor_contract_alignment_payload),
         "v5_local_replay": v5_local_replay_brief(v5_local_replay_payload),
         "v5_replay_strategy_review": v5_replay_strategy_review_brief(v5_replay_strategy_review_payload),
+        "trigger_evidence_convergence": trigger_evidence_convergence_brief(trigger_evidence_convergence_payload),
         "context_review_effect": {
             "quality": {
                 "approved_or_reduced_count": context_review_quality.get("approved_or_reduced_count"),
@@ -3321,6 +3383,7 @@ def strategy_learning_brief(
             "Use intraday_signal_alignment as read-only learning evidence; daily K-lines remain the forward-return authority.",
             "Use v5_local_replay as read-only replay context for v5 trigger, confirmation, WATCH downgrade, and risk-geometry distributions; it is not PnL evidence or execution permission.",
             "Use v5_replay_strategy_review as replay-derived challenge context only; it is not forward-outcome evidence and cannot promote config by itself.",
+            "Use trigger_evidence_convergence to compare forward outcome policy with replay noise; conflicts should cap confidence until resolved.",
             "Treat sizing blocker remediation as manual watchlist proposal context only; do not apply or restart services from this packet.",
         ],
     }
@@ -3444,6 +3507,7 @@ def build_packet(
     factor_contract_alignment_payload=None,
     v5_local_replay_payload=None,
     v5_replay_strategy_review_payload=None,
+    trigger_evidence_convergence_payload=None,
     execution_readiness_payload=None,
     simulation_performance_payload=None,
     external_market_context_payload=None,
@@ -3530,6 +3594,8 @@ def build_packet(
         v5_local_replay_payload = load_json_file(V5_LOCAL_REPLAY_REPORT_FILE)
     if v5_replay_strategy_review_payload is None:
         v5_replay_strategy_review_payload = load_json_file(V5_REPLAY_STRATEGY_REVIEW_REPORT_FILE)
+    if trigger_evidence_convergence_payload is None:
+        trigger_evidence_convergence_payload = load_json_file(TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE)
     if execution_readiness_payload is None:
         execution_readiness_payload = load_json_file(EXECUTION_READINESS_REPORT_FILE)
     if simulation_performance_payload is None:
@@ -3675,11 +3741,13 @@ def build_packet(
             factor_contract_alignment_payload,
             v5_local_replay_payload,
             v5_replay_strategy_review_payload,
+            trigger_evidence_convergence_payload,
         ),
         "local_backtest_reliability": local_backtest_reliability_payload,
         "factor_contract_alignment": factor_contract_alignment_payload,
         "v5_local_replay": v5_local_replay_payload,
         "v5_replay_strategy_review": v5_replay_strategy_review_payload,
+        "trigger_evidence_convergence": trigger_evidence_convergence_payload,
         "simulation_trade_review_brief": simulation_trade_review_brief(portfolio_payload),
         "execution_readiness": execution_readiness_payload,
         "simulation_performance": simulation_performance_payload,
@@ -3794,6 +3862,7 @@ def parse_args():
     parser.add_argument("--factor-contract-alignment-file", default=FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE)
     parser.add_argument("--v5-local-replay-file", default=V5_LOCAL_REPLAY_REPORT_FILE)
     parser.add_argument("--v5-replay-strategy-review-file", default=V5_REPLAY_STRATEGY_REVIEW_REPORT_FILE)
+    parser.add_argument("--trigger-evidence-convergence-file", default=TRIGGER_EVIDENCE_CONVERGENCE_REPORT_FILE)
     parser.add_argument("--simulation-performance-file", default=SIMULATION_PERFORMANCE_REPORT_FILE)
     parser.add_argument("--external-market-context-file", default=EXTERNAL_MARKET_CONTEXT_FILE)
     parser.add_argument("--event-catalyst-file", default=EVENT_CATALYST_REPORT_FILE)
@@ -3889,6 +3958,7 @@ def main():
         factor_contract_alignment_payload=load_json_file(args.factor_contract_alignment_file),
         v5_local_replay_payload=load_json_file(args.v5_local_replay_file),
         v5_replay_strategy_review_payload=load_json_file(args.v5_replay_strategy_review_file),
+        trigger_evidence_convergence_payload=load_json_file(args.trigger_evidence_convergence_file),
         execution_readiness_payload=load_json_file(args.execution_readiness_file),
         simulation_performance_payload=load_json_file(args.simulation_performance_file),
         external_market_context_payload=load_json_file(args.external_market_context_file),

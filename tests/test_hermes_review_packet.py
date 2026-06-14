@@ -319,6 +319,50 @@ def v5_replay_strategy_review():
     }
 
 
+def trigger_evidence_convergence():
+    return {
+        "schema": "trigger_evidence_convergence_report_v1",
+        "generated_at": "2026-06-14T14:20:00",
+        "summary": {
+            "status": "REVIEW_REQUIRED",
+            "promotion_ready": False,
+            "promotion_eligible": False,
+            "trigger_count": 2,
+            "status_counts": {"CONVERGED_RISK": 1, "REPLAY_CHALLENGES_FORWARD": 1},
+            "confidence_counts": {"HIGH": 1, "MEDIUM": 1},
+            "converged_risk_count": 1,
+            "replay_challenges_forward_count": 1,
+            "insufficient_forward_sample_count": 0,
+        },
+        "operator_contract": {
+            "read_only": True,
+            "submits_orders": False,
+            "writes_alert_queue": False,
+            "changes_strategy_config": False,
+            "changes_execution_mode": False,
+            "promotion_eligible": False,
+        },
+        "trigger_evidence": [
+            {
+                "key": "BUY:站上MA5",
+                "status": "CONVERGED_RISK",
+                "confidence": "HIGH",
+                "reasons": ["forward_and_replay_both_flag_trigger_risk"],
+                "forward": {
+                    "policy": "tighten_thresholds",
+                    "metrics": {"resolved_count": 18, "avg_signed_close_return_pct": -0.2},
+                },
+                "replay": {
+                    "policy": "tighten_thresholds",
+                    "metrics": {"alert_count": 120, "execution_candidate_rate_per_100_bars": 3.0},
+                },
+            }
+        ],
+        "checks": [],
+        "recommendations": ["prioritize_trigger_rework_or_threshold_review:BUY:站上MA5"],
+    }
+
+
 def watch_alert(signal_id="watch-1"):
     item = alert(signal_id)
     item["signal_type"] = "WATCH"
@@ -1017,6 +1061,7 @@ class HermesReviewPacketTests(unittest.TestCase):
             factor_contract_alignment_payload=factor_contract_alignment(),
             v5_local_replay_payload=v5_local_replay(),
             v5_replay_strategy_review_payload=v5_replay_strategy_review(),
+            trigger_evidence_convergence_payload=trigger_evidence_convergence(),
         )
 
         self.assertEqual(payload["schema"], "hermes_signal_review_packet_v1")
@@ -1052,6 +1097,12 @@ class HermesReviewPacketTests(unittest.TestCase):
                 "tighten_thresholds_count"
             ],
             2,
+        )
+        self.assertEqual(payload["trigger_evidence_convergence"]["schema"], "trigger_evidence_convergence_report_v1")
+        self.assertFalse(payload["trigger_evidence_convergence"]["operator_contract"]["changes_strategy_config"])
+        self.assertEqual(
+            payload["strategy_learning_brief"]["trigger_evidence_convergence"]["counts"]["converged_risk_count"],
+            1,
         )
         self.assertEqual(payload["trusted_source_preflight"]["schema"], "trusted_source_preflight_report_v1")
         self.assertEqual(payload["trusted_source_preflight"]["status"], "WARN")
@@ -2890,6 +2941,7 @@ class HermesReviewPacketTests(unittest.TestCase):
             factor_contract_alignment_payload=factor_contract_alignment(),
             v5_local_replay_payload=v5_local_replay(),
             v5_replay_strategy_review_payload=v5_replay_strategy_review(),
+            trigger_evidence_convergence_payload=trigger_evidence_convergence(),
         )
 
         local = brief["local_backtest_reliability"]
@@ -2931,6 +2983,13 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(replay_strategy["policy_counts"]["tighten_thresholds_count"], 2)
         self.assertEqual(replay_strategy["top_strategy_trigger_policies"][0]["strategy_key"], "BUY:站上MA5")
         self.assertFalse(replay_strategy["operator_contract"]["promotion_eligible"])
+        convergence = brief["trigger_evidence_convergence"]
+        self.assertTrue(convergence["read_only"])
+        self.assertFalse(convergence["submits_orders"])
+        self.assertFalse(convergence["changes_strategy_config"])
+        self.assertEqual(convergence["status"], "REVIEW_REQUIRED")
+        self.assertEqual(convergence["counts"]["converged_risk_count"], 1)
+        self.assertEqual(convergence["top_trigger_evidence"][0]["key"], "BUY:站上MA5")
 
         missing = packet.strategy_learning_brief({})["local_backtest_reliability"]
         self.assertEqual(missing["status"], "MISSING")
@@ -2950,6 +3009,11 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertTrue(missing_replay_strategy["read_only"])
         self.assertFalse(missing_replay_strategy["submits_orders"])
         self.assertFalse(missing_replay_strategy["changes_strategy_config"])
+        missing_convergence = packet.strategy_learning_brief({})["trigger_evidence_convergence"]
+        self.assertEqual(missing_convergence["status"], "MISSING")
+        self.assertTrue(missing_convergence["read_only"])
+        self.assertFalse(missing_convergence["submits_orders"])
+        self.assertFalse(missing_convergence["changes_strategy_config"])
 
     def test_health_fail_forces_reject_or_hold_even_when_intake_has_plan(self):
         health = {"status": "FAIL", "checked_at": "2026-06-12T10:01:00", "checks": []}
