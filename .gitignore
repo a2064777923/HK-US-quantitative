@@ -39,3 +39,25 @@ config/.env
 /tmp/
 *.tmp
 *.bak
+
+# Local raw market data / research data lake (never commit)
+/data/
+/datasets/
+/local_data/
+/raw_data/
+/market_data/
+/data_lake/
+/intraday_data/
+*.parquet
+*.feather
+*.arrow
+*.duckdb
+*.sqlite
+*.sqlite3
+*.db
+*klines*.csv
+*bars*.csv
+!tests/**/*.csv
+!tests/**/*.db
+!tests/**/*.sqlite
+!tests/**/*.sqlite3

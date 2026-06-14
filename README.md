@@ -112,6 +112,14 @@ APCA_API_KEY_ID=... APCA_API_SECRET_KEY=... \
 python3 scripts/local_backtest_dataset.py --output-dir /tmp --us-intraday-timeframe 1Hour
 ```
 
+本地 raw data lake 可以盡量做廣、做細，例如保存更多股票池、分鐘線、小時線、第三方 vendor 原始快照和 provider metadata。這些數據的價值是「可重播、可審計、可重新做特徵」，不是直接進 production。默認接入邊界：
+
+- 原始大文件只放本地資料目錄，例如 `/tmp`、`/data`、`/market_data` 或外接磁碟；
+- 不提交 GitHub，不默認同步到服務器，不放進 cron 自動產物；
+- 只把小型 metadata、coverage、freshness、gap、source reliability、replay/quality report 給 Hermes；
+- v5、Hermes、模擬交易和 operator queue 只能消費通過質量門檻的摘要或特徵，不直接依賴未驗證 raw minute/hour bars；
+- 若之後要把某個高粒度數據源提升到服務器，應先提供來源授權、時間戳/時區規則、復權規則、缺口處理、延遲 SLA、存儲容量預估和回滾方案。
+
 把本地數據和回測結果整理成可靠性報告：
 
 ```bash
