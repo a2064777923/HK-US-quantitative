@@ -1644,7 +1644,7 @@ def send_alert(alerts):
 
     tmp = ALERT_FILE + ".tmp"
     try:
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(latest_payload)
         os.replace(tmp, ALERT_FILE)
     except Exception:

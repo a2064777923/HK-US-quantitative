@@ -682,7 +682,13 @@ class RtSignalEngineV5Tests(unittest.TestCase):
 
     def test_send_alert_writes_latest_file_and_append_only_queue(self):
         alerts = [
-            {"signal_id": "a1", "symbol": "00700", "signal_type": "BUY"},
+            {
+                "signal_id": "a1",
+                "symbol": "00700",
+                "signal_type": "BUY",
+                "trigger": "站上MA5",
+                "full_reasons": ["多頭排列", "放量上漲2.1倍"],
+            },
             {"signal_id": "a2", "symbol": "AAPL", "signal_type": "SELL"},
         ]
         with tempfile.TemporaryDirectory() as td:
