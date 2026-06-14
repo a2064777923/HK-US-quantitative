@@ -78,6 +78,9 @@ class V5LocalReplayReportTests(unittest.TestCase):
             self.assertFalse(payload["source"]["submits_orders"])
             self.assertEqual(payload["summary"]["symbol_count"], 2)
             self.assertGreater(payload["summary"]["evaluated_bars"], 0)
+            self.assertEqual(payload["replay_quality"]["schema"], "v5_local_replay_quality_v1")
+            self.assertIn(payload["replay_quality"]["status"], {"OK", "WARN"})
+            self.assertIn("alert_rate_per_100_bars", payload["replay_quality"]["metrics"])
             self.assertEqual(payload["storage_policy"]["commit_raw_csv_to_git"], False)
             self.assertEqual(payload["hermes_contract"]["contract"], "v5_replay_research_context_only")
             self.assertIn(
@@ -93,7 +96,36 @@ class V5LocalReplayReportTests(unittest.TestCase):
 
             self.assertEqual(payload["summary"]["overall_status"], "INSUFFICIENT_REPLAY_DATA")
             self.assertIn("us_csv_missing", [item["code"] for item in payload["checks"]])
+            self.assertEqual(payload["replay_quality"]["status"], "FAIL")
+            self.assertIn("replay_quality_no_evaluated_bars", [item["code"] for item in payload["checks"]])
             self.assertFalse(payload["summary"]["promotion_ready"])
+
+    def test_replay_quality_flags_high_noise_metrics(self):
+        alert_summary = {
+            "alert_count": 80,
+            "execution_candidate_count": 20,
+            "confirmed_directional_count": 20,
+            "downgraded_directional_count": 65,
+            "by_candidate_signal_type": {"BUY": 40, "SELL": 40},
+            "by_trigger": {"站上MA5": 50},
+            "alerted_symbol_day_count": 50,
+            "multi_alert_symbol_day_count": 25,
+            "max_alerts_per_symbol_day": 4,
+            "avg_alerts_per_alerted_symbol_day": 1.6,
+        }
+
+        quality = report.replay_quality_assessment(100, 2, alert_summary)
+
+        self.assertEqual(quality["status"], "WARN")
+        codes = [item["code"] for item in quality["checks"]]
+        self.assertIn("replay_alert_density_high", codes)
+        self.assertIn("execution_candidate_density_high", codes)
+        self.assertIn("directional_confirmation_ratio_low", codes)
+        self.assertIn("directional_downgrade_ratio_high", codes)
+        self.assertIn("multi_trigger_symbol_day_ratio_high", codes)
+        self.assertEqual(quality["thresholds"]["alert_density_warn_per_100_bars"], 50.0)
+        self.assertEqual(quality["metrics"]["alert_rate_per_100_bars"], 80.0)
+        self.assertEqual(quality["metrics"]["directional_confirmation_ratio_pct"], 25.0)
 
     def test_main_writes_report_and_text_mode(self):
         with tempfile.TemporaryDirectory() as tmp:

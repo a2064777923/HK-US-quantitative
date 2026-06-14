@@ -198,6 +198,18 @@ def v5_local_replay(status="V5_REPLAY_RESEARCH_ONLY", promotion_ready=False):
             "execution_blocked_reason_counts": {"not_confirmed": 90},
             "risk_geometry_reason_counts": {"missing_or_invalid_atr": 12},
         },
+        "replay_quality": {
+            "schema": "v5_local_replay_quality_v1",
+            "status": "WARN",
+            "metrics": {
+                "alert_rate_per_100_bars": 66.76,
+                "execution_candidate_rate_per_100_bars": 14.34,
+                "directional_confirmation_ratio_pct": 25.4,
+                "directional_downgrade_ratio_pct": 74.6,
+                "multi_alert_symbol_day_ratio_pct": 42.0,
+                "top_trigger": {"trigger": "站上MA5", "count": 100, "pct_of_alerts": 20.0},
+            },
+        },
         "checks": [
             {
                 "status": "WARN",
@@ -1086,6 +1098,7 @@ class HermesReviewPacketTests(unittest.TestCase):
             payload["strategy_learning_brief"]["v5_local_replay"]["status"],
             "V5_REPLAY_RESEARCH_ONLY",
         )
+        self.assertEqual(payload["strategy_learning_brief"]["v5_local_replay"]["quality"]["status"], "WARN")
         self.assertFalse(payload["strategy_learning_brief"]["v5_local_replay"]["promotion_ready"])
         self.assertEqual(
             payload["local_backtest_reliability"]["summary"]["best_backtest_by_sharpe"],
@@ -2792,6 +2805,10 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(replay["hermes_use"], "v5_replay_research_context_only")
         self.assertEqual(replay["scope"]["symbol_count"], 95)
         self.assertEqual(replay["alerts"]["execution_candidate_count"], 37)
+        self.assertEqual(replay["quality"]["status"], "WARN")
+        self.assertEqual(replay["quality"]["alert_rate_per_100_bars"], 66.76)
+        self.assertEqual(replay["quality"]["directional_confirmation_ratio_pct"], 25.4)
+        self.assertEqual(replay["quality"]["directional_downgrade_ratio_pct"], 74.6)
         self.assertFalse(replay["promotion_ready"])
         self.assertTrue(replay["storage_policy"]["raw_data_local_only"])
 

@@ -26,6 +26,11 @@ DEFAULT_US_CSV = os.environ.get("V5_LOCAL_REPLAY_US_CSV", os.path.join(DEFAULT_D
 DEFAULT_OUTPUT_FILE = os.environ.get("V5_LOCAL_REPLAY_REPORT_FILE", "/tmp/v5_local_replay_report.json")
 DEFAULT_MIN_HISTORY_BARS = v5.MIN_SIGNAL_HISTORY_BARS
 DEFAULT_ALERT_SAMPLE_LIMIT = 50
+ALERT_DENSITY_WARN_PER_100_BARS = 50.0
+EXECUTION_DENSITY_WARN_PER_100_BARS = 10.0
+DIRECTIONAL_CONFIRMATION_MIN_WARN_PCT = 35.0
+DIRECTIONAL_DOWNGRADE_WARN_PCT = 60.0
+MULTI_TRIGGER_SYMBOL_DAY_WARN_PCT = 30.0
 
 STATUS_RANK = {"OK": 0, "INFO": 0, "WARN": 1, "FAIL": 2}
 
@@ -215,6 +220,14 @@ def distribution(values):
     }
 
 
+def ratio_pct(numerator, denominator):
+    numerator = as_float(numerator, 0) or 0
+    denominator = as_float(denominator, 0) or 0
+    if denominator <= 0:
+        return None
+    return round(numerator / denominator * 100.0, 2)
+
+
 def alert_sample(alert, replay_date):
     return {
         "signal_id": alert.get("signal_id"),
@@ -305,6 +318,7 @@ def summarize_alerts(symbol_reports, alert_sample_limit=DEFAULT_ALERT_SAMPLE_LIM
     confirmed_directional_count = 0
     downgraded_directional_count = 0
     alert_count = 0
+    symbol_day_alert_counts = Counter()
     for report in symbol_reports:
         for replay_date, alert in report.get("alerts") or []:
             alert_count += 1
@@ -314,6 +328,12 @@ def summarize_alerts(symbol_reports, alert_sample_limit=DEFAULT_ALERT_SAMPLE_LIM
             by_candidate_signal_type[candidate_signal_type] += 1
             by_trigger[str(alert.get("trigger") or "UNKNOWN")] += 1
             by_market[str(alert.get("market") or report.get("market") or "UNKNOWN")] += 1
+            symbol_day_key = (
+                str(alert.get("market") or report.get("market") or "UNKNOWN"),
+                str(alert.get("symbol") or report.get("symbol") or "UNKNOWN"),
+                str(replay_date or ""),
+            )
+            symbol_day_alert_counts[symbol_day_key] += 1
             if alert.get("execution_candidate") is True:
                 execution_candidate_count += 1
             if candidate_signal_type in ("BUY", "SELL") and alert.get("confirmed") is True:
@@ -328,6 +348,7 @@ def summarize_alerts(symbol_reports, alert_sample_limit=DEFAULT_ALERT_SAMPLE_LIM
                 suppressed_reasons[str(alert.get("suppressed_directional_reason"))] += 1
             if len(samples) < alert_sample_limit:
                 samples.append(alert_sample(alert, replay_date))
+    multi_alert_symbol_days = [count for count in symbol_day_alert_counts.values() if count > 1]
     return {
         "alert_count": alert_count,
         "execution_candidate_count": execution_candidate_count,
@@ -340,7 +361,150 @@ def summarize_alerts(symbol_reports, alert_sample_limit=DEFAULT_ALERT_SAMPLE_LIM
         "execution_blocked_reason_counts": dict(execution_blocked_reasons.most_common()),
         "risk_geometry_reason_counts": dict(risk_geometry_reasons.most_common()),
         "suppressed_directional_reason_counts": dict(suppressed_reasons.most_common()),
+        "alerted_symbol_day_count": len(symbol_day_alert_counts),
+        "multi_alert_symbol_day_count": len(multi_alert_symbol_days),
+        "max_alerts_per_symbol_day": max(symbol_day_alert_counts.values()) if symbol_day_alert_counts else 0,
+        "avg_alerts_per_alerted_symbol_day": round(alert_count / len(symbol_day_alert_counts), 4)
+        if symbol_day_alert_counts
+        else None,
         "sample_alerts": samples,
+    }
+
+
+def replay_quality_assessment(evaluated_bars, symbol_count, alert_summary):
+    alert_summary = alert_summary if isinstance(alert_summary, dict) else {}
+    candidate_counts = alert_summary.get("by_candidate_signal_type") or {}
+    directional_candidate_count = (candidate_counts.get("BUY") or 0) + (candidate_counts.get("SELL") or 0)
+    alert_count = alert_summary.get("alert_count") or 0
+    execution_candidate_count = alert_summary.get("execution_candidate_count") or 0
+    confirmed_directional_count = alert_summary.get("confirmed_directional_count") or 0
+    downgraded_directional_count = alert_summary.get("downgraded_directional_count") or 0
+    alerted_symbol_day_count = alert_summary.get("alerted_symbol_day_count") or 0
+    multi_alert_symbol_day_count = alert_summary.get("multi_alert_symbol_day_count") or 0
+    top_trigger = None
+    by_trigger = alert_summary.get("by_trigger") or {}
+    if by_trigger:
+        trigger, count = next(iter(by_trigger.items()))
+        top_trigger = {
+            "trigger": trigger,
+            "count": count,
+            "pct_of_alerts": ratio_pct(count, alert_count),
+        }
+    metrics = {
+        "evaluated_bars": evaluated_bars,
+        "symbol_count": symbol_count,
+        "alert_rate_per_100_bars": ratio_pct(alert_count, evaluated_bars),
+        "execution_candidate_rate_per_100_bars": ratio_pct(execution_candidate_count, evaluated_bars),
+        "directional_candidate_count": directional_candidate_count,
+        "directional_confirmation_ratio_pct": ratio_pct(confirmed_directional_count, directional_candidate_count),
+        "directional_downgrade_ratio_pct": ratio_pct(downgraded_directional_count, directional_candidate_count),
+        "execution_candidate_ratio_pct": ratio_pct(execution_candidate_count, directional_candidate_count),
+        "alerted_symbol_day_count": alerted_symbol_day_count,
+        "multi_alert_symbol_day_count": multi_alert_symbol_day_count,
+        "multi_alert_symbol_day_ratio_pct": ratio_pct(multi_alert_symbol_day_count, alerted_symbol_day_count),
+        "max_alerts_per_symbol_day": alert_summary.get("max_alerts_per_symbol_day"),
+        "avg_alerts_per_alerted_symbol_day": alert_summary.get("avg_alerts_per_alerted_symbol_day"),
+        "top_trigger": top_trigger,
+    }
+    checks = []
+    if evaluated_bars <= 0:
+        checks.append(check("FAIL", "replay_quality_no_evaluated_bars", "No evaluated bars are available for replay quality assessment."))
+    else:
+        alert_rate = metrics["alert_rate_per_100_bars"]
+        if alert_rate is not None and alert_rate > ALERT_DENSITY_WARN_PER_100_BARS:
+            checks.append(
+                check(
+                    "WARN",
+                    "replay_alert_density_high",
+                    "v5 replay emits alerts on a large share of evaluated symbol-days; treat this as a noise-control issue before promotion.",
+                    {"alert_rate_per_100_bars": alert_rate},
+                )
+            )
+        else:
+            checks.append(
+                check(
+                    "OK",
+                    "replay_alert_density_not_high",
+                    "Replay alert density is not high under the current warning threshold.",
+                    {"alert_rate_per_100_bars": alert_rate},
+                )
+            )
+
+        execution_rate = metrics["execution_candidate_rate_per_100_bars"]
+        if execution_rate is not None and execution_rate > EXECUTION_DENSITY_WARN_PER_100_BARS:
+            checks.append(
+                check(
+                    "WARN",
+                    "execution_candidate_density_high",
+                    "v5 replay emits executable candidates too frequently for this to support promotion without further outcome and cost validation.",
+                    {"execution_candidate_rate_per_100_bars": execution_rate},
+                )
+            )
+
+        downgrade_ratio = metrics["directional_downgrade_ratio_pct"]
+        confirmation_ratio = metrics["directional_confirmation_ratio_pct"]
+        if (
+            confirmation_ratio is not None
+            and confirmation_ratio < DIRECTIONAL_CONFIRMATION_MIN_WARN_PCT
+            and directional_candidate_count > 0
+        ):
+            checks.append(
+                check(
+                    "WARN",
+                    "directional_confirmation_ratio_low",
+                    "Only a minority of directional trigger candidates pass full-score confirmation; use replay as trigger-noise evidence, not promotion support.",
+                    {"directional_confirmation_ratio_pct": confirmation_ratio},
+                )
+            )
+
+        if downgrade_ratio is not None and downgrade_ratio > DIRECTIONAL_DOWNGRADE_WARN_PCT:
+            checks.append(
+                check(
+                    "WARN",
+                    "directional_downgrade_ratio_high",
+                    "Most directional trigger candidates are downgraded to WATCH; the trigger layer is noisy relative to the full-score confirmation layer.",
+                    {"directional_downgrade_ratio_pct": downgrade_ratio},
+                )
+            )
+
+        multi_alert_ratio = metrics["multi_alert_symbol_day_ratio_pct"]
+        if multi_alert_ratio is not None and multi_alert_ratio > MULTI_TRIGGER_SYMBOL_DAY_WARN_PCT:
+            checks.append(
+                check(
+                    "WARN",
+                    "multi_trigger_symbol_day_ratio_high",
+                    "Many alerted symbol-days emit more than one trigger; Hermes should treat repeated same-day triggers as correlated evidence, not independent confirmation.",
+                    {"multi_alert_symbol_day_ratio_pct": multi_alert_ratio},
+                )
+            )
+
+        if execution_candidate_count <= 0:
+            checks.append(
+                check(
+                    "INFO",
+                    "no_execution_candidates_in_replay",
+                    "Replay emitted no execution candidates in this scope; useful for diagnostics but not execution evidence.",
+                )
+            )
+
+    status = worst_status([item["status"] for item in checks]) if checks else "OK"
+    return {
+        "schema": "v5_local_replay_quality_v1",
+        "status": status,
+        "thresholds": {
+            "alert_density_warn_per_100_bars": ALERT_DENSITY_WARN_PER_100_BARS,
+            "execution_density_warn_per_100_bars": EXECUTION_DENSITY_WARN_PER_100_BARS,
+            "directional_confirmation_min_warn_pct": DIRECTIONAL_CONFIRMATION_MIN_WARN_PCT,
+            "directional_downgrade_warn_pct": DIRECTIONAL_DOWNGRADE_WARN_PCT,
+            "multi_trigger_symbol_day_warn_pct": MULTI_TRIGGER_SYMBOL_DAY_WARN_PCT,
+        },
+        "metrics": metrics,
+        "checks": checks,
+        "hermes_use": [
+            "Use replay_quality to cap confidence when alert density, execution-candidate density, downgrade ratio, or same-day trigger stacking is high.",
+            "Do not treat multiple same-symbol same-day replay triggers as independent evidence.",
+            "Promotion still requires forward outcome, simulation, cost, and source-quality validation.",
+        ],
     }
 
 
@@ -425,12 +589,14 @@ def build_report(args):
     for report in symbol_reports:
         score_values.extend(report.get("score_values") or [])
     alert_summary = summarize_alerts(symbol_reports, alert_sample_limit=args.alert_sample_limit)
+    replay_quality = replay_quality_assessment(evaluated_bars, len(symbol_reports), alert_summary)
     checks = data_checks(
         {market: source for market, source in (("HK", hk_source), ("US", us_source)) if market in selected_markets},
         total_rows,
         len(symbol_reports),
     )
     checks.extend(replay_checks(evaluated_bars, alert_summary, args.respect_cooldown))
+    checks.extend(replay_quality.get("checks") or [])
     check_status = worst_status([item["status"] for item in checks])
     overall_status = "INSUFFICIENT_REPLAY_DATA" if check_status == "FAIL" else "V5_REPLAY_RESEARCH_ONLY"
 
@@ -469,6 +635,7 @@ def build_report(args):
             "alert_count": alert_summary["alert_count"],
             "execution_candidate_count": alert_summary["execution_candidate_count"],
             "downgraded_directional_count": alert_summary["downgraded_directional_count"],
+            "replay_quality_status": replay_quality["status"],
             "message": "v5 replay evidence is useful for trigger/confirmation/risk distribution review, not for execution approval or profitability claims.",
         },
         "replay_contract": {
@@ -492,6 +659,7 @@ def build_report(args):
         },
         "inputs": {"HK": hk_source, "US": us_source},
         "alert_summary": alert_summary,
+        "replay_quality": replay_quality,
         "score_summary": distribution(score_values),
         "symbols": [
             {
@@ -519,6 +687,7 @@ def build_report(args):
             "contract": "v5_replay_research_context_only",
             "allowed_use": [
                 "compare v5 trigger, confirmation, WATCH downgrade, and risk-geometry distributions",
+                "flag high replay alert density, high downgrade ratio, or same-day trigger stacking before promotion",
                 "identify noisy triggers or repeated downgrade reasons before strategy promotion",
                 "support or challenge research hypotheses alongside local backtest reliability and factor alignment",
             ],
@@ -549,6 +718,16 @@ def text_report(payload):
             f"downgraded_directionals={alerts.get('downgraded_directional_count')}"
         ),
     ]
+    quality = payload.get("replay_quality") or {}
+    metrics = quality.get("metrics") or {}
+    lines.append(
+        "Quality: "
+        f"status={quality.get('status')} "
+        f"alert_rate_per_100={metrics.get('alert_rate_per_100_bars')} "
+        f"execution_rate_per_100={metrics.get('execution_candidate_rate_per_100_bars')} "
+        f"confirmation_ratio={metrics.get('directional_confirmation_ratio_pct')} "
+        f"downgrade_ratio={metrics.get('directional_downgrade_ratio_pct')}"
+    )
     if alerts.get("by_candidate_signal_type"):
         lines.append(f"Candidate types: {alerts.get('by_candidate_signal_type')}")
     warnings = [item.get("code") for item in payload.get("checks") or [] if item.get("status") in {"WARN", "FAIL"}]

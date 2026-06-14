@@ -2745,6 +2745,8 @@ def v5_local_replay_brief(v5_local_replay_payload):
     summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
     replay_contract = payload.get("replay_contract") if isinstance(payload.get("replay_contract"), dict) else {}
     alert_summary = payload.get("alert_summary") if isinstance(payload.get("alert_summary"), dict) else {}
+    replay_quality = payload.get("replay_quality") if isinstance(payload.get("replay_quality"), dict) else {}
+    quality_metrics = replay_quality.get("metrics") if isinstance(replay_quality.get("metrics"), dict) else {}
     storage_policy = payload.get("storage_policy") if isinstance(payload.get("storage_policy"), dict) else {}
     checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
     warn_or_fail = [item for item in checks if isinstance(item, dict) and item.get("status") in ("WARN", "FAIL")]
@@ -2777,6 +2779,18 @@ def v5_local_replay_brief(v5_local_replay_payload):
             "risk_geometry_reason_counts": dict(
                 list((alert_summary.get("risk_geometry_reason_counts") or {}).items())[:8]
             ),
+        },
+        "quality": {
+            "schema": replay_quality.get("schema") or "v5_local_replay_quality_v1",
+            "status": replay_quality.get("status") or "MISSING",
+            "alert_rate_per_100_bars": quality_metrics.get("alert_rate_per_100_bars"),
+            "execution_candidate_rate_per_100_bars": quality_metrics.get(
+                "execution_candidate_rate_per_100_bars"
+            ),
+            "directional_confirmation_ratio_pct": quality_metrics.get("directional_confirmation_ratio_pct"),
+            "directional_downgrade_ratio_pct": quality_metrics.get("directional_downgrade_ratio_pct"),
+            "multi_alert_symbol_day_ratio_pct": quality_metrics.get("multi_alert_symbol_day_ratio_pct"),
+            "top_trigger": quality_metrics.get("top_trigger") or {},
         },
         "replay_contract": {
             "engine": replay_contract.get("engine"),
