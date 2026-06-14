@@ -62,6 +62,7 @@ class RtOrderIntakeTests(unittest.TestCase):
             "cash_hkd": 1_000_000,
             "equity_hkd": 1_000_000,
             "positions": {},
+            "broker_context": {"backend": "quantmind-sim"},
         }
 
     def write_judgments(self, path, *items):
@@ -796,6 +797,7 @@ class RtOrderIntakeTests(unittest.TestCase):
             "cash_hkd": 1_000_000,
             "equity_hkd": 1_000_000,
             "positions": {},
+            "broker_context": {"backend": "alpaca-paper", "account_ok": True, "positions_ok": True},
         }
         alert = fresh_alert("sig-alpaca-paper", "AAPL")
         alert.update({"market": "US", "entry_price": 100, "stop_loss": 95, "take_profit": 112})
@@ -840,11 +842,27 @@ class RtOrderIntakeTests(unittest.TestCase):
                 state,
                 state_file,
                 judgment_file,
+                context_result=(
+                    "",
+                    {
+                        "cash_hkd": 100_000,
+                        "equity_hkd": 100_000,
+                        "positions": {},
+                        "broker_context": {
+                            "backend": "alpaca-paper",
+                            "account_ok": False,
+                            "positions_ok": False,
+                        },
+                    },
+                    ["alpaca_paper_credentials_missing; using default empty account context"],
+                ),
             )
 
             self.assertEqual(result["status"], "rejected")
             self.assertEqual(result["order_backend"], "alpaca-paper")
-            self.assertIn("alpaca_paper_credentials_missing", result["reasons"])
+            self.assertIn("broker_context_gate_failed", result["reasons"])
+            self.assertIn("alpaca_account_context_unavailable", result["broker_context"]["reasons"])
+            self.assertIn("alpaca_paper_credentials_missing", result["broker_context"]["warnings"][0])
 
     def test_fetch_alpaca_context_converts_usd_account_to_hkd_context(self):
         intake.ALPACA_API_KEY_ID = "paper-key"
@@ -865,6 +883,27 @@ class RtOrderIntakeTests(unittest.TestCase):
         self.assertAlmostEqual(context["cash_hkd"], 78_000)
         self.assertAlmostEqual(context["equity_hkd"], 93_600)
         self.assertEqual(context["positions"]["AAPL"]["quantity"], 3)
+        self.assertTrue(context["broker_context"]["account_ok"])
+        self.assertTrue(context["broker_context"]["positions_ok"])
+
+    def test_alpaca_context_gate_blocks_execute_when_account_query_failed(self):
+        context = {
+            "cash_hkd": 100_000,
+            "equity_hkd": 100_000,
+            "positions": {},
+            "broker_context": {"backend": "alpaca-paper", "account_ok": False, "positions_ok": True},
+        }
+
+        ok, payload = intake.broker_context_gate(
+            "alpaca-paper",
+            context,
+            ["alpaca_account_query_failed: timeout"],
+            "execute",
+        )
+
+        self.assertFalse(ok)
+        self.assertEqual(payload["status"], "REJECTED")
+        self.assertIn("alpaca_account_context_unavailable", payload["reasons"])
 
 
 if __name__ == "__main__":

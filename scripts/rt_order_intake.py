@@ -275,12 +275,16 @@ def fetch_alpaca_context():
 
     account = {}
     positions = []
+    account_ok = False
+    positions_ok = False
     try:
         account = alpaca_request("/account")
+        account_ok = isinstance(account, dict) and bool(account)
     except Exception as exc:
         warnings.append(f"alpaca_account_query_failed: {exc}")
     try:
         positions = alpaca_request("/positions")
+        positions_ok = isinstance(positions, list)
     except Exception as exc:
         warnings.append(f"alpaca_positions_query_failed: {exc}")
     if not isinstance(account, dict):
@@ -305,6 +309,11 @@ def fetch_alpaca_context():
         "cash_hkd": cash_usd * USD_TO_HKD,
         "equity_hkd": equity_usd * USD_TO_HKD,
         "positions": normalized_positions,
+        "broker_context": {
+            "backend": "alpaca-paper",
+            "account_ok": account_ok,
+            "positions_ok": positions_ok,
+        },
     }
     return "alpaca-paper", context, warnings
 
@@ -1225,6 +1234,32 @@ def pilot_execution_gate(alert, plan, state, mode, now=None):
     return not reasons, payload
 
 
+def broker_context_gate(backend, context, warnings, mode):
+    if backend != "alpaca-paper":
+        return True, {"status": "NOT_REQUIRED", "backend": backend}
+    broker_context = context.get("broker_context") if isinstance(context, dict) else {}
+    account_ok = bool(isinstance(broker_context, dict) and broker_context.get("account_ok"))
+    positions_ok = bool(isinstance(broker_context, dict) and broker_context.get("positions_ok"))
+    reasons = []
+    if not account_ok:
+        reasons.append("alpaca_account_context_unavailable")
+    if not positions_ok:
+        reasons.append("alpaca_positions_context_unavailable")
+    payload = {
+        "status": "PASS" if not reasons else "REJECTED",
+        "backend": backend,
+        "account_ok": account_ok,
+        "positions_ok": positions_ok,
+        "warnings": warnings,
+        "reasons": reasons,
+    }
+    if mode != "execute":
+        payload["status"] = "DRY_RUN_ONLY"
+        payload["would_block_execute"] = bool(reasons)
+        return True, payload
+    return not reasons, payload
+
+
 def record_processed(state, sid, payload, state_file):
     state["processed"][sid] = payload
     save_json_atomic(state_file, state)
@@ -1317,6 +1352,21 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
 
     backend = order_backend(alert)
     token, context, context_warnings = fetch_context_for_backend(backend)
+    broker_context_ok, broker_context = broker_context_gate(backend, context, context_warnings, mode)
+    if not broker_context_ok:
+        decision = {
+            "signal_id": sid,
+            "status": "rejected",
+            "reasons": ["broker_context_gate_failed"],
+            "order_backend": backend,
+            "broker_context": broker_context,
+            "execution_readiness": execution_readiness,
+            "strategy_evidence": strategy_gate,
+            "symbol_conflict": conflict_gate,
+            "checked_at": now_iso(),
+        }
+        record_decision(state, sid, decision, state_file, mode)
+        return decision
     plan, plan_errors = build_order_plan(alert, context)
     if plan_errors:
         decision = {
@@ -1324,6 +1374,7 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
             "status": "rejected",
             "reasons": plan_errors,
             "order_backend": backend,
+            "broker_context": broker_context,
             "warnings": context_warnings,
             "execution_readiness": execution_readiness,
             "strategy_evidence": strategy_gate,
@@ -1388,6 +1439,7 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
         "order_backend": backend,
         "plan": plan,
         "warnings": context_warnings,
+        "broker_context": broker_context,
         "context": {
             "cash_hkd": context["cash_hkd"],
             "equity_hkd": context["equity_hkd"],

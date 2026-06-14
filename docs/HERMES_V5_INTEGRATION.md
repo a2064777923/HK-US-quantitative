@@ -162,6 +162,8 @@ Alpaca paper environment keys accepted by `rt_order_intake.py`:
 - `APCA_API_KEY_ID` or `ALPACA_API_KEY_ID`
 - `APCA_API_SECRET_KEY` or `ALPACA_API_SECRET_KEY`
 
+When `RT_ORDER_US_BROKER=alpaca-paper`, intake reads Alpaca paper `/account` and `/positions` before sizing. Execute mode rejects with `broker_context_gate_failed` if either account or positions context is unavailable, because using default cash or assuming an empty position book would make paper sizing and duplicate-position checks unreliable. Dry-run keeps running and exposes `broker_context.would_block_execute=true` for Hermes/operator review.
+
 Execute mode also requires strategy evidence by default. The gate reads `/tmp/rt_signal_outcome_report.json` and rejects execution unless the configured horizon has enough resolved forward outcomes with positive average signed return and acceptable win rate. Defaults:
 
 - `RT_ORDER_REQUIRE_STRATEGY_EVIDENCE=1`
