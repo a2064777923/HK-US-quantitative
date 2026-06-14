@@ -59,6 +59,59 @@ def ready_execution_readiness(**overrides):
     return payload
 
 
+def local_backtest_reliability(status="RESEARCH_USEFUL_WITH_LIMITATIONS", promotion_ready=False):
+    return {
+        "schema": "local_backtest_reliability_report_v1",
+        "generated_at": "2026-06-14T12:30:00",
+        "summary": {
+            "overall_status": status,
+            "promotion_ready": promotion_ready,
+            "hermes_use": "research_evidence_only",
+            "dataset_status": "WARN",
+            "backtest_status_counts": {"OK": 1, "WARN": 1},
+            "best_backtest_by_sharpe": "portfolio_backtest_realistic",
+            "message": "local research evidence only",
+        },
+        "dataset": {
+            "status": "WARN",
+            "total_symbol_count": 95,
+            "total_row_count": 126069,
+            "markets": {
+                "HK": {
+                    "provider": "tencent_newfqkline",
+                    "feed": None,
+                    "adjustment": "qfq",
+                    "symbol_count_covered": 63,
+                    "row_count": 82421,
+                },
+                "US": {
+                    "provider": "alpaca_market_data",
+                    "feed": "iex",
+                    "adjustment": "all",
+                    "symbol_count_covered": 32,
+                    "row_count": 43648,
+                },
+            },
+        },
+        "backtests": [
+            {
+                "name": "portfolio_backtest_realistic",
+                "status": "OK",
+                "metrics": {
+                    "trades": 983,
+                    "total_return_pct": 218.93,
+                    "annual_return_pct": 39.3,
+                    "sharpe": 1.17,
+                    "max_drawdown_pct": 11.91,
+                    "win_rate_pct": 48.6,
+                },
+                "annual_consistency": {"year_count": 6},
+            }
+        ],
+        "hermes_note": "research evidence only",
+    }
+
+
 def watch_alert(signal_id="watch-1"):
     item = alert(signal_id)
     item["signal_type"] = "WATCH"
@@ -753,6 +806,7 @@ class HermesReviewPacketTests(unittest.TestCase):
                 "schema": "hermes_position_judgment_audit_report_v1",
                 "counts": {"judgment_count": 0},
             },
+            local_backtest_reliability_payload=local_backtest_reliability(),
         )
 
         self.assertEqual(payload["schema"], "hermes_signal_review_packet_v1")
@@ -908,6 +962,19 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertFalse(payload["strategy_learning"]["source"]["submits_orders"])
         self.assertEqual(payload["strategy_learning_brief"]["schema"], "hermes_strategy_learning_brief_v1")
         self.assertFalse(payload["strategy_learning_brief"]["submits_orders"])
+        self.assertEqual(
+            payload["strategy_learning_brief"]["local_backtest_reliability"]["schema"],
+            "local_backtest_reliability_report_v1",
+        )
+        self.assertEqual(
+            payload["strategy_learning_brief"]["local_backtest_reliability"]["status"],
+            "RESEARCH_USEFUL_WITH_LIMITATIONS",
+        )
+        self.assertFalse(payload["strategy_learning_brief"]["local_backtest_reliability"]["promotion_ready"])
+        self.assertEqual(
+            payload["local_backtest_reliability"]["summary"]["best_backtest_by_sharpe"],
+            "portfolio_backtest_realistic",
+        )
         self.assertEqual(payload["strategy_learning_brief"]["sample_scope"]["strategy_config_id"], "cfg-1")
         self.assertEqual(payload["strategy_learning_brief"]["intake_coverage"]["directional_pct"], 100.0)
         self.assertEqual(
@@ -1030,6 +1097,7 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(payload["intraday_kline_batch"]["schema"], "intraday_kline_batch_report_v1")
         self.assertEqual(payload["intraday_kline_batch"]["plan_hash"], "intraday-plan")
         self.assertTrue(any("Intraday K-line batch" in note for note in payload["operator_notes"]))
+        self.assertTrue(any("Local backtest reliability is read-only research evidence" in note for note in payload["operator_notes"]))
         producer_digest = payload["review_items"][0]["context_digest"]["intraday_minute_producer"]
         self.assertEqual(producer_digest["schema"], "hermes_review_item_intraday_minute_producer_digest_v1")
         self.assertEqual(producer_digest["status"], "ACTIONABLE")
@@ -1046,6 +1114,13 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertFalse(payload["intraday_timeframe_quality"]["source"]["writes_database"])
         self.assertFalse(payload["intraday_timeframe_quality"]["source"]["changes_strategy"])
         self.assertTrue(any("Intraday timeframe quality" in note for note in payload["operator_notes"]))
+        self.assertEqual(payload["local_backtest_reliability"]["schema"], "local_backtest_reliability_report_v1")
+        self.assertEqual(payload["local_backtest_reliability"]["summary"]["overall_status"], "RESEARCH_USEFUL_WITH_LIMITATIONS")
+        self.assertFalse(payload["local_backtest_reliability"]["summary"]["promotion_ready"])
+        self.assertEqual(
+            payload["strategy_learning_brief"]["local_backtest_reliability"]["dataset"]["us_feed"],
+            "iex",
+        )
         timeframe_policy = payload["review_items"][0]["context_digest"]["intraday_timeframe_policy"]
         self.assertEqual(
             timeframe_policy["schema"],
@@ -2553,6 +2628,23 @@ class HermesReviewPacketTests(unittest.TestCase):
             maturity["missing_symbol_kline_status_counts"],
             {"stock_found_has_day_klines_before_signal_date": 9},
         )
+
+    def test_strategy_learning_brief_local_backtest_reliability_is_read_only_optional_context(self):
+        brief = packet.strategy_learning_brief({}, local_backtest_reliability_payload=local_backtest_reliability())
+
+        local = brief["local_backtest_reliability"]
+        self.assertTrue(local["read_only"])
+        self.assertFalse(local["submits_orders"])
+        self.assertEqual(local["status"], "RESEARCH_USEFUL_WITH_LIMITATIONS")
+        self.assertEqual(local["hermes_use"], "research_evidence_only")
+        self.assertEqual(local["dataset"]["symbol_count"], 95)
+        self.assertEqual(local["backtests"][0]["sharpe"], 1.17)
+        self.assertFalse(local["promotion_ready"])
+
+        missing = packet.strategy_learning_brief({})["local_backtest_reliability"]
+        self.assertEqual(missing["status"], "MISSING")
+        self.assertTrue(missing["read_only"])
+        self.assertFalse(missing["submits_orders"])
 
     def test_health_fail_forces_reject_or_hold_even_when_intake_has_plan(self):
         health = {"status": "FAIL", "checked_at": "2026-06-12T10:01:00", "checks": []}

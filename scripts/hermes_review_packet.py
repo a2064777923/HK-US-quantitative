@@ -85,6 +85,10 @@ SOURCE_RELIABILITY_REPORT_FILE = os.environ.get(
     "SOURCE_RELIABILITY_REPORT_FILE",
     "/tmp/source_reliability_report.json",
 )
+LOCAL_BACKTEST_RELIABILITY_REPORT_FILE = os.environ.get(
+    "LOCAL_BACKTEST_RELIABILITY_REPORT_FILE",
+    "/tmp/local_backtest_reliability_report.json",
+)
 OPERATOR_ACTION_QUEUE_REPORT_FILE = os.environ.get(
     "OPERATOR_ACTION_QUEUE_REPORT_FILE",
     "/tmp/operator_action_queue_report.json",
@@ -2630,6 +2634,64 @@ def strategy_learning_intraday_alignment_brief(strategy_learning_payload):
     }
 
 
+def local_backtest_reliability_brief(local_backtest_reliability_payload):
+    payload = local_backtest_reliability_payload if isinstance(local_backtest_reliability_payload, dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    dataset = payload.get("dataset") if isinstance(payload.get("dataset"), dict) else {}
+    backtests = payload.get("backtests") if isinstance(payload.get("backtests"), list) else []
+    dataset_markets = dataset.get("markets") if isinstance(dataset.get("markets"), dict) else {}
+    hk = dataset_markets.get("HK") if isinstance(dataset_markets.get("HK"), dict) else {}
+    us = dataset_markets.get("US") if isinstance(dataset_markets.get("US"), dict) else {}
+    best_backtest = {}
+    if backtests:
+        best_backtest = max(
+            [item for item in backtests if isinstance(item, dict)],
+            key=lambda item: number_or_none((item.get("metrics") or {}).get("sharpe")) or -999,
+            default={},
+        )
+    return {
+        "read_only": True,
+        "submits_orders": False,
+        "schema": payload.get("schema") or "local_backtest_reliability_report_v1",
+        "status": summary.get("overall_status") or "MISSING",
+        "promotion_ready": summary.get("promotion_ready"),
+        "hermes_use": summary.get("hermes_use") or "research_evidence_only",
+        "dataset": {
+            "status": dataset.get("status"),
+            "symbol_count": dataset.get("total_symbol_count"),
+            "row_count": dataset.get("total_row_count"),
+            "hk_symbol_count": hk.get("symbol_count_covered"),
+            "us_symbol_count": us.get("symbol_count_covered"),
+            "hk_provider": hk.get("provider"),
+            "us_feed": us.get("feed"),
+        },
+        "backtests": [
+            {
+                "name": item.get("name"),
+                "status": item.get("status"),
+                "trade_count": (item.get("metrics") or {}).get("trades"),
+                "total_return_pct": (item.get("metrics") or {}).get("total_return_pct"),
+                "annual_return_pct": (item.get("metrics") or {}).get("annual_return_pct"),
+                "sharpe": (item.get("metrics") or {}).get("sharpe"),
+                "max_drawdown_pct": (item.get("metrics") or {}).get("max_drawdown_pct"),
+                "win_rate_pct": (item.get("metrics") or {}).get("win_rate_pct"),
+                "sample_years": (item.get("annual_consistency") or {}).get("year_count"),
+            }
+            for item in backtests
+            if isinstance(item, dict)
+        ],
+        "best_backtest": {
+            "name": best_backtest.get("name"),
+            "sharpe": (best_backtest.get("metrics") or {}).get("sharpe"),
+            "status": best_backtest.get("status"),
+        }
+        if best_backtest
+        else {},
+        "hermes_note": summary.get("message")
+        or "local_backtest_reliability_is_research_context_only",
+    }
+
+
 def number_or_none(value):
     try:
         if value in (None, ""):
@@ -2709,7 +2771,12 @@ def hermes_alpha_evidence_summary(effective_judgment_effect, judgment_audit_cove
     }
 
 
-def strategy_learning_brief(strategy_learning_payload, watchlist_diff_payload=None, outcome_report_payload=None):
+def strategy_learning_brief(
+    strategy_learning_payload,
+    watchlist_diff_payload=None,
+    outcome_report_payload=None,
+    local_backtest_reliability_payload=None,
+):
     payload = strategy_learning_payload if isinstance(strategy_learning_payload, dict) else {}
     watchlist_diff_payload = watchlist_diff_payload if isinstance(watchlist_diff_payload, dict) else {}
     outcome_report_payload = outcome_report_payload if isinstance(outcome_report_payload, dict) else {}
@@ -2953,6 +3020,7 @@ def strategy_learning_brief(strategy_learning_payload, watchlist_diff_payload=No
             "failed_reason_counts": judgment_audit_coverage.get("failed_reason_counts") or [],
         },
         "hermes_alpha_evidence": alpha_summary,
+        "local_backtest_reliability": local_backtest_reliability_brief(local_backtest_reliability_payload),
         "context_review_effect": {
             "quality": {
                 "approved_or_reduced_count": context_review_quality.get("approved_or_reduced_count"),
@@ -3122,6 +3190,7 @@ def build_packet(
     outcome_event_store_payload=None,
     strategy_review_payload=None,
     strategy_learning_payload=None,
+    local_backtest_reliability_payload=None,
     execution_readiness_payload=None,
     simulation_performance_payload=None,
     external_market_context_payload=None,
@@ -3200,6 +3269,8 @@ def build_packet(
         strategy_review_payload = load_json_file(STRATEGY_REVIEW_REPORT_FILE)
     if strategy_learning_payload is None:
         strategy_learning_payload = load_json_file(STRATEGY_LEARNING_REPORT_FILE)
+    if local_backtest_reliability_payload is None:
+        local_backtest_reliability_payload = load_json_file(LOCAL_BACKTEST_RELIABILITY_REPORT_FILE)
     if execution_readiness_payload is None:
         execution_readiness_payload = load_json_file(EXECUTION_READINESS_REPORT_FILE)
     if simulation_performance_payload is None:
@@ -3341,7 +3412,9 @@ def build_packet(
             strategy_learning_payload,
             watchlist_diff_payload,
             strategy_evidence_payload,
+            local_backtest_reliability_payload,
         ),
+        "local_backtest_reliability": local_backtest_reliability_payload,
         "simulation_trade_review_brief": simulation_trade_review_brief(portfolio_payload),
         "execution_readiness": execution_readiness_payload,
         "simulation_performance": simulation_performance_payload,
@@ -3387,6 +3460,7 @@ def build_packet(
             "Strategy review is read-only trigger policy context; execute mode still requires rt_order_intake.py gates.",
             "Strategy learning is read-only cohort evidence for improving prompts, triggers, and review discipline; it does not approve execution.",
             "Strategy learning brief is a top-level summary for Hermes attention only; the full strategy_learning object remains authoritative.",
+            "Local backtest reliability is read-only research evidence; it helps Hermes compare local HK/US data breadth and baseline backtest behavior, but it does not approve execution, change thresholds, or replace live readiness and source-reliability gates.",
             "Simulation trade review brief is realized simulation portfolio context; it does not approve execution by itself.",
             "Execution readiness is read-only dashboard context; READY is necessary but not sufficient for execute mode.",
             "rt_order_intake.py execute mode also enforces execution_readiness.status=READY before submitting orders.",
@@ -3449,6 +3523,7 @@ def parse_args():
     parser.add_argument("--outcome-event-store-file", default=OUTCOME_EVENT_STORE_REPORT_FILE)
     parser.add_argument("--strategy-review-file", default=STRATEGY_REVIEW_REPORT_FILE)
     parser.add_argument("--strategy-learning-file", default=STRATEGY_LEARNING_REPORT_FILE)
+    parser.add_argument("--local-backtest-reliability-file", default=LOCAL_BACKTEST_RELIABILITY_REPORT_FILE)
     parser.add_argument("--simulation-performance-file", default=SIMULATION_PERFORMANCE_REPORT_FILE)
     parser.add_argument("--external-market-context-file", default=EXTERNAL_MARKET_CONTEXT_FILE)
     parser.add_argument("--event-catalyst-file", default=EVENT_CATALYST_REPORT_FILE)
@@ -3540,6 +3615,7 @@ def main():
         outcome_event_store_payload=load_json_file(args.outcome_event_store_file),
         strategy_review_payload=load_json_file(args.strategy_review_file),
         strategy_learning_payload=load_json_file(args.strategy_learning_file),
+        local_backtest_reliability_payload=load_json_file(args.local_backtest_reliability_file),
         execution_readiness_payload=load_json_file(args.execution_readiness_file),
         simulation_performance_payload=load_json_file(args.simulation_performance_file),
         external_market_context_payload=load_json_file(args.external_market_context_file),
