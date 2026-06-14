@@ -17,6 +17,26 @@ def sample_metadata(symbol_count=90, raw_local_only=True, us_feed="iex"):
             "raw_data_local_only": raw_local_only,
             "commit_raw_csv_to_git": False if raw_local_only else True,
             "copy_to_server_by_default": False,
+            "keep_broad_fine_grained_raw_data_locally": True,
+            "production_consumes_compact_reports_only": True,
+            "server_sync_requires_explicit_promotion": True,
+            "required_manifest_fields": [
+                "provider",
+                "feed",
+                "adjustment",
+                "timezone",
+                "retrieved_at",
+                "coverage",
+                "gaps",
+                "freshness",
+                "license_scope",
+                "checksum",
+            ],
+            "large_file_retention": {
+                "prefer_partitioned_compressed_formats": ["parquet_zstd", "csv_gzip"],
+                "partition_keys": ["provider", "market", "timeframe", "symbol", "date"],
+                "dedupe_keys": ["provider", "symbol", "timestamp", "adjustment"],
+            },
         },
         "sources": {
             "HK": {
@@ -95,6 +115,11 @@ class LocalBacktestReliabilityReportTests(unittest.TestCase):
             [item["code"] for item in payload["recommendations"]],
         )
         self.assertEqual(payload["dataset"]["status"], "WARN")
+        self.assertTrue(payload["dataset"]["raw_data_lake_contract"]["production_consumes_compact_reports_only"])
+        self.assertIn(
+            "raw_lake_manifest_contract_complete",
+            [item["code"] for item in payload["dataset"]["checks"]],
+        )
         self.assertEqual(payload["backtests"][0]["trade_distribution"]["by_market"][0]["key"], "US")
 
     def test_hard_data_and_performance_failures_make_evidence_insufficient(self):
@@ -124,6 +149,21 @@ class LocalBacktestReliabilityReportTests(unittest.TestCase):
             "raw_data_storage_policy_missing",
             [item["code"] for item in payload["dataset"]["checks"]],
         )
+
+    def test_legacy_storage_policy_without_raw_lake_contract_warns(self):
+        metadata = sample_metadata()
+        metadata["storage_policy"] = {
+            "raw_data_local_only": True,
+            "commit_raw_csv_to_git": False,
+            "copy_to_server_by_default": False,
+        }
+
+        payload = report.build_report(metadata, sample_backtest(), sample_backtest())
+        codes = [item["code"] for item in payload["dataset"]["checks"]]
+
+        self.assertEqual(payload["summary"]["overall_status"], "RESEARCH_USEFUL_WITH_LIMITATIONS")
+        self.assertIn("raw_lake_summary_boundary_missing", codes)
+        self.assertIn("raw_lake_manifest_contract_incomplete", codes)
 
     def test_main_writes_report_without_fetching_or_requiring_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:

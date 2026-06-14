@@ -20,6 +20,18 @@ DEFAULT_COMBINED_RESULT_FILE = os.environ.get("LOCAL_BACKTEST_COMBINED_RESULT_FI
 DEFAULT_OUTPUT_FILE = os.environ.get("LOCAL_BACKTEST_RELIABILITY_REPORT_FILE", "/tmp/local_backtest_reliability_report.json")
 
 STATUS_RANK = {"OK": 0, "INFO": 0, "WARN": 1, "FAIL": 2}
+REQUIRED_RAW_LAKE_MANIFEST_FIELDS = {
+    "provider",
+    "feed",
+    "adjustment",
+    "timezone",
+    "retrieved_at",
+    "coverage",
+    "gaps",
+    "freshness",
+    "license_scope",
+    "checksum",
+}
 
 
 def now_iso():
@@ -136,6 +148,44 @@ def dataset_assessment(metadata):
             checks.append(check("OK", "raw_data_local_only", "Raw bars are documented as local-only research data.", storage))
         else:
             checks.append(check("FAIL", "raw_data_storage_policy_unsafe", "Raw data storage policy is present but unsafe.", storage))
+        if storage.get("production_consumes_compact_reports_only") is True:
+            checks.append(
+                check(
+                    "OK",
+                    "raw_lake_summary_boundary_documented",
+                    "Production/Hermes consumers are documented to consume compact reports rather than unverified raw bars.",
+                    {"production_consumes_compact_reports_only": True},
+                )
+            )
+        else:
+            checks.append(
+                check(
+                    "WARN",
+                    "raw_lake_summary_boundary_missing",
+                    "Raw data can be collected broadly, but metadata should state that production/Hermes consume only compact validated reports.",
+                    storage,
+                )
+            )
+        manifest_fields = set(storage.get("required_manifest_fields") or [])
+        missing_manifest_fields = sorted(REQUIRED_RAW_LAKE_MANIFEST_FIELDS - manifest_fields)
+        if missing_manifest_fields:
+            checks.append(
+                check(
+                    "WARN",
+                    "raw_lake_manifest_contract_incomplete",
+                    "Fine-grained raw data needs provenance, freshness, licensing, and checksum metadata before it is reliable research evidence.",
+                    {"missing_fields": missing_manifest_fields},
+                )
+            )
+        else:
+            checks.append(
+                check(
+                    "OK",
+                    "raw_lake_manifest_contract_complete",
+                    "Raw data lake manifest fields cover provenance, coverage, freshness, licensing, and checksums.",
+                    {"required_fields": sorted(manifest_fields)},
+                )
+            )
     else:
         checks.append(
             check(
@@ -204,6 +254,13 @@ def dataset_assessment(metadata):
         "total_symbol_count": total_symbols,
         "total_row_count": total_rows,
         "intraday_outputs": metadata.get("intraday_outputs") or [],
+        "raw_data_lake_contract": {
+            "local_only": storage.get("raw_data_local_only") if storage else None,
+            "production_consumes_compact_reports_only": storage.get("production_consumes_compact_reports_only") if storage else None,
+            "server_sync_requires_explicit_promotion": storage.get("server_sync_requires_explicit_promotion") if storage else None,
+            "required_manifest_fields": storage.get("required_manifest_fields") if storage else [],
+            "large_file_retention": storage.get("large_file_retention") if storage else {},
+        },
         "checks": checks,
         "status": worst_status([item["status"] for item in checks]),
     }

@@ -171,6 +171,10 @@ class LocalBacktestDatasetTests(unittest.TestCase):
             self.assertTrue(metadata["storage_policy"]["raw_data_local_only"])
             self.assertFalse(metadata["storage_policy"]["commit_raw_csv_to_git"])
             self.assertFalse(metadata["storage_policy"]["copy_to_server_by_default"])
+            self.assertTrue(metadata["storage_policy"]["keep_broad_fine_grained_raw_data_locally"])
+            self.assertTrue(metadata["storage_policy"]["production_consumes_compact_reports_only"])
+            self.assertIn("checksum", metadata["storage_policy"]["required_manifest_fields"])
+            self.assertIn("parquet_zstd", metadata["storage_policy"]["large_file_retention"]["prefer_partitioned_compressed_formats"])
             self.assertEqual(metadata["sources"]["HK"]["row_count"], 1)
             self.assertEqual(metadata["sources"]["US"]["row_count"], 1)
 

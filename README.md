@@ -116,6 +116,8 @@ python3 scripts/local_backtest_dataset.py --output-dir /tmp --us-intraday-timefr
 
 - 原始大文件只放本地資料目錄，例如 `/tmp`、`/data`、`/market_data` 或外接磁碟；
 - 不提交 GitHub，不默認同步到服務器，不放進 cron 自動產物；
+- 大文件優先用分區/壓縮格式保存，例如按 `provider/market/timeframe/symbol/date` 分區的 Parquet+Zstd 或 gzip CSV；
+- 每個 raw dataset 必須保留小型 manifest：provider、feed、adjustment、timezone、retrieved_at、coverage、gaps、freshness、license_scope、checksum；
 - 只把小型 metadata、coverage、freshness、gap、source reliability、replay/quality report 給 Hermes；
 - v5、Hermes、模擬交易和 operator queue 只能消費通過質量門檻的摘要或特徵，不直接依賴未驗證 raw minute/hour bars；
 - 若之後要把某個高粒度數據源提升到服務器，應先提供來源授權、時間戳/時區規則、復權規則、缺口處理、延遲 SLA、存儲容量預估和回滾方案。

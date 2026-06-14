@@ -32,6 +32,18 @@ TENCENT_KLINE_URL = os.environ.get(
 ALPACA_DATA_BASE_URL = os.environ.get("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets")
 DAILY_FIELDS = ["symbol", "dt", "open_price", "high_price", "low_price", "close_price", "volume"]
 BAR_FIELDS = ["symbol", "timestamp", "open_price", "high_price", "low_price", "close_price", "volume"]
+RAW_DATA_MANIFEST_FIELDS = [
+    "provider",
+    "feed",
+    "adjustment",
+    "timezone",
+    "retrieved_at",
+    "coverage",
+    "gaps",
+    "freshness",
+    "license_scope",
+    "checksum",
+]
 
 
 def now_iso():
@@ -333,6 +345,16 @@ def build_dataset(args, session=None, env=None):
             "raw_data_local_only": True,
             "commit_raw_csv_to_git": False,
             "copy_to_server_by_default": False,
+            "keep_broad_fine_grained_raw_data_locally": True,
+            "production_consumes_compact_reports_only": True,
+            "server_sync_requires_explicit_promotion": True,
+            "raw_data_lake_default_destination": "operator_local_disk_only",
+            "required_manifest_fields": RAW_DATA_MANIFEST_FIELDS,
+            "large_file_retention": {
+                "prefer_partitioned_compressed_formats": ["parquet_zstd", "csv_gzip"],
+                "partition_keys": ["provider", "market", "timeframe", "symbol", "date"],
+                "dedupe_keys": ["provider", "symbol", "timestamp", "adjustment"],
+            },
         },
         "outputs": paths,
         "sources": {

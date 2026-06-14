@@ -49,8 +49,16 @@ config/.env
 /data_lake/
 /intraday_data/
 *.parquet
+*.parquet.gz
+*.parquet.zst
+*.csv.gz
+*.csv.zst
+*.jsonl.gz
+*.jsonl.zst
 *.feather
 *.arrow
+*.orc
+*.avro
 *.duckdb
 *.sqlite
 *.sqlite3
