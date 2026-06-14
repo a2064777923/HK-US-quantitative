@@ -1201,13 +1201,10 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(len(ma5_alerts), 1)
         self.assertIn(f"MA5=${completed_ma5:.2f}", ma5_alerts[0]["detail"])
 
-    def test_ma_cross_trigger_uses_latest_historical_mas_as_previous_state(self):
+    def test_ma_cross_trigger_emits_buy_from_completed_daily_cross(self):
         engine = rt.TriggerEngine()
         indicators = FakeIndicators(score=0.8)
-        indicators.closes = [100] * 29 + [200]
-        indicators.ma5 = 100
-        indicators.ma10 = 111
-        indicators.ma20 = 105.5
+        indicators.closes = [110] * 19 + [100] * 10 + [200]
 
         engine.check(
             "AAPL",
@@ -1221,15 +1218,41 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             },
         )
 
+        cross_alerts = [item for item in engine.alerts if item["trigger"] == "MA金叉"]
+        self.assertEqual(len(cross_alerts), 1)
+        self.assertEqual(cross_alerts[0]["signal_type"], "BUY")
+        self.assertIn("MA10=", cross_alerts[0]["detail"])
+
+    def test_realtime_ma_cross_does_not_use_temporary_quote_ma(self):
+        engine = rt.TriggerEngine()
+        indicators = rt.IncrementalIndicators("AAPL")
+        for close in [110] * 10 + [100] * 20:
+            indicators._update(close, close + 1, close - 1, 1000)
+
+        price = 200
+        indicators.update_realtime(price, price + 1, price - 1, 0)
+
+        self.assertEqual(rt.completed_moving_average(indicators.closes, 10), 100)
+        self.assertEqual(rt.completed_moving_average(indicators.closes, 20), 100)
+        self.assertGreater(indicators.ma10, indicators.ma20)
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": price,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
         self.assertNotIn("MA金叉", [item["trigger"] for item in engine.alerts])
 
     def test_ma_death_cross_trigger_emits_sell_from_latest_historical_state(self):
         engine = rt.TriggerEngine()
         indicators = FakeIndicators(score=-0.8)
-        indicators.closes = [100] * 30
-        indicators.ma5 = 100
-        indicators.ma10 = 99
-        indicators.ma20 = 100
+        indicators.closes = [100] * 19 + [110] * 10 + [10]
 
         engine.check(
             "AAPL",
@@ -1254,9 +1277,6 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         engine = rt.TriggerEngine()
         indicators = FakeIndicators(score=-0.8)
         indicators.closes = [100] * 20 + [90] * 10
-        indicators.ma5 = 100
-        indicators.ma10 = 90
-        indicators.ma20 = 95
 
         engine.check(
             "AAPL",

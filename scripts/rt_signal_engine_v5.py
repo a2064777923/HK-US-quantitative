@@ -834,9 +834,33 @@ def completed_bollinger_bands(closes):
     return ma20 + 2 * std, ma20 - 2 * std
 
 def completed_moving_average(closes, window):
+    return completed_moving_average_at(closes, window, offset=0)
+
+def completed_moving_average_at(closes, window, offset=0):
     if not isinstance(closes, list) or len(closes) < window:
         return None
-    return sum(closes[-window:]) / window
+    offset = as_int(offset, 0) or 0
+    if offset < 0 or len(closes) < window + offset:
+        return None
+    end = len(closes) - offset
+    start = end - window
+    if start < 0:
+        return None
+    return sum(closes[start:end]) / window
+
+def completed_ma_cross_state(closes):
+    current_ma10 = completed_moving_average_at(closes, 10, offset=0)
+    current_ma20 = completed_moving_average_at(closes, 20, offset=0)
+    previous_ma10 = completed_moving_average_at(closes, 10, offset=1)
+    previous_ma20 = completed_moving_average_at(closes, 20, offset=1)
+    if None in (current_ma10, current_ma20, previous_ma10, previous_ma20):
+        return None
+    return {
+        "current_ma10": current_ma10,
+        "current_ma20": current_ma20,
+        "previous_ma10": previous_ma10,
+        "previous_ma20": previous_ma20,
+    }
 
 def lookback_close(closes, bars):
     if not isinstance(closes, list) or len(closes) <= bars:
@@ -1428,14 +1452,16 @@ class TriggerEngine:
             if prev_ma5 is not None and c < prev_ma5 and prev_c >= prev_ma5:
                 triggered.append(("跌破MA5", f"${c} < MA5=${prev_ma5:.2f}", "SELL"))
 
-        if indicators.ma10 and indicators.ma20:
-            if len(indicators.closes) >= 20:
-                prev_ma10 = sum(indicators.closes[-10:]) / 10
-                prev_ma20 = sum(indicators.closes[-20:]) / 20
-                if indicators.ma10 > indicators.ma20 and prev_ma10 <= prev_ma20:
-                    triggered.append(("MA金叉", f"MA10上穿MA20", "BUY"))
-                if indicators.ma10 < indicators.ma20 and prev_ma10 >= prev_ma20:
-                    triggered.append(("MA死叉", f"MA10下穿MA20", "SELL"))
+        ma_cross = completed_ma_cross_state(getattr(indicators, "closes", []))
+        if ma_cross:
+            current_ma10 = ma_cross["current_ma10"]
+            current_ma20 = ma_cross["current_ma20"]
+            previous_ma10 = ma_cross["previous_ma10"]
+            previous_ma20 = ma_cross["previous_ma20"]
+            if current_ma10 > current_ma20 and previous_ma10 <= previous_ma20:
+                triggered.append(("MA金叉", f"MA10={current_ma10:.2f} > MA20={current_ma20:.2f}", "BUY"))
+            if current_ma10 < current_ma20 and previous_ma10 >= previous_ma20:
+                triggered.append(("MA死叉", f"MA10={current_ma10:.2f} < MA20={current_ma20:.2f}", "SELL"))
 
         # 4. 成交量異動
         if len(indicators.volumes) >= 20:
