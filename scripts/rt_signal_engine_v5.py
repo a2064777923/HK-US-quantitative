@@ -1266,6 +1266,13 @@ class TriggerEngine:
     def trigger_shadow_only(self, signal_type, trigger_name):
         return self.trigger_review_mode(signal_type, trigger_name).startswith("shadow_only")
 
+    def trigger_disabled_observation(self, signal_type, trigger_name):
+        override = self.trigger_override(signal_type, trigger_name)
+        return (
+            override.get("enabled", True) is False
+            and self.trigger_review_mode(signal_type, trigger_name).startswith("disabled_pending_rework")
+        )
+
     def trigger_cooldown_seconds(self, signal_type, trigger_name):
         override = self.trigger_override(signal_type, trigger_name)
         cooldown = as_int(override.get("cooldown_seconds"), self.strategy_config.get("signal_cooldown_seconds"))
@@ -1451,7 +1458,9 @@ class TriggerEngine:
 
         # 冷卻期檢查 + 觸發
         for trigger_name, detail, signal_type in triggered:
-            if not self.trigger_enabled(signal_type, trigger_name):
+            trigger_review_mode = self.trigger_review_mode(signal_type, trigger_name)
+            trigger_disabled_observation = self.trigger_disabled_observation(signal_type, trigger_name)
+            if not self.trigger_enabled(signal_type, trigger_name) and not trigger_disabled_observation:
                 continue
             cooldown_seconds = self.trigger_cooldown_seconds(signal_type, trigger_name)
             
@@ -1507,9 +1516,11 @@ class TriggerEngine:
 
             emitted_signal_type = signal_type
             suppressed_directional_reason = None
-            trigger_review_mode = self.trigger_review_mode(signal_type, trigger_name)
             trigger_shadow_only = self.trigger_shadow_only(signal_type, trigger_name)
-            if signal_type in ("BUY", "SELL") and trigger_shadow_only:
+            if signal_type in ("BUY", "SELL") and trigger_disabled_observation:
+                emitted_signal_type = "WATCH"
+                suppressed_directional_reason = "strategy_review_disabled_pending_rework"
+            elif signal_type in ("BUY", "SELL") and trigger_shadow_only:
                 emitted_signal_type = "WATCH"
                 suppressed_directional_reason = "strategy_review_shadow_only"
             if (
@@ -1540,6 +1551,8 @@ class TriggerEngine:
             else:
                 if not confirmed:
                     execution_blocked_reasons.append("not_confirmed")
+                if trigger_disabled_observation:
+                    execution_blocked_reasons.append("strategy_review_disabled_pending_rework")
                 if trigger_shadow_only:
                     execution_blocked_reasons.append("strategy_review_shadow_only")
                 if not risk_geometry_valid:
@@ -1580,6 +1593,7 @@ class TriggerEngine:
                 "candidate_signal_type": signal_type,
                 "trigger_review_mode": trigger_review_mode or None,
                 "strategy_policy_shadow_only": trigger_shadow_only,
+                "strategy_policy_disabled_observation": trigger_disabled_observation,
                 "suppressed_directional_reason": suppressed_directional_reason,
                 "execution_candidate": execution_candidate,
                 "execution_blocked_reasons": execution_blocked_reasons,

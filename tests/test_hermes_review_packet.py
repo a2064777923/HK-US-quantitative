@@ -403,6 +403,9 @@ class HermesReviewPacketTests(unittest.TestCase):
                 "confirmed": False,
                 "execution_candidate": False,
                 "execution_blocked_reasons": ["not_confirmed"],
+                "trigger_review_mode": "disabled_pending_rework",
+                "strategy_policy_shadow_only": False,
+                "strategy_policy_disabled_observation": True,
                 "entry_price": None,
                 "stop_loss": None,
                 "take_profit": None,
@@ -414,6 +417,9 @@ class HermesReviewPacketTests(unittest.TestCase):
 
         self.assertFalse(summary["execution_candidate"])
         self.assertEqual(summary["execution_blocked_reasons"], ["not_confirmed"])
+        self.assertEqual(summary["trigger_review_mode"], "disabled_pending_rework")
+        self.assertFalse(summary["strategy_policy_shadow_only"])
+        self.assertTrue(summary["strategy_policy_disabled_observation"])
         self.assertIsNone(summary["entry_price"])
         self.assertIsNone(summary["stop_loss"])
         self.assertIsNone(summary["take_profit"])
