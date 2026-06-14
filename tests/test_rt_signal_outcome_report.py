@@ -155,6 +155,32 @@ class RtSignalOutcomeReportTests(unittest.TestCase):
         self.assertIn("BUY:MA", by_trigger)
         self.assertEqual(by_trigger["BUY:MA"]["horizons"]["1d"]["resolved_count"], 1)
 
+    def test_execution_candidate_cohort_excludes_downgraded_diagnostics(self):
+        execution = alert("exec", "AAPL", "BUY", strategy_config_id="cfg-a", watchlist_id="wl-a")
+        execution["execution_candidate"] = True
+        diagnostic = downgraded_watch_alert("diag", "AAPL", "BUY")
+        diagnostic["execution_blocked_reasons"] = ["same_scan_directional_duplicate"]
+        diagnostic["suppressed_directional_reason"] = "same_scan_directional_duplicate"
+        klines = {
+            "AAPL": [
+                {"date": "2026-06-10", "open": 99, "high": 101, "low": 98, "close": 100},
+                {"date": "2026-06-11", "open": 101, "high": 112, "low": 99, "close": 110},
+            ]
+        }
+
+        payload = report.build_report([execution, diagnostic], klines_by_symbol=klines, horizons=(1,))
+        execution_scope = payload["execution_candidate"]
+        all_by_trigger = {row["key"]: row for row in payload["by_trigger"]}
+        exec_by_trigger = {row["key"]: row for row in execution_scope["by_trigger"]}
+
+        self.assertEqual(payload["downgraded_directional_alert_count"], 1)
+        self.assertEqual(all_by_trigger["BUY:MA"]["horizons"]["1d"]["resolved_count"], 2)
+        self.assertEqual(execution_scope["scope"], "execution_candidate_only")
+        self.assertTrue(execution_scope["execution_candidate"])
+        self.assertEqual(execution_scope["overall"]["resolved_signal_count"], 1)
+        self.assertEqual(execution_scope["overall"]["horizons"]["1d"]["resolved_count"], 1)
+        self.assertEqual(exec_by_trigger["BUY:MA"]["horizons"]["1d"]["resolved_count"], 1)
+
     def test_pending_when_no_future_kline_exists(self):
         klines = {
             "AAPL": [

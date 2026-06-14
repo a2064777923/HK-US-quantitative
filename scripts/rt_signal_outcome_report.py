@@ -538,6 +538,23 @@ def summarize_groups(evaluations, key_fn, horizons, metadata_fn=None):
     return sorted(rows_out, key=lambda row: (-row["count"], row["key"]))
 
 
+def filter_execution_candidate_evaluations(evaluations):
+    return [item for item in evaluations if item.get("execution_candidate") is True]
+
+
+def execution_candidate_overall(evaluations, horizon_metrics_by_key):
+    pending_reasons = Counter(item.get("reason", "none") for item in evaluations if item.get("status") != "resolved")
+    return {
+        "scope": "execution_candidate_only",
+        "execution_candidate": True,
+        "evaluated_signal_count": len(evaluations),
+        "resolved_signal_count": len([item for item in evaluations if item.get("status") == "resolved"]),
+        "pending_or_invalid_count": len([item for item in evaluations if item.get("status") != "resolved"]),
+        "pending_reasons": dict(pending_reasons),
+        "horizons": horizon_metrics_by_key,
+    }
+
+
 def strategy_group_metadata(items):
     return {
         "source_counts": value_counts(items, "strategy_config_source"),
@@ -618,7 +635,11 @@ def build_report(alerts, klines_by_symbol=None, horizons=DEFAULT_HORIZONS, sampl
         evaluate_alert(alert, klines_by_symbol.get(str(alert.get("symbol", "")).upper(), []), horizons=horizons)
         for alert in directional
     ]
+    execution_candidate_evaluations = filter_execution_candidate_evaluations(evaluations)
     overall_horizons = {f"{horizon}d": horizon_metrics(evaluations, f"{horizon}d") for horizon in horizons}
+    execution_candidate_overall_horizons = {
+        f"{horizon}d": horizon_metrics(execution_candidate_evaluations, f"{horizon}d") for horizon in horizons
+    }
     pending_reasons = Counter(item.get("reason", "none") for item in evaluations if item.get("status") != "resolved")
     raw_alert_count = len(scoped_alerts)
     directional_alert_count = len([alert for alert in scoped_alerts if is_directional_candidate(alert)])
@@ -680,6 +701,41 @@ def build_report(alerts, klines_by_symbol=None, horizons=DEFAULT_HORIZONS, sampl
             "pending_or_invalid_count": pending_or_invalid_count,
             "pending_reasons": dict(pending_reasons),
             "horizons": overall_horizons,
+        },
+        "execution_candidate": {
+            "scope": "execution_candidate_only",
+            "execution_candidate": True,
+            "overall": execution_candidate_overall(
+                execution_candidate_evaluations,
+                execution_candidate_overall_horizons,
+            ),
+            "by_trigger": summarize_groups(
+                execution_candidate_evaluations,
+                lambda item: f"{item.get('signal_type')}:{item.get('trigger') or 'UNKNOWN'}",
+                horizons,
+            ),
+            "by_strategy_config": summarize_groups(
+                execution_candidate_evaluations,
+                lambda item: metadata_value(item.get("strategy_config_id")),
+                horizons,
+                metadata_fn=strategy_group_metadata,
+            ),
+            "by_watchlist": summarize_groups(
+                execution_candidate_evaluations,
+                lambda item: metadata_value(item.get("watchlist_id")),
+                horizons,
+                metadata_fn=watchlist_group_metadata,
+            ),
+            "by_strategy_config_trigger": summarize_groups(
+                execution_candidate_evaluations,
+                lambda item: (
+                    f"{metadata_value(item.get('strategy_config_id'))}|"
+                    f"{item.get('signal_type')}:{item.get('trigger') or 'UNKNOWN'}"
+                ),
+                horizons,
+                metadata_fn=strategy_trigger_group_metadata,
+            ),
+            "by_symbol": summarize_groups(execution_candidate_evaluations, lambda item: item.get("symbol"), horizons),
         },
         "by_confirmation": summarize_groups(
             evaluations,

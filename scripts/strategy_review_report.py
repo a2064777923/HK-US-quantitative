@@ -73,10 +73,87 @@ def quality_by_trigger(quality_report):
     return result
 
 
+def downgraded_directional_count(outcome_report):
+    payload = outcome_report if isinstance(outcome_report, dict) else {}
+    counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
+    for value in (
+        payload.get("downgraded_directional_alert_count"),
+        counts.get("downgraded_directional_alert_count"),
+    ):
+        count = as_int(value, default=0)
+        if count:
+            return count
+    return 0
+
+
+def execution_candidate_by_trigger(outcome_report):
+    payload = outcome_report if isinstance(outcome_report, dict) else {}
+    containers = [
+        payload.get("execution_candidate_by_trigger"),
+        payload.get("by_trigger_execution_candidate"),
+    ]
+    execution_candidate = payload.get("execution_candidate")
+    if isinstance(execution_candidate, dict):
+        containers.append(execution_candidate.get("by_trigger"))
+    rows = []
+    for container in containers:
+        if isinstance(container, list):
+            rows = [row for row in container if isinstance(row, dict) and row.get("key")]
+            if rows:
+                return rows
+    return []
+
+
+def trigger_outcome_rows(outcome_report):
+    payload = outcome_report if isinstance(outcome_report, dict) else {}
+    diagnostic_count = downgraded_directional_count(payload)
+    execution_rows = execution_candidate_by_trigger(payload)
+    if diagnostic_count:
+        if execution_rows:
+            return execution_rows, {
+                "scope": "execution_candidate",
+                "source": "execution_candidate.by_trigger",
+                "diagnostic_candidate_outcome_count": diagnostic_count,
+                "execution_candidate_by_trigger_available": True,
+            }
+        return [], {
+            "scope": "execution_candidate_missing",
+            "source": "",
+            "diagnostic_candidate_outcome_count": diagnostic_count,
+            "execution_candidate_by_trigger_available": False,
+        }
+    return (payload.get("by_trigger") or []), {
+        "scope": "all_candidates",
+        "source": "by_trigger",
+        "diagnostic_candidate_outcome_count": diagnostic_count,
+        "execution_candidate_by_trigger_available": bool(execution_rows),
+    }
+
+
+def trigger_outcome_overall(outcome_report):
+    payload = outcome_report if isinstance(outcome_report, dict) else {}
+    diagnostic_count = downgraded_directional_count(payload)
+    execution_candidate = payload.get("execution_candidate")
+    execution_overall = {}
+    if isinstance(execution_candidate, dict) and isinstance(execution_candidate.get("overall"), dict):
+        execution_overall = execution_candidate.get("overall") or {}
+    for container in (
+        payload.get("execution_candidate_overall"),
+        payload.get("overall_execution_candidate"),
+    ):
+        if isinstance(container, dict):
+            execution_overall = container
+            break
+    if diagnostic_count:
+        return execution_overall, execution_overall != {}
+    return payload.get("overall") or {}, True
+
+
 def outcome_by_trigger(outcome_report):
+    trigger_rows, _scope = trigger_outcome_rows(outcome_report)
     return {
         row.get("key"): row
-        for row in (outcome_report or {}).get("by_trigger") or []
+        for row in trigger_rows
         if row.get("key")
     }
 
@@ -189,9 +266,12 @@ def build_trigger_policies(outcome_report, quality_report, horizon=DEFAULT_HORIZ
 
 
 def overall_policy(outcome_report, quality_report, trigger_policies, horizon=DEFAULT_HORIZON):
-    overall_metric = (((outcome_report or {}).get("overall") or {}).get("horizons") or {}).get(horizon) or {}
+    overall_section, executable_scope_available = trigger_outcome_overall(outcome_report)
+    overall_metric = ((overall_section or {}).get("horizons") or {}).get(horizon) or {}
     resolved = as_int(overall_metric.get("resolved_count"))
     reasons = []
+    if downgraded_directional_count(outcome_report) and not executable_scope_available:
+        reasons.append("execution_candidate_outcome_cohort_missing")
     if resolved < MIN_OVERALL_SAMPLE:
         reasons.append(f"overall_outcome_sample_below_{MIN_OVERALL_SAMPLE}")
     avg_return = as_float(overall_metric.get("avg_signed_close_return_pct"))
@@ -254,6 +334,7 @@ def build_report(outcome_report=None, quality_report=None, horizon=DEFAULT_HORIZ
     if not isinstance(quality_report, dict) or "trigger_quality" not in quality_report:
         warnings.append("alert_quality_report_missing_or_invalid")
 
+    _trigger_rows, trigger_outcome_scope = trigger_outcome_rows(outcome_report or {})
     trigger_policies = build_trigger_policies(outcome_report or {}, quality_report or {}, horizon=horizon)
     payload = {
         "schema": "strategy_review_report_v1",
@@ -268,6 +349,8 @@ def build_report(outcome_report=None, quality_report=None, horizon=DEFAULT_HORIZ
             "min_overall_sample": MIN_OVERALL_SAMPLE,
             "min_win_rate_pct": MIN_WIN_RATE_PCT,
             "min_avg_return_pct": MIN_AVG_RETURN_PCT,
+            "trigger_outcome_scope": trigger_outcome_scope.get("scope"),
+            "trigger_outcome_source": trigger_outcome_scope.get("source"),
         },
         "operator_contract": {
             "read_only": True,
@@ -279,9 +362,11 @@ def build_report(outcome_report=None, quality_report=None, horizon=DEFAULT_HORIZ
             "requires_strategy_config_proposal_gate_before_promotion": True,
             "requires_simulation_readiness_learning_and_convergence_gates": True,
             "insufficient_trigger_samples_remain_shadow_only": True,
+            "diagnostic_directional_rows_require_executable_outcome_cohort": True,
         },
         "overall_policy": overall_policy(outcome_report or {}, quality_report or {}, trigger_policies, horizon=horizon),
         "trigger_policies": trigger_policies,
+        "trigger_outcome_scope": trigger_outcome_scope,
         "warnings": warnings,
     }
     payload["recommendations"] = build_recommendations(payload)
