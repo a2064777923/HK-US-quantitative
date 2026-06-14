@@ -81,6 +81,24 @@ def assigned_numbers(source):
     return values
 
 
+def assigned_constant_dict(source, name):
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except Exception:
+            return {}
+        return value if isinstance(value, dict) else {}
+    return {}
+
+
 def has_any(source, patterns):
     return any(pattern in source for pattern in patterns)
 
@@ -91,6 +109,7 @@ def regex_any(source, patterns):
 
 def extract_v5_contract(source):
     constants = assigned_numbers(source)
+    min_supporting_factor_count = assigned_constant_dict(source, "MIN_SUPPORTING_FACTOR_COUNT")
     factors = {
         "trend_ma_stack": has_any(source, ["c > ma5 > ma10 > ma20", "c>ma5>ma10>ma20"]),
         "rsi": "rsi_14" in source and regex_any(source, [r"rsi_14\s*>\s*70", r"rsi_14\s*<\s*30"]),
@@ -116,6 +135,11 @@ def extract_v5_contract(source):
             "event_triggered": "triggered.append" in source and "class TriggerEngine" in source,
             "score_confirmation": "def is_confirmed" in source,
             "watch_downgrade": "emit_unconfirmed_directional_as_watch" in source,
+            "factor_confluence_gate": "min_supporting_factor_count" in source
+            and "factor_confluence_valid" in source,
+            "structured_factor_contributions": "factor_contributions" in source
+            and "score_contribution" in source,
+            "default_min_supporting_factor_count": min_supporting_factor_count,
         },
         "risk_model": {
             "execution_candidate": "execution_candidate" in source,
@@ -161,6 +185,10 @@ def extract_backtest_contract(name, source):
             "score_confirmation": "sc >= BUY" in source or "sc>=BUY" in source,
             "watch_downgrade": False,
             "event_triggered": False,
+            "factor_confluence_gate": "min_supporting_factor_count" in source
+            or "factor_confluence_valid" in source,
+            "structured_factor_contributions": "factor_contributions" in source,
+            "default_min_supporting_factor_count": constants.get("MIN_SUPPORTING_FACTOR_COUNT"),
         },
         "risk_model": {
             "execution_candidate": "execution_candidate" in source,
@@ -285,6 +313,31 @@ def compare_trigger_and_risk(v5, backtests):
     return checks
 
 
+def compare_factor_confluence(v5, backtests):
+    checks = []
+    v5_trigger = v5.get("trigger_model") or {}
+    v5_requires_confluence = bool(v5_trigger.get("factor_confluence_gate"))
+    for backtest in backtests:
+        bt_trigger = backtest.get("trigger_model") or {}
+        missing = []
+        if v5_requires_confluence and not bt_trigger.get("factor_confluence_gate"):
+            missing.append("factor_confluence_gate")
+        if v5_trigger.get("structured_factor_contributions") and not bt_trigger.get("structured_factor_contributions"):
+            missing.append("structured_factor_contributions")
+        checks.append(
+            check(
+                "WARN" if missing else "OK",
+                f"{backtest['name']}:"
+                + ("factor_confluence_contract_drift" if missing else "factor_confluence_contract_aligned"),
+                "Backtest does not model all v5 factor-confluence confirmation requirements."
+                if missing
+                else "Backtest models the v5 factor-confluence confirmation contract visible to the static check.",
+                {"missing_from_backtest": missing, "v5": v5_trigger, "backtest": bt_trigger},
+            )
+        )
+    return checks
+
+
 def compare_data_basis(v5, backtests):
     checks = []
     for backtest in backtests:
@@ -343,6 +396,14 @@ def recommendations(checks):
                 "action": "Model execution_candidate, risk geometry, min RR, and WATCH downgrades in the next research backtest.",
             }
         )
+    if any("factor_confluence_contract_drift" in code for code in codes):
+        recs.append(
+            {
+                "priority": "MEDIUM",
+                "code": "backtest_v5_factor_confluence_gate",
+                "action": "Model v5 structured factor_contributions and min supporting factor-category requirements before using replay/backtest results as trigger-quality evidence.",
+            }
+        )
     return recs
 
 
@@ -356,6 +417,7 @@ def build_report(v5_source, realistic_source, combined_source, source_files=None
     checks.extend(compare_factor_sets(v5, backtests))
     checks.extend(compare_thresholds(v5, backtests))
     checks.extend(compare_trigger_and_risk(v5, backtests))
+    checks.extend(compare_factor_confluence(v5, backtests))
     checks.extend(compare_data_basis(v5, backtests))
     checks.extend(duplicate_score_check(backtests))
     status = worst_status([item["status"] for item in checks])
