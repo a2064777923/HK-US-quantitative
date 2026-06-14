@@ -40,6 +40,9 @@ class DataSourceInventoryReportTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["summary"]["context_file_status_counts"], {"present": 2, "missing": 1})
+        self.assertEqual(payload["summary"]["required_context_file_status_counts"], {"present": 2})
+        self.assertEqual(payload["summary"]["optional_context_file_status_counts"], {"missing": 1})
         self.assertIn("optional_context_reports_not_ready", [row["code"] for row in payload["weaknesses"]])
         self.assertEqual(payload["summary"]["error_weakness_count"], 0)
         self.assertEqual(payload["summary"]["warning_weakness_count"], 0)
@@ -66,6 +69,9 @@ class DataSourceInventoryReportTests(unittest.TestCase):
 
         codes = [row["code"] for row in payload["weaknesses"]]
         self.assertEqual(payload["status"], "DEGRADED")
+        self.assertEqual(payload["summary"]["context_file_status_counts"], {"missing": 2})
+        self.assertEqual(payload["summary"]["required_context_file_status_counts"], {"missing": 1})
+        self.assertEqual(payload["summary"]["optional_context_file_status_counts"], {"missing": 1})
         self.assertIn("context_reports_missing", codes)
         self.assertIn("optional_context_reports_not_ready", codes)
         self.assertIn("refresh_missing_context_reports_before_hermes_review", payload["recommendations"])

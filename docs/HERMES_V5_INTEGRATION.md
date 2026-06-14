@@ -848,6 +848,8 @@ The output schema is `data_source_inventory_report_v1`. `status=OK` means the in
 
 Hermes packet integration is lossless: `hermes_review_packet.py` embeds the report as top-level `data_source_inventory` when available. Existing jobs can ignore the new section. Hermes should use it to avoid overclaiming source awareness; it is not a trade signal, does not change eligibility, and does not submit orders. Source quality remains controlled by `source_reliability_report.py`, which now reads the inventory and maps warning/error weaknesses into `data_source_inventory_weaknesses` or `data_source_inventory_errors`.
 
+The inventory summary separates all context files from live-review-required context files. `context_file_status_counts` remains the full visibility count for backward compatibility, while `required_context_file_status_counts` excludes optional research reports such as local backtest reliability. Optional research visibility is still shown separately through `optional_context_file_status_counts` and `strategy_learning_brief.data_source_inventory.optional_research_context`, so a missing local research report cannot be mistaken for a missing live gate.
+
 Recommended read-only cron:
 
 ```bash

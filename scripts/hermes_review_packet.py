@@ -2813,6 +2813,7 @@ def data_source_inventory_brief(data_source_inventory_payload):
         "status": payload.get("status") or "MISSING",
         "table_status_counts": summary.get("table_status_counts") or {},
         "context_file_status_counts": summary.get("context_file_status_counts") or {},
+        "required_context_file_status_counts": summary.get("required_context_file_status_counts") or {},
         "optional_context_file_status_counts": summary.get("optional_context_file_status_counts") or {},
         "present_input_payload_file_count": summary.get("present_input_payload_file_count"),
         "kline_source_counts": summary.get("kline_source_counts") or {},

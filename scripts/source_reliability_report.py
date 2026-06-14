@@ -271,6 +271,11 @@ def apply_data_source_inventory(component, payload):
             if isinstance(summary.get("context_file_status_counts"), dict)
             else {}
         ),
+        "required_context_file_status_counts": (
+            summary.get("required_context_file_status_counts")
+            if isinstance(summary.get("required_context_file_status_counts"), dict)
+            else {}
+        ),
         "optional_context_file_status_counts": (
             summary.get("optional_context_file_status_counts")
             if isinstance(summary.get("optional_context_file_status_counts"), dict)

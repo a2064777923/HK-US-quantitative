@@ -158,6 +158,7 @@ def data_source_inventory(status="DEGRADED"):
         "summary": {
             "table_status_counts": {"present": 7},
             "context_file_status_counts": {"present": 12, "missing": 1},
+            "required_context_file_status_counts": {"present": 12},
             "optional_context_file_status_counts": {"missing": 1},
             "present_input_payload_file_count": 4,
             "kline_source_counts": {"tencent": 1000, "missing": 2},
@@ -3158,6 +3159,7 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertTrue(inventory["read_only"])
         self.assertFalse(inventory["submits_orders"])
         self.assertEqual(inventory["status"], "DEGRADED")
+        self.assertEqual(inventory["required_context_file_status_counts"], {"present": 12})
         self.assertEqual(inventory["optional_context_file_status_counts"], {"missing": 1})
         self.assertEqual(inventory["optional_research_context"][0]["name"], "local_backtest_reliability")
         self.assertFalse(inventory["optional_research_context"][0]["exists"])

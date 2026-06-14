@@ -29,6 +29,7 @@ def ok_payloads():
             summary={
                 "table_status_counts": {"present": 7},
                 "context_file_status_counts": {"present": 12},
+                "required_context_file_status_counts": {"present": 12},
                 "optional_context_file_status_counts": {"missing": 1},
                 "present_input_payload_file_count": 4,
                 "kline_source_counts": {"tencent": 1000},
@@ -273,6 +274,7 @@ class SourceReliabilityReportTests(unittest.TestCase):
             summary={
                 "table_status_counts": {"present": 7},
                 "context_file_status_counts": {"present": 10, "missing": 2},
+                "required_context_file_status_counts": {"present": 10, "missing": 2},
                 "present_input_payload_file_count": 1,
                 "kline_source_counts": {"missing": 20, "tencent": 1000},
                 "weakness_count": 2,
@@ -292,6 +294,7 @@ class SourceReliabilityReportTests(unittest.TestCase):
         self.assertEqual(result["status"], "DEGRADED")
         self.assertEqual(inventory["reliability_status"], "DEGRADED")
         self.assertIn("data_source_inventory_weaknesses", inventory["reasons"])
+        self.assertEqual(inventory["coverage"]["required_context_file_status_counts"], {"present": 10, "missing": 2})
         self.assertEqual(inventory["coverage"]["weakness_codes"], ["context_reports_missing", "kline_data_source_missing"])
         self.assertIn(
             "review_data_source_inventory_weaknesses_before_hermes_review",
@@ -306,6 +309,7 @@ class SourceReliabilityReportTests(unittest.TestCase):
             summary={
                 "table_status_counts": {"present": 5, "missing": 2},
                 "context_file_status_counts": {"present": 12},
+                "required_context_file_status_counts": {"present": 12},
                 "present_input_payload_file_count": 4,
                 "kline_source_counts": {},
                 "weakness_count": 1,
@@ -333,6 +337,7 @@ class SourceReliabilityReportTests(unittest.TestCase):
             summary={
                 "table_status_counts": {"present": 7},
                 "context_file_status_counts": {"present": 12},
+                "required_context_file_status_counts": {"present": 12},
                 "optional_context_file_status_counts": {"missing": 1},
                 "present_input_payload_file_count": 4,
                 "kline_source_counts": {"tencent": 1000},
@@ -367,6 +372,10 @@ class SourceReliabilityReportTests(unittest.TestCase):
         self.assertEqual(result["status"], "OK")
         self.assertEqual(inventory["reliability_status"], "OK")
         self.assertIn("optional_context_reports_not_ready", inventory["coverage"]["weakness_codes"])
+        self.assertEqual(
+            inventory["coverage"]["required_context_file_status_counts"],
+            {"present": 12},
+        )
         self.assertEqual(
             inventory["coverage"]["optional_context_file_status_counts"],
             {"missing": 1},

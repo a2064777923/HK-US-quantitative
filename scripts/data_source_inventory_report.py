@@ -651,6 +651,17 @@ def build_report(
         else "present"
         for row in context_file_rows or []
     )
+    required_context_rows = [row for row in context_file_rows or [] if row.get("required_for_live_review")]
+    required_context_counts = Counter(
+        "missing"
+        if not row.get("exists")
+        else "stale"
+        if row.get("stale")
+        else "schema_mismatch"
+        if row.get("schema_valid") is False
+        else "present"
+        for row in required_context_rows
+    )
     optional_context_rows = [row for row in context_file_rows or [] if not row.get("required_for_live_review")]
     optional_context_counts = Counter(
         "missing"
@@ -687,6 +698,8 @@ def build_report(
             "table_status_counts": dict(table_status_counts),
             "context_file_count": len(context_file_rows or []),
             "context_file_status_counts": dict(context_status_counts),
+            "required_context_file_count": len(required_context_rows),
+            "required_context_file_status_counts": dict(required_context_counts),
             "optional_context_file_count": len(optional_context_rows),
             "optional_context_file_status_counts": dict(optional_context_counts),
             "input_payload_file_count": len(input_file_rows or []),
