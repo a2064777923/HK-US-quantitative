@@ -39,6 +39,19 @@ def healthy_inputs():
                     "win_rate_pct": 40.0,
                 },
             },
+            "audit_pass_judgment_effect": {
+                "sample_filter": "judgment_audit_status_PASS",
+                "approved_or_reduced": {
+                    "resolved_count": 5,
+                    "avg_signed_return_pct": 1.6,
+                    "win_rate_pct": 60.0,
+                },
+                "rejected_or_held": {
+                    "resolved_count": 5,
+                    "avg_signed_return_pct": -0.3,
+                    "win_rate_pct": 40.0,
+                },
+            },
             "intake_coverage": {
                 "coverage_pct": 50.0,
                 "directional": {"coverage_pct": 100.0, "joined_signal_count": 8},
@@ -472,7 +485,7 @@ class ExecutionReadinessReportTests(unittest.TestCase):
 
     def test_insufficient_hermes_approval_sample_blocks(self):
         inputs = healthy_inputs()
-        inputs["strategy_learning"]["judgment_effect"]["approved_or_reduced"]["resolved_count"] = 4
+        inputs["strategy_learning"]["audit_pass_judgment_effect"]["approved_or_reduced"]["resolved_count"] = 4
 
         payload = report.build_report(**inputs, now=NOW)
 
@@ -482,7 +495,7 @@ class ExecutionReadinessReportTests(unittest.TestCase):
 
     def test_insufficient_hermes_rejection_comparison_sample_blocks(self):
         inputs = healthy_inputs()
-        inputs["strategy_learning"]["judgment_effect"]["rejected_or_held"]["resolved_count"] = 4
+        inputs["strategy_learning"]["audit_pass_judgment_effect"]["rejected_or_held"]["resolved_count"] = 4
 
         payload = report.build_report(**inputs, now=NOW)
 
@@ -492,8 +505,8 @@ class ExecutionReadinessReportTests(unittest.TestCase):
 
     def test_hermes_approval_not_outperforming_rejections_blocks(self):
         inputs = healthy_inputs()
-        inputs["strategy_learning"]["judgment_effect"]["approved_or_reduced"]["avg_signed_return_pct"] = 0.7
-        inputs["strategy_learning"]["judgment_effect"]["rejected_or_held"]["avg_signed_return_pct"] = 0.9
+        inputs["strategy_learning"]["audit_pass_judgment_effect"]["approved_or_reduced"]["avg_signed_return_pct"] = 0.7
+        inputs["strategy_learning"]["audit_pass_judgment_effect"]["rejected_or_held"]["avg_signed_return_pct"] = 0.9
 
         payload = report.build_report(**inputs, now=NOW)
 
@@ -503,13 +516,28 @@ class ExecutionReadinessReportTests(unittest.TestCase):
 
     def test_hermes_approval_low_win_rate_blocks(self):
         inputs = healthy_inputs()
-        inputs["strategy_learning"]["judgment_effect"]["approved_or_reduced"]["win_rate_pct"] = 50.0
+        inputs["strategy_learning"]["audit_pass_judgment_effect"]["approved_or_reduced"]["win_rate_pct"] = 50.0
 
         payload = report.build_report(**inputs, now=NOW)
 
         self.assertEqual(payload["status"], "BLOCKED")
         gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "hermes_judgment_effect"][0]
         self.assertIn("approved/reduced win rate", gate["detail"])
+
+    def test_readiness_uses_audit_pass_judgment_effect_over_raw_effect(self):
+        inputs = healthy_inputs()
+        inputs["strategy_learning"]["judgment_effect"]["approved_or_reduced"]["avg_signed_return_pct"] = 3.0
+        inputs["strategy_learning"]["judgment_effect"]["rejected_or_held"]["avg_signed_return_pct"] = -1.0
+        inputs["strategy_learning"]["audit_pass_judgment_effect"]["approved_or_reduced"]["avg_signed_return_pct"] = 0.2
+        inputs["strategy_learning"]["audit_pass_judgment_effect"]["rejected_or_held"]["avg_signed_return_pct"] = 0.5
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "BLOCKED")
+        gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "hermes_judgment_effect"][0]
+        self.assertTrue(gate["data"]["uses_audit_pass_judgment_effect"])
+        self.assertEqual(gate["data"]["sample_filter"], "judgment_audit_status_PASS")
+        self.assertIn("does not outperform", gate["detail"])
 
     def test_insufficient_simulation_closed_trades_blocks(self):
         inputs = healthy_inputs()
