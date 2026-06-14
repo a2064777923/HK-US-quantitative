@@ -15,6 +15,7 @@ def fresh_alert(signal_id="sig-1", symbol="00700"):
         "signal_type": "BUY",
         "trigger": "unit-test",
         "confirmed": True,
+        "execution_candidate": True,
         "full_score": 0.7,
         "entry_price": 300,
         "stop_loss": 290,
@@ -114,6 +115,15 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertEqual(execute_result["status"], "submitted")
             self.assertIn(alert["signal_id"], state["processed"])
             submit.assert_called_once()
+
+    def test_validate_alert_requires_execution_candidate_true(self):
+        not_candidate = fresh_alert("sig-not-candidate")
+        not_candidate["execution_candidate"] = False
+        missing_candidate = fresh_alert("sig-missing-candidate")
+        missing_candidate.pop("execution_candidate")
+
+        self.assertIn("not_execution_candidate", intake.validate_alert(not_candidate))
+        self.assertIn("not_execution_candidate", intake.validate_alert(missing_candidate))
 
     def test_execute_requires_matching_hermes_judgment(self):
         with tempfile.TemporaryDirectory() as td:

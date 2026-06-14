@@ -766,6 +766,8 @@ def validate_alert(alert):
         reasons.append("missing_symbol")
     if side not in ("BUY", "SELL"):
         reasons.append("unsupported_signal_type")
+    if alert.get("execution_candidate") is not True:
+        reasons.append("not_execution_candidate")
     if os.environ.get("RT_ORDER_REQUIRE_CONFIRMED", "1") != "0" and not alert.get("confirmed", False):
         reasons.append("not_confirmed")
 
