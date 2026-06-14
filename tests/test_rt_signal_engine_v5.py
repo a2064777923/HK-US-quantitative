@@ -1775,7 +1775,15 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(ma5_alert["candidate_signal_type"], "BUY")
         self.assertIsNone(ma5_alert["suppressed_directional_reason"])
         self.assertFalse(ma5_alert["execution_candidate"])
-        self.assertIsNotNone(ma5_alert["stop_loss"])
+        self.assertEqual(ma5_alert["execution_blocked_reasons"], ["not_confirmed"])
+        self.assertIsNone(ma5_alert["entry_price"])
+        self.assertIsNone(ma5_alert["stop_loss"])
+        self.assertIsNone(ma5_alert["take_profit"])
+        self.assertIsNone(ma5_alert["rr_ratio"])
+        self.assertIsNotNone(ma5_alert["candidate_entry_price"])
+        self.assertIsNotNone(ma5_alert["candidate_stop_loss"])
+        self.assertIsNotNone(ma5_alert["candidate_take_profit"])
+        self.assertIsNotNone(ma5_alert["candidate_rr_ratio"])
 
     def test_risk_reward_ratio_uses_actual_price_geometry(self):
         self.assertEqual(rt.TriggerEngine.risk_reward_ratio("BUY", 10.0, 9.97, 10.04), 1.33)

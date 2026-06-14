@@ -18,11 +18,17 @@ def alert(signal_id="sig-packet"):
         "signal_type": "BUY",
         "trigger": "unit-test",
         "confirmed": True,
+        "execution_candidate": True,
         "full_score": 0.72,
         "entry_price": 300,
         "stop_loss": 290,
         "take_profit": 330,
         "rr_ratio": 3.0,
+        "candidate_signal_type": "BUY",
+        "candidate_entry_price": 300,
+        "candidate_stop_loss": 290,
+        "candidate_take_profit": 330,
+        "candidate_rr_ratio": 3.0,
         "generated_at": "2026-06-12T10:00:00",
     }
 
@@ -80,6 +86,33 @@ def sell_alert(signal_id="sell-1"):
 
 
 class HermesReviewPacketTests(unittest.TestCase):
+    def test_alert_summary_preserves_candidate_geometry_for_non_execution_research_rows(self):
+        item = alert("research-1")
+        item.update(
+            {
+                "confirmed": False,
+                "execution_candidate": False,
+                "execution_blocked_reasons": ["not_confirmed"],
+                "entry_price": None,
+                "stop_loss": None,
+                "take_profit": None,
+                "rr_ratio": None,
+            }
+        )
+
+        summary = packet.alert_summary(item)
+
+        self.assertFalse(summary["execution_candidate"])
+        self.assertEqual(summary["execution_blocked_reasons"], ["not_confirmed"])
+        self.assertIsNone(summary["entry_price"])
+        self.assertIsNone(summary["stop_loss"])
+        self.assertIsNone(summary["take_profit"])
+        self.assertEqual(summary["candidate_signal_type"], "BUY")
+        self.assertEqual(summary["candidate_entry_price"], 300)
+        self.assertEqual(summary["candidate_stop_loss"], 290)
+        self.assertEqual(summary["candidate_take_profit"], 330)
+        self.assertEqual(summary["candidate_rr_ratio"], 3.0)
+
     def test_packet_marks_valid_dry_run_as_eligible_for_review_approval(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
         portfolio = {

@@ -1529,13 +1529,29 @@ class TriggerEngine:
                 continue
             self.cooldowns[key] = now
 
-            if emitted_signal_type in ("BUY", "SELL"):
+            execution_candidate = (
+                emitted_signal_type in ("BUY", "SELL")
+                and confirmed
+                and risk_geometry_valid
+            )
+            execution_blocked_reasons = []
+            if signal_type not in ("BUY", "SELL"):
+                execution_blocked_reasons.append("not_directional_candidate")
+            else:
+                if not confirmed:
+                    execution_blocked_reasons.append("not_confirmed")
+                if trigger_shadow_only:
+                    execution_blocked_reasons.append("strategy_review_shadow_only")
+                if not risk_geometry_valid:
+                    execution_blocked_reasons.append(f"risk_geometry_invalid:{risk_geometry_reason}")
+
+            if execution_candidate:
                 entry_price = candidate_entry_price
                 stop_loss = candidate_stop_loss
                 take_profit = candidate_take_profit
                 rr_ratio = candidate_rr_ratio
             else:
-                entry_price = candidate_entry_price
+                entry_price = None
                 stop_loss = None
                 take_profit = None
                 rr_ratio = None
@@ -1565,11 +1581,8 @@ class TriggerEngine:
                 "trigger_review_mode": trigger_review_mode or None,
                 "strategy_policy_shadow_only": trigger_shadow_only,
                 "suppressed_directional_reason": suppressed_directional_reason,
-                "execution_candidate": (
-                    emitted_signal_type in ("BUY", "SELL")
-                    and confirmed
-                    and risk_geometry_valid
-                ),
+                "execution_candidate": execution_candidate,
+                "execution_blocked_reasons": execution_blocked_reasons,
                 "confirmed": confirmed,
                 "risk_geometry_valid": risk_geometry_valid,
                 "risk_geometry_reason": risk_geometry_reason,
