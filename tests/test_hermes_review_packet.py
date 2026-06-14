@@ -1644,6 +1644,74 @@ class HermesReviewPacketTests(unittest.TestCase):
             digest["required_judgment_attention"],
         )
 
+    def test_intraday_timeframe_decision_missing_use_is_fail_visible(self):
+        payload = packet.build_packet(
+            [alert()],
+            health_payload={"status": "OK", "checks": []},
+            portfolio_payload={"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []},
+            intake_results=[intake_result()],
+            execution_readiness_payload=ready_execution_readiness(),
+            market_context_payload={"schema": "market_context_report_v1", "markets": {"HK": {"regime": "risk_on"}}},
+            intraday_timeframe_quality_payload={
+                "schema": "intraday_timeframe_quality_report_v1",
+                "status": "OK",
+                "source": {"read_only": True, "submits_orders": False, "writes_database": False},
+                "summary": {"symbol_count": 1, "soft_confirmation_eligible_symbol_count": 1},
+                "decision_policy": {
+                    "schema": "intraday_timeframe_decision_policy_v1",
+                    "confidence_use": "soft_confirmation_eligible",
+                    "may_raise_confidence": False,
+                    "requires_forward_evidence_before_confidence_raise": True,
+                    "can_override_daily_gates": False,
+                    "execution_permission": False,
+                    "allowed_effects": ["soft_confirm_signal", "cap_confidence", "challenge_signal"],
+                    "reason_codes": [],
+                },
+                "markets": {
+                    "HK": {
+                        "market": "HK",
+                        "status": "OK",
+                        "symbol_count": 1,
+                        "symbols": [
+                            {
+                                "symbol": "00700",
+                                "market": "HK",
+                                "status": "OK",
+                                "allowed_effects": ["soft_confirm_signal", "cap_confidence", "challenge_signal"],
+                                "reasons": [],
+                                "quality": {
+                                    "status": "OK",
+                                    "valid_point_count": 60,
+                                    "full_ohlc_row_count": 60,
+                                    "low_fidelity_point_count": 0,
+                                },
+                            }
+                        ],
+                    }
+                },
+            },
+        )
+
+        digest = payload["review_items"][0]["context_digest"]
+        decision = digest["intraday_timeframe_decision"]
+
+        self.assertTrue(decision["matched"])
+        self.assertFalse(decision["decision_use_present"])
+        self.assertFalse(decision["decision_use_valid"])
+        self.assertEqual(decision["decision_use"], "diagnostic_only")
+        self.assertEqual(decision["allowed_effects"], [])
+        self.assertIn("intraday_timeframe_decision_use_missing", decision["reasons"])
+        self.assertIn(
+            "intraday_timeframe_decision_contract_requires_acknowledgement",
+            digest["required_judgment_attention"],
+        )
+        self.assertTrue(
+            any(
+                "intraday_timeframe_decision_contract_requires_acknowledgement" in rule
+                for rule in payload["judgment_contract"]["hard_rules"]
+            )
+        )
+
     def test_stale_event_catalyst_signal_report_requires_coverage_acknowledgement(self):
         payload = packet.build_packet(
             [alert()],
