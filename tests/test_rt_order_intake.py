@@ -44,6 +44,8 @@ class RtOrderIntakeTests(unittest.TestCase):
     def setUp(self):
         intake.REQUIRE_HERMES_JUDGMENT = True
         intake.MIN_HERMES_CONFIDENCE = 0.6
+        intake.REQUIRE_EXECUTION_READINESS = True
+        intake.MAX_READINESS_REPORT_AGE_HOURS = 2
         intake.REQUIRE_STRATEGY_EVIDENCE = True
         intake.REQUIRE_MARKET_CONTEXT = True
         intake.MIN_MARKET_EXCEPTION_CONFIDENCE = 0.8
@@ -70,9 +72,11 @@ class RtOrderIntakeTests(unittest.TestCase):
         strategy_gate=(True, {"status": "PASS"}),
         conflict_gate=(True, {"status": "PASS"}),
         market_gate=(True, {"status": "PASS"}),
+        readiness_gate=(True, {"status": "PASS"}),
     ):
         patches = [
             patch.object(intake, "health_gate", return_value=(True, {"status": "OK"})),
+            patch.object(intake, "execution_readiness_gate", return_value=readiness_gate),
             patch.object(intake, "strategy_evidence_gate", return_value=strategy_gate),
             patch.object(intake, "symbol_conflict_gate", return_value=conflict_gate),
             patch.object(intake, "fetch_context", return_value=("token", self.context, [])),
@@ -80,9 +84,9 @@ class RtOrderIntakeTests(unittest.TestCase):
         ]
         if submit_result is not None:
             patches.append(patch.object(intake, "submit_order", return_value=submit_result))
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
             if submit_result is not None:
-                with patches[5] as submit:
+                with patches[6] as submit:
                     result = intake.process_alert(alert, mode, state, state_file, judgment_file)
                     return result, submit
             return intake.process_alert(alert, mode, state, state_file, judgment_file), None
@@ -172,8 +176,100 @@ class RtOrderIntakeTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "rejected")
             self.assertIn("strategy_evidence_gate_failed", result["reasons"])
+            self.assertIn("execution_readiness", result)
             self.assertIn("overall_outcome_sample_below_30", result["strategy_evidence"]["reasons"])
             submit.assert_not_called()
+
+    def test_execute_requires_execution_readiness_gate(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-readiness-gate")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            result, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "should-not-submit"},
+                readiness_gate=(
+                    False,
+                    {
+                        "status": "REJECTED",
+                        "readiness_status": "BLOCKED",
+                        "ready_for_execute": False,
+                        "reasons": [
+                            "execution_readiness_status_blocked",
+                            "execution_readiness_ready_for_execute_false",
+                        ],
+                        "would_block_execute": True,
+                    },
+                ),
+            )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("execution_readiness_gate_failed", result["reasons"])
+            self.assertEqual(result["execution_readiness"]["readiness_status"], "BLOCKED")
+            submit.assert_not_called()
+
+    def test_execution_readiness_gate_blocks_execute_when_report_is_blocked(self):
+        report = {
+            "schema": "execution_readiness_report_v1",
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "status": "BLOCKED",
+            "ready_for_execute": False,
+            "blocking_gates": [
+                {
+                    "gate": "simulation_performance_attribution",
+                    "status": "BLOCK",
+                    "detail": "simulation performance report status is FAIL",
+                    "data": {"large": "omitted from compact intake payload"},
+                }
+            ],
+            "warning_gates": [],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "readiness.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+
+            ok, payload = intake.execution_readiness_gate("execute", str(path))
+
+        self.assertFalse(ok)
+        self.assertEqual(payload["status"], "REJECTED")
+        self.assertIn("execution_readiness_status_blocked", payload["reasons"])
+        self.assertIn("execution_readiness_ready_for_execute_false", payload["reasons"])
+        self.assertEqual(payload["blocking_gates"][0]["gate"], "simulation_performance_attribution")
+        self.assertNotIn("data", payload["blocking_gates"][0])
+
+    def test_execution_readiness_gate_dry_run_reports_would_block_execute(self):
+        report = {
+            "schema": "execution_readiness_report_v1",
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "status": "WARN",
+            "ready_for_execute": False,
+            "blocking_gates": [],
+            "warning_gates": [
+                {
+                    "gate": "source_reliability",
+                    "status": "WARN",
+                    "detail": "source reliability is DEGRADED",
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "readiness.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+
+            ok, payload = intake.execution_readiness_gate("dry-run", str(path))
+
+        self.assertTrue(ok)
+        self.assertEqual(payload["status"], "DRY_RUN_ONLY")
+        self.assertTrue(payload["would_block_execute"])
+        self.assertIn("execution_readiness_status_warn", payload["reasons"])
+        self.assertEqual(payload["warning_gates"][0]["gate"], "source_reliability")
 
     def test_execute_requires_market_context_gate(self):
         with tempfile.TemporaryDirectory() as td:

@@ -25,6 +25,7 @@ ALERT_FILE = os.environ.get("RT_ALERT_FILE", "/tmp/rt_signal_alert.json")
 JUDGMENT_FILE = os.environ.get("RT_ORDER_JUDGMENT_FILE", "/tmp/hermes_trade_judgments.jsonl")
 STRATEGY_EVIDENCE_FILE = os.environ.get("RT_SIGNAL_OUTCOME_REPORT_FILE", "/tmp/rt_signal_outcome_report.json")
 MARKET_CONTEXT_FILE = os.environ.get("MARKET_CONTEXT_REPORT_FILE", "/tmp/market_context_report.json")
+EXECUTION_READINESS_FILE = os.environ.get("EXECUTION_READINESS_REPORT_FILE", "/tmp/execution_readiness_report.json")
 
 USD_TO_HKD = float(os.environ.get("USD_TO_HKD", "7.80"))
 POSITION_SIZE_PCT = float(os.environ.get("RT_ORDER_POSITION_SIZE_PCT", "0.10"))
@@ -46,6 +47,8 @@ MIN_TRIGGER_OUTCOME_SAMPLE = int(os.environ.get("RT_ORDER_MIN_TRIGGER_OUTCOME_SA
 MIN_OUTCOME_WIN_RATE_PCT = float(os.environ.get("RT_ORDER_MIN_OUTCOME_WIN_RATE_PCT", "45"))
 MIN_OUTCOME_AVG_RETURN_PCT = float(os.environ.get("RT_ORDER_MIN_OUTCOME_AVG_RETURN_PCT", "0"))
 MAX_OUTCOME_REPORT_AGE_HOURS = int(os.environ.get("RT_ORDER_MAX_OUTCOME_REPORT_AGE_HOURS", "72"))
+REQUIRE_EXECUTION_READINESS = os.environ.get("RT_ORDER_REQUIRE_EXECUTION_READINESS", "1") != "0"
+MAX_READINESS_REPORT_AGE_HOURS = float(os.environ.get("RT_ORDER_MAX_READINESS_REPORT_AGE_HOURS", "2"))
 REQUIRE_MARKET_CONTEXT = os.environ.get("RT_ORDER_REQUIRE_MARKET_CONTEXT", "1") != "0"
 MAX_MARKET_CONTEXT_AGE_HOURS = int(os.environ.get("RT_ORDER_MAX_MARKET_CONTEXT_AGE_HOURS", "72"))
 MIN_MARKET_EXCEPTION_CONFIDENCE = float(os.environ.get("RT_ORDER_MIN_MARKET_EXCEPTION_CONFIDENCE", "0.80"))
@@ -497,6 +500,71 @@ def symbol_conflict_gate(alert, mode, queue_file=ALERT_QUEUE_FILE):
     return not reasons, payload
 
 
+def compact_readiness_gates(gates, limit=12):
+    if not isinstance(gates, list):
+        return []
+    compacted = []
+    for gate in gates[:limit]:
+        if not isinstance(gate, dict):
+            continue
+        compacted.append(
+            {
+                "gate": gate.get("gate"),
+                "status": gate.get("status"),
+                "detail": gate.get("detail"),
+            }
+        )
+    return compacted
+
+
+def execution_readiness_gate(mode, report_file=EXECUTION_READINESS_FILE):
+    """Require the aggregate readiness dashboard before execute mode can submit."""
+    if not REQUIRE_EXECUTION_READINESS:
+        return True, {"status": "DISABLED", "report_file": report_file}
+
+    report = load_json_file(report_file, {})
+    reasons = []
+    if not isinstance(report, dict) or not report:
+        reasons.append("execution_readiness_missing")
+        report = {}
+    elif report.get("schema") != "execution_readiness_report_v1":
+        reasons.append("execution_readiness_schema_invalid")
+
+    generated_at = parse_time(report.get("generated_at")) if report else None
+    if report and not generated_at:
+        reasons.append("execution_readiness_generated_at_missing")
+    elif generated_at:
+        age = datetime.now() - generated_at
+        if age.total_seconds() < -300:
+            reasons.append("execution_readiness_generated_at_in_future")
+        elif age > timedelta(hours=MAX_READINESS_REPORT_AGE_HOURS):
+            reasons.append("execution_readiness_stale")
+
+    status = report.get("status") if report else None
+    ready_for_execute = report.get("ready_for_execute") if report else None
+    if report and status != "READY":
+        reasons.append(f"execution_readiness_status_{str(status or 'missing').lower()}")
+    if report and ready_for_execute is not True:
+        reasons.append("execution_readiness_ready_for_execute_false")
+
+    payload = {
+        "status": "PASS" if not reasons else "REJECTED",
+        "report_file": report_file,
+        "generated_at": report.get("generated_at") if report else None,
+        "readiness_status": status,
+        "ready_for_execute": ready_for_execute,
+        "max_age_hours": MAX_READINESS_REPORT_AGE_HOURS,
+        "blocking_gates": compact_readiness_gates(report.get("blocking_gates")),
+        "warning_gates": compact_readiness_gates(report.get("warning_gates")),
+        "reasons": reasons,
+    }
+    if mode != "execute":
+        payload["status"] = "DRY_RUN_ONLY"
+        payload["would_block_execute"] = bool(reasons)
+        return True, payload
+    return not reasons, payload
+
+
 def strategy_evidence_gate(alert, mode, report_file=STRATEGY_EVIDENCE_FILE):
     """Require sufficient forward outcome evidence before execute mode."""
     if not REQUIRE_STRATEGY_EVIDENCE:
@@ -773,6 +841,9 @@ def build_judgment_request(alert, plan, context):
         },
         "execution_gates": {
             "requires_system_health_ok": True,
+            "requires_execution_readiness": REQUIRE_EXECUTION_READINESS,
+            "execution_readiness_report_file": EXECUTION_READINESS_FILE,
+            "max_readiness_report_age_hours": MAX_READINESS_REPORT_AGE_HOURS,
             "requires_strategy_evidence": REQUIRE_STRATEGY_EVIDENCE,
             "strategy_evidence_horizon": STRATEGY_EVIDENCE_HORIZON,
             "min_outcome_sample": MIN_OUTCOME_SAMPLE,
@@ -1025,12 +1096,26 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
         record_decision(state, sid, decision, state_file, mode)
         return decision
 
+    readiness_ok, execution_readiness = execution_readiness_gate(mode)
+    if not readiness_ok:
+        decision = {
+            "signal_id": sid,
+            "status": "rejected",
+            "reasons": ["execution_readiness_gate_failed"],
+            "health": health,
+            "execution_readiness": execution_readiness,
+            "checked_at": now_iso(),
+        }
+        record_decision(state, sid, decision, state_file, mode)
+        return decision
+
     strategy_ok, strategy_gate = strategy_evidence_gate(alert, mode)
     if not strategy_ok:
         decision = {
             "signal_id": sid,
             "status": "rejected",
             "reasons": ["strategy_evidence_gate_failed"],
+            "execution_readiness": execution_readiness,
             "strategy_evidence": strategy_gate,
             "checked_at": now_iso(),
         }
@@ -1043,6 +1128,7 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
             "signal_id": sid,
             "status": "rejected",
             "reasons": ["symbol_conflict_gate_failed"],
+            "execution_readiness": execution_readiness,
             "strategy_evidence": strategy_gate,
             "symbol_conflict": conflict_gate,
             "checked_at": now_iso(),
@@ -1058,6 +1144,7 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
             "status": "rejected",
             "reasons": plan_errors,
             "warnings": context_warnings,
+            "execution_readiness": execution_readiness,
             "strategy_evidence": strategy_gate,
             "symbol_conflict": conflict_gate,
             "context": {
@@ -1077,6 +1164,7 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
             "status": "rejected",
             "reasons": ["hermes_judgment_gate_failed"],
             "hermes": hermes_gate,
+            "execution_readiness": execution_readiness,
             "strategy_evidence": strategy_gate,
             "symbol_conflict": conflict_gate,
             "context": {
@@ -1096,6 +1184,7 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
             "status": "rejected",
             "reasons": ["market_context_gate_failed"],
             "market_context": market_gate,
+            "execution_readiness": execution_readiness,
             "strategy_evidence": strategy_gate,
             "symbol_conflict": conflict_gate,
             "hermes": hermes_gate,
@@ -1120,6 +1209,7 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
             "equity_hkd": context["equity_hkd"],
             "positions": sorted(context["positions"].keys()),
         },
+        "execution_readiness": execution_readiness,
         "strategy_evidence": strategy_gate,
         "symbol_conflict": conflict_gate,
         "market_context": market_gate,
