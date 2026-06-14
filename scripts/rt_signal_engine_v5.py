@@ -483,6 +483,7 @@ def fetch_hk_quotes(symbols):
                     "low": float(parts[34]) if parts[34] else 0,
                     "prev_close": float(parts[4]) if parts[4] else 0,
                     "volume": float(parts[6]) if parts[6] else 0,  # 手
+                    "volume_unit": "board_lot",
                     "amount": float(parts[37]) if parts[37] else 0,  # 萬元
                     "change_pct": float(parts[32]) if parts[32] else 0,
                     "time": parts[30],
@@ -574,6 +575,29 @@ def normalize_quote(quote):
         }
     )
     return normalized, None
+
+def quote_volume_as_shares(quote):
+    if not isinstance(quote, dict):
+        return None
+    volume = as_float(quote.get("volume"))
+    if volume is None:
+        return None
+    if volume <= 0:
+        return 0
+    raw_unit = quote.get("volume_unit")
+    unit = str(raw_unit if raw_unit not in (None, "") else "shares").strip().lower()
+    if unit in ("share", "shares"):
+        return volume
+    if unit in ("board_lot", "board_lots", "lot", "lots", "hand", "hands"):
+        lot_size = as_float(
+            quote.get("lot_size")
+            or quote.get("board_lot_size")
+            or quote.get("volume_lot_size")
+        )
+        if lot_size is None or lot_size <= 0:
+            return None
+        return volume * lot_size
+    return None
 
 def quote_time_text(value):
     if value in (None, ""):
@@ -1081,8 +1105,13 @@ class IncrementalIndicators:
             avg_vol = sum(historical_volumes) / len(historical_volumes)
             if avg_vol <= 0 or not isinstance(quote_context, dict):
                 return None
+            quote_for_volume = dict(quote_context)
+            quote_for_volume["volume"] = self.rt_volume or 0
+            quote_volume = quote_volume_as_shares(quote_for_volume)
+            if quote_volume is None:
+                return None
             return cumulative_volume_ratio(
-                self.rt_volume or 0,
+                quote_volume,
                 avg_vol,
                 quote_context.get("market"),
                 quote_context.get("time"),
@@ -1404,9 +1433,10 @@ class TriggerEngine:
         # 4. 成交量異動
         if len(indicators.volumes) >= 20:
             avg_vol = sum(indicators.volumes[-20:]) / 20
-            if avg_vol > 0 and quote.get("volume", 0) > 0:
+            quote_volume = quote_volume_as_shares(quote)
+            if avg_vol > 0 and quote_volume is not None and quote_volume > 0:
                 vol_ratio = cumulative_volume_ratio(
-                    quote.get("volume"),
+                    quote_volume,
                     avg_vol,
                     quote.get("market"),
                     quote.get("time"),

@@ -213,6 +213,32 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIsNotNone(score_without_context)
         self.assertIsNotNone(score_with_context)
 
+    def test_realtime_score_requires_comparable_share_volume_units(self):
+        ind = rt.IncrementalIndicators("00700")
+        for _ in range(30):
+            ind._update(100, 101, 99, 1000)
+
+        ind.update_realtime(101, 102, 100, 40)
+
+        unresolved_context = {
+            "market": "HK",
+            "time": "2026-06-11 14:00:00",
+            "volume_unit": "board_lot",
+        }
+        resolved_context = {
+            "market": "HK",
+            "time": "2026-06-11 14:00:00",
+            "volume_unit": "board_lot",
+            "lot_size": 100,
+        }
+        _, unresolved_reasons = ind.get_score(unresolved_context)
+        _, resolved_reasons = ind.get_score(resolved_context)
+
+        self.assertIsNone(ind.score_volume_ratio([], unresolved_context))
+        self.assertGreater(ind.score_volume_ratio([], resolved_context), 2.0)
+        self.assertFalse(any(reason.startswith("放量") for reason in unresolved_reasons))
+        self.assertTrue(any(reason.startswith("放量上漲") for reason in resolved_reasons))
+
     def test_volume_score_supports_up_volume_not_down_volume(self):
         up = rt.IncrementalIndicators("AAPL")
         down = rt.IncrementalIndicators("AAPL")
@@ -565,6 +591,15 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(quote["volume"], 0)
         self.assertEqual(quote["amount"], 0)
         self.assertEqual(quote["change_pct"], 0)
+
+    def test_quote_volume_as_shares_handles_units_explicitly(self):
+        self.assertEqual(rt.quote_volume_as_shares({"volume": 4000}), 4000)
+        self.assertEqual(
+            rt.quote_volume_as_shares({"volume": 40, "volume_unit": "board_lot", "lot_size": 100}),
+            4000,
+        )
+        self.assertIsNone(rt.quote_volume_as_shares({"volume": 40, "volume_unit": "board_lot"}))
+        self.assertIsNone(rt.quote_volume_as_shares({"volume": 40, "volume_unit": "mystery"}))
 
     def test_quote_normalization_serializes_time_and_market(self):
         quote, reason = rt.normalize_quote(
@@ -984,6 +1019,41 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(len(engine.alerts), 1)
         self.assertEqual(engine.alerts[0]["trigger"], "成交量異動")
         self.assertEqual(engine.alerts[0]["signal_type"], "WATCH")
+
+    def test_hk_board_lot_volume_watch_requires_lot_size(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(avg_volume=1000)
+
+        engine.check(
+            "00700",
+            indicators,
+            {
+                "price": 100,
+                "volume": 40,
+                "volume_unit": "board_lot",
+                "market": "HK",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 0,
+            },
+        )
+        self.assertEqual(engine.alerts, [])
+
+        engine.check(
+            "00700",
+            indicators,
+            {
+                "price": 100,
+                "volume": 40,
+                "volume_unit": "board_lot",
+                "lot_size": 100,
+                "market": "HK",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertEqual(len(engine.alerts), 1)
+        self.assertEqual(engine.alerts[0]["trigger"], "成交量異動")
 
     def test_volume_watch_not_triggered_without_parseable_quote_timestamp(self):
         engine = rt.TriggerEngine()
