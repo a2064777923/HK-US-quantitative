@@ -270,10 +270,41 @@ def intake_status(decision):
     return str((decision or {}).get("status") or "missing")
 
 
+def effective_intake_reasons(decision):
+    """Return top-level and dry-run gate blockers through one intake-decision interface."""
+    if not decision:
+        return []
+    reasons = []
+    seen = set()
+
+    def add(reason):
+        text = str(reason or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            reasons.append(text)
+
+    for reason in (decision or {}).get("reasons") or []:
+        add(reason)
+
+    gate_specs = (
+        ("execution_readiness", "execution_readiness_would_block_execute"),
+        ("strategy_evidence", "strategy_evidence_would_block_execute"),
+        ("symbol_conflict", "symbol_conflict_would_block_execute"),
+        ("market_context", "market_context_would_block_execute"),
+    )
+    for field, blocker in gate_specs:
+        gate = decision.get(field) if isinstance(decision.get(field), dict) else {}
+        if gate.get("would_block_execute") or gate.get("status") == "REJECTED":
+            add(blocker)
+            for reason in gate.get("reasons") or []:
+                add(f"{field}:{reason}")
+    return reasons
+
+
 def intake_reason_bucket(decision):
     if not decision:
         return "missing_intake_decision"
-    reasons = (decision or {}).get("reasons") or []
+    reasons = effective_intake_reasons(decision)
     if reasons:
         return str(reasons[0])
     if intake_status(decision) == "dry_run":
@@ -287,9 +318,25 @@ def actionability_category(decision):
     if not decision:
         return "missing_intake_decision"
     status = intake_status(decision)
-    reasons = set((decision or {}).get("reasons") or [])
+    reasons = set(effective_intake_reasons(decision))
     if status in ("dry_run", "submitted"):
+        if "execution_readiness_would_block_execute" in reasons:
+            return "blocked_execution_readiness"
+        if "strategy_evidence_would_block_execute" in reasons:
+            return "blocked_strategy_evidence"
+        if "symbol_conflict_would_block_execute" in reasons:
+            return "blocked_symbol_conflict"
+        if "market_context_would_block_execute" in reasons:
+            return "blocked_market_context"
         return "trade_candidate"
+    if reasons & {"execution_readiness_gate_failed", "execution_readiness_would_block_execute"}:
+        return "blocked_execution_readiness"
+    if reasons & {"health_gate_failed"}:
+        return "blocked_system_health"
+    if reasons & {"hermes_judgment_gate_failed"}:
+        return "blocked_hermes_judgment"
+    if reasons & {"market_context_gate_failed", "market_context_would_block_execute"}:
+        return "blocked_market_context"
     if "alert_too_old" in reasons:
         return "observation_only_stale_alert"
     if "sell_without_position" in reasons:

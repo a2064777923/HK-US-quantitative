@@ -776,6 +776,67 @@ class StrategyLearningReportTests(unittest.TestCase):
         self.assertNotIn("dominant_intake_blocker:alert_too_old", recs)
         self.assertNotIn("dominant_actionability_blocker:observation_only_stale_alert", recs)
 
+    def test_dry_run_execution_readiness_would_block_is_not_trade_candidate(self):
+        decision = intake_decision("sig-ready", status="dry_run")
+        decision["execution_readiness"] = {
+            "status": "DRY_RUN_ONLY",
+            "would_block_execute": True,
+            "reasons": ["execution_readiness_status_blocked"],
+        }
+
+        row = learning.build_join_rows(
+            alerts={"sig-ready": alert("sig-ready")},
+            judgments={},
+            intake_decisions={"sig-ready": decision},
+            outcomes={},
+        )[0]
+        payload = {
+            "overall": {"resolved_count": 0},
+            "judgment_effect": {
+                "approved_or_reduced": {"avg_signed_return_pct": None},
+                "rejected_or_held": {"avg_signed_return_pct": None},
+            },
+            "by_trigger": [],
+            "by_intake_reason": [{"key": "execution_readiness_would_block_execute", "count": 5}],
+            "by_actionability": [{"key": "blocked_execution_readiness", "count": 5}],
+        }
+
+        recs = learning.build_recommendations(payload)
+
+        self.assertEqual(row["intake_reason_bucket"], "execution_readiness_would_block_execute")
+        self.assertEqual(row["actionability_category"], "blocked_execution_readiness")
+        self.assertIn(
+            "execution_readiness:execution_readiness_status_blocked",
+            learning.effective_intake_reasons(decision),
+        )
+        self.assertIn("dominant_actionability_blocker:blocked_execution_readiness", recs)
+
+    def test_execute_execution_readiness_rejection_has_specific_actionability(self):
+        decision = intake_decision("sig-ready-reject", status="rejected", reason="execution_readiness_gate_failed")
+        decision["execution_readiness"] = {
+            "status": "REJECTED",
+            "readiness_status": "BLOCKED",
+            "ready_for_execute": False,
+            "reasons": [
+                "execution_readiness_status_blocked",
+                "execution_readiness_ready_for_execute_false",
+            ],
+        }
+
+        row = learning.build_join_rows(
+            alerts={"sig-ready-reject": alert("sig-ready-reject")},
+            judgments={},
+            intake_decisions={"sig-ready-reject": decision},
+            outcomes={},
+        )[0]
+
+        self.assertEqual(row["intake_reason_bucket"], "execution_readiness_gate_failed")
+        self.assertEqual(row["actionability_category"], "blocked_execution_readiness")
+        self.assertIn(
+            "execution_readiness:execution_readiness_ready_for_execute_false",
+            learning.effective_intake_reasons(decision),
+        )
+
     def test_sizing_blocker_diagnostics_explain_zero_after_lot_rounding(self):
         expensive = alert("sig-size")
         expensive.update(
