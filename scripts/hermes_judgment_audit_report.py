@@ -82,20 +82,6 @@ def decision_is_approval(judgment):
     return str(judgment.get("decision", "")).strip().lower() in ("approve", "reduce")
 
 
-def context_review_reasons(judgment):
-    review = judgment.get("context_review")
-    if not isinstance(review, dict):
-        return ["context_review_missing"]
-    reasons = []
-    for flag in REQUIRED_CONTEXT_REVIEW_FLAGS:
-        if review.get(flag) is not True:
-            reasons.append(f"context_review_missing_{flag}")
-    notes = review.get("notes")
-    if notes is not None and not isinstance(notes, list):
-        reasons.append("context_review_notes_invalid")
-    return reasons
-
-
 def packet_review_maps(packet):
     items = packet.get("review_items") if isinstance(packet, dict) else []
     by_id = {}
@@ -136,6 +122,1081 @@ def market_regime_for_item(packet, item):
     return market, market_payload.get("regime"), market_payload
 
 
+def market_cross_context_for_item(packet, item):
+    market, _regime, market_payload = market_regime_for_item(packet, item)
+    cross = market_payload.get("cross_market") if isinstance(market_payload.get("cross_market"), dict) else {}
+    return market, cross
+
+
+def flattened_judgment_text(judgment):
+    parts = []
+    for key in ("supporting_factors", "opposing_factors", "risk_notes", "event_catalyst_risk_notes"):
+        value = judgment.get(key)
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value)
+        elif value:
+            parts.append(str(value))
+    review = judgment.get("context_review")
+    if isinstance(review, dict):
+        notes = review.get("notes")
+        if isinstance(notes, list):
+            parts.extend(str(item) for item in notes)
+    if judgment.get("market_regime_exception_reason"):
+        parts.append(str(judgment.get("market_regime_exception_reason")))
+    return " ".join(parts).lower()
+
+
+def cross_market_conflict_acknowledgement_reasons(judgment, cross_market):
+    if not isinstance(cross_market, dict) or cross_market.get("alignment") != "conflicts_with_breadth":
+        return []
+    text = flattened_judgment_text(judgment)
+    has_breadth = any(term in text for term in ("breadth", "stock-pool", "stock pool", "ma20", "大市", "廣度"))
+    has_cross_market = any(term in text for term in ("cross-market", "cross market", "sentiment", "index", "etf", "vix", "risk appetite", "情緒", "指數"))
+    reasons = []
+    if not has_breadth:
+        reasons.append("cross_market_conflict_breadth_not_discussed")
+    if not has_cross_market:
+        reasons.append("cross_market_conflict_sentiment_not_discussed")
+    return reasons
+
+
+def native_index_context_for_item(packet, item):
+    _market, _regime, market_payload = market_regime_for_item(packet, item)
+    native = market_payload.get("native_index_context") if isinstance(market_payload.get("native_index_context"), dict) else {}
+    return native
+
+
+def native_index_conflict_acknowledgement_reasons(judgment, native_index_context):
+    if not isinstance(native_index_context, dict) or native_index_context.get("alignment") != "conflicts_with_breadth":
+        return []
+    text = flattened_judgment_text(judgment)
+    has_breadth = any(term in text for term in ("breadth", "stock-pool", "stock pool", "ma20", "大市", "廣度"))
+    has_native_index = any(
+        term in text
+        for term in ("native index", "benchmark", "index", "etf", "hsi", "hang seng", "s&p", "spx", "指數")
+    )
+    reasons = []
+    if not has_breadth:
+        reasons.append("native_index_conflict_breadth_not_discussed")
+    if not has_native_index:
+        reasons.append("native_index_conflict_index_not_discussed")
+    return reasons
+
+
+def relevant_negative_event_catalysts(packet, item):
+    catalysts = packet.get("event_catalysts") if isinstance(packet.get("event_catalysts"), dict) else {}
+    if str(catalysts.get("status") or "").upper() != "RISK":
+        return []
+    alert = item.get("alert") or {}
+    symbol = str(alert.get("symbol") or "").strip().upper()
+    market = str(alert.get("market") or "").strip().upper()
+    if market not in ("HK", "US"):
+        market = "HK" if symbol[:1].isdigit() and len(symbol) == 5 else "US"
+
+    relevant = []
+    for candidate in catalysts.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        if str(candidate.get("sentiment") or "").lower() != "negative":
+            continue
+        scope = str(candidate.get("scope") or "").lower()
+        matched_symbols = {str(value).strip().upper() for value in candidate.get("matched_symbols") or []}
+        matched_markets = {str(value).strip().upper() for value in candidate.get("matched_markets") or []}
+        if scope == "symbol" and symbol and symbol in matched_symbols:
+            relevant.append(candidate)
+        elif scope == "market" and market and market in matched_markets:
+            relevant.append(candidate)
+        elif not scope and (
+            (symbol and symbol in matched_symbols)
+            or (not matched_symbols and market and market in matched_markets)
+        ):
+            relevant.append(candidate)
+    return relevant
+
+
+def event_catalyst_acknowledgement_reasons(judgment, relevant_catalysts):
+    if not relevant_catalysts:
+        return []
+    reasons = []
+    relevant_ids = {str(item.get("id") or "").strip() for item in relevant_catalysts if item.get("id")}
+    acknowledged_ids = {
+        str(value).strip()
+        for value in (judgment.get("event_catalyst_ids") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("event_catalyst_ids"), list) else set()
+    if judgment.get("event_catalyst_risk_acknowledged") is not True:
+        reasons.append("missing_event_catalyst_risk_acknowledgement")
+    if relevant_ids and not (acknowledged_ids & relevant_ids):
+        reasons.append("event_catalyst_ids_missing_or_unmatched")
+    notes = judgment.get("event_catalyst_risk_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("event_catalyst_risk_notes_missing")
+    return reasons
+
+
+def relevant_challenge_buy_event_signals(packet, item):
+    signal_report = packet.get("event_catalyst_signals") if isinstance(packet.get("event_catalyst_signals"), dict) else {}
+    alert = item.get("alert") or {}
+    if str(alert.get("signal_type") or "").upper() != "BUY":
+        return []
+    sid = str(item.get("signal_id") or alert.get("signal_id") or "").strip()
+    if not sid:
+        return []
+    relevant = []
+    for signal in signal_report.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        if signal.get("review_signal_type") != "CHALLENGE_BUY_REVIEW":
+            continue
+        related_ids = {str(value).strip() for value in signal.get("related_v5_signal_ids") or [] if str(value).strip()}
+        if sid in related_ids:
+            relevant.append(signal)
+    return relevant
+
+
+def relevant_support_buy_event_signals(packet, item):
+    signal_report = packet.get("event_catalyst_signals") if isinstance(packet.get("event_catalyst_signals"), dict) else {}
+    alert = item.get("alert") or {}
+    if str(alert.get("signal_type") or "").upper() != "BUY":
+        return []
+    sid = str(item.get("signal_id") or alert.get("signal_id") or "").strip()
+    if not sid:
+        return []
+    relevant = []
+    for signal in signal_report.get("signals") or []:
+        if not isinstance(signal, dict):
+            continue
+        if signal.get("review_signal_type") != "SUPPORT_BUY_REVIEW":
+            continue
+        related_ids = {str(value).strip() for value in signal.get("related_v5_signal_ids") or [] if str(value).strip()}
+        if sid in related_ids:
+            relevant.append(signal)
+    return relevant
+
+
+def event_catalyst_signal_acknowledgement_reasons(judgment, relevant_signals):
+    if not relevant_signals:
+        return []
+    reasons = []
+    relevant_signal_ids = {str(item.get("signal_id") or "").strip() for item in relevant_signals if item.get("signal_id")}
+    acknowledged_signal_ids = {
+        str(value).strip()
+        for value in (judgment.get("event_catalyst_signal_ids") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("event_catalyst_signal_ids"), list) else set()
+    if judgment.get("event_catalyst_risk_acknowledged") is not True:
+        reasons.append("missing_event_catalyst_signal_risk_acknowledgement")
+    if relevant_signal_ids and not (acknowledged_signal_ids & relevant_signal_ids):
+        reasons.append("event_catalyst_signal_ids_missing_or_unmatched")
+    notes = judgment.get("event_catalyst_risk_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("event_catalyst_signal_risk_notes_missing")
+    return reasons
+
+
+def event_catalyst_support_acknowledgement_reasons(judgment, relevant_signals):
+    if not relevant_signals:
+        return []
+    reasons = []
+    relevant_signal_ids = {str(item.get("signal_id") or "").strip() for item in relevant_signals if item.get("signal_id")}
+    acknowledged_signal_ids = {
+        str(value).strip()
+        for value in (judgment.get("event_catalyst_support_signal_ids") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("event_catalyst_support_signal_ids"), list) else set()
+    if judgment.get("event_catalyst_support_acknowledged") is not True:
+        reasons.append("missing_event_catalyst_support_acknowledgement")
+    if relevant_signal_ids and not (acknowledged_signal_ids & relevant_signal_ids):
+        reasons.append("event_catalyst_support_signal_ids_missing_or_unmatched")
+    notes = judgment.get("event_catalyst_support_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("event_catalyst_support_notes_missing")
+    return reasons
+
+
+def event_catalyst_signal_coverage_attention(item):
+    attention = set(required_attention(item))
+    if "event_catalyst_signal_coverage_limit_requires_acknowledgement" not in attention:
+        return {}
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    event_signals = digest.get("event_catalyst_signals") if isinstance(digest.get("event_catalyst_signals"), dict) else {}
+    return {
+        "attention": ["event_catalyst_signal_coverage_limit_requires_acknowledgement"],
+        "status": event_signals.get("status"),
+    }
+
+
+def event_catalyst_coverage_attention(item):
+    attention = set(required_attention(item))
+    if "event_catalyst_coverage_limit_requires_acknowledgement" not in attention:
+        return {}
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    catalysts = digest.get("event_catalysts") if isinstance(digest.get("event_catalysts"), dict) else {}
+    return {
+        "attention": ["event_catalyst_coverage_limit_requires_acknowledgement"],
+        "status": catalysts.get("status"),
+    }
+
+
+def event_catalyst_coverage_acknowledgement_reasons(judgment, coverage_attention):
+    if not coverage_attention:
+        return []
+    reasons = []
+    if judgment.get("event_catalyst_coverage_acknowledged") is not True:
+        reasons.append("missing_event_catalyst_coverage_acknowledgement")
+    notes = judgment.get("event_catalyst_coverage_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("event_catalyst_coverage_notes_missing")
+    acknowledged_status = str(judgment.get("event_catalyst_coverage_status") or "").strip().upper()
+    expected_status = str(coverage_attention.get("status") or "").strip().upper()
+    if expected_status and acknowledged_status and acknowledged_status != expected_status:
+        reasons.append("event_catalyst_coverage_status_mismatch")
+    return reasons
+
+
+def event_catalyst_signal_coverage_acknowledgement_reasons(judgment, coverage_attention):
+    if not coverage_attention:
+        return []
+    reasons = []
+    if judgment.get("event_catalyst_signal_coverage_acknowledged") is not True:
+        reasons.append("missing_event_catalyst_signal_coverage_acknowledgement")
+    notes = judgment.get("event_catalyst_signal_coverage_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("event_catalyst_signal_coverage_notes_missing")
+    acknowledged_status = str(judgment.get("event_catalyst_signal_coverage_status") or "").strip().upper()
+    expected_status = str(coverage_attention.get("status") or "").strip().upper()
+    if expected_status and acknowledged_status and acknowledged_status != expected_status:
+        reasons.append("event_catalyst_signal_coverage_status_mismatch")
+    return reasons
+
+
+def market_context_coverage_attention(item):
+    attention = set(required_attention(item))
+    if "market_context_coverage_limit_requires_acknowledgement" not in attention:
+        return {}
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    market_context = digest.get("market_context") if isinstance(digest.get("market_context"), dict) else {}
+    return {
+        "attention": ["market_context_coverage_limit_requires_acknowledgement"],
+        "status": market_context.get("status"),
+    }
+
+
+def market_context_coverage_acknowledgement_reasons(judgment, coverage_attention):
+    if not coverage_attention:
+        return []
+    reasons = []
+    if judgment.get("market_context_coverage_acknowledged") is not True:
+        reasons.append("missing_market_context_coverage_acknowledgement")
+    notes = judgment.get("market_context_coverage_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("market_context_coverage_notes_missing")
+    acknowledged_status = str(judgment.get("market_context_coverage_status") or "").strip().upper()
+    expected_status = str(coverage_attention.get("status") or "").strip().upper()
+    if expected_status and acknowledged_status and acknowledged_status != expected_status:
+        reasons.append("market_context_coverage_status_mismatch")
+    return reasons
+
+
+def normalize_market(value):
+    text = str(value or "").strip().upper()
+    if text in ("HK", "HKG", "HKEX"):
+        return "HK"
+    if text in ("US", "USA", "NYSE", "NASDAQ"):
+        return "US"
+    if text in ("GLOBAL", "ALL"):
+        return text
+    return text
+
+
+def sentiment_item_markets(item):
+    values = []
+    for key in ("markets", "market", "matched_markets"):
+        value = (item or {}).get(key)
+        if isinstance(value, list):
+            values.extend(value)
+        elif value not in (None, ""):
+            values.append(value)
+    return {normalize_market(value) for value in values if normalize_market(value)}
+
+
+def sentiment_item_is_relevant(item, market):
+    markets = sentiment_item_markets(item)
+    return not markets or "GLOBAL" in markets or "ALL" in markets or market in markets
+
+
+def sentiment_item_is_risk(item):
+    direction = str((item or {}).get("direction") or (item or {}).get("sentiment") or "").strip().lower()
+    score = as_float((item or {}).get("score"), 0.0)
+    return direction in ("risk_off", "negative") or (score is not None and score < 0)
+
+
+def sentiment_item_is_positive_support(item):
+    direction = str((item or {}).get("direction") or (item or {}).get("sentiment") or "").strip().lower()
+    score = as_float((item or {}).get("score"), 0.0)
+    return (
+        direction in ("risk_on", "positive")
+        and (item or {}).get("stale") is not True
+        and score is not None
+        and score >= 0.25
+    )
+
+
+def relevant_risk_market_sentiment(packet, item):
+    alert = item.get("alert") or {}
+    if str(alert.get("signal_type") or "").upper() != "BUY":
+        return []
+    symbol = str(alert.get("symbol") or "").strip()
+    market = normalize_market(alert.get("market"))
+    if market not in ("HK", "US"):
+        market = "HK" if symbol[:1].isdigit() and len(symbol) == 5 else "US"
+
+    rows = []
+    seen = set()
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    digest_sentiment = digest.get("market_sentiment") if isinstance(digest.get("market_sentiment"), dict) else {}
+    sources = []
+    if isinstance(digest_sentiment.get("indicators"), list):
+        sources.append(digest_sentiment.get("indicators") or [])
+    sentiment_payload = packet.get("market_sentiment") if isinstance(packet.get("market_sentiment"), dict) else {}
+    if isinstance(sentiment_payload.get("indicators"), list):
+        sources.append(sentiment_payload.get("indicators") or [])
+
+    for indicators in sources:
+        for indicator in indicators:
+            if not isinstance(indicator, dict):
+                continue
+            key = (
+                str(indicator.get("id") or indicator.get("name") or indicator.get("indicator_type") or ""),
+                str(indicator.get("observed_at") or indicator.get("published_at") or ""),
+                tuple(sorted(sentiment_item_markets(indicator))),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            if sentiment_item_is_relevant(indicator, market) and sentiment_item_is_risk(indicator):
+                rows.append(indicator)
+    return rows
+
+
+def relevant_positive_market_sentiment(packet, item):
+    alert = item.get("alert") or {}
+    if str(alert.get("signal_type") or "").upper() != "BUY":
+        return []
+    symbol = str(alert.get("symbol") or "").strip()
+    market = normalize_market(alert.get("market"))
+    if market not in ("HK", "US"):
+        market = "HK" if symbol[:1].isdigit() and len(symbol) == 5 else "US"
+
+    rows = []
+    seen = set()
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    digest_sentiment = digest.get("market_sentiment") if isinstance(digest.get("market_sentiment"), dict) else {}
+    sources = []
+    if isinstance(digest_sentiment.get("indicators"), list):
+        sources.append(digest_sentiment.get("indicators") or [])
+    sentiment_payload = packet.get("market_sentiment") if isinstance(packet.get("market_sentiment"), dict) else {}
+    if isinstance(sentiment_payload.get("indicators"), list):
+        sources.append(sentiment_payload.get("indicators") or [])
+
+    for indicators in sources:
+        for indicator in indicators:
+            if not isinstance(indicator, dict):
+                continue
+            key = (
+                str(indicator.get("id") or indicator.get("name") or indicator.get("indicator_type") or ""),
+                str(indicator.get("observed_at") or indicator.get("published_at") or ""),
+                tuple(sorted(sentiment_item_markets(indicator))),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            if sentiment_item_is_relevant(indicator, market) and sentiment_item_is_positive_support(indicator):
+                rows.append(indicator)
+    return rows
+
+
+def market_sentiment_acknowledgement_reasons(judgment, relevant_indicators):
+    if not relevant_indicators:
+        return []
+    reasons = []
+    if judgment.get("market_sentiment_risk_acknowledged") is not True:
+        reasons.append("missing_market_sentiment_risk_acknowledgement")
+
+    expected_ids = {
+        str(item.get("id") or item.get("name") or item.get("indicator_type") or "").strip()
+        for item in relevant_indicators
+        if str(item.get("id") or item.get("name") or item.get("indicator_type") or "").strip()
+    }
+    acknowledged_ids = {
+        str(value).strip()
+        for value in (judgment.get("market_sentiment_indicator_ids") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("market_sentiment_indicator_ids"), list) else set()
+    if expected_ids and not (acknowledged_ids & expected_ids):
+        reasons.append("market_sentiment_indicator_ids_missing_or_unmatched")
+
+    notes = judgment.get("market_sentiment_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("market_sentiment_notes_missing")
+    return reasons
+
+
+def market_sentiment_support_acknowledgement_reasons(judgment, relevant_indicators):
+    if not relevant_indicators:
+        return []
+    reasons = []
+    if judgment.get("market_sentiment_support_acknowledged") is not True:
+        reasons.append("missing_market_sentiment_support_acknowledgement")
+
+    expected_ids = {
+        str(item.get("id") or item.get("name") or item.get("indicator_type") or "").strip()
+        for item in relevant_indicators
+        if str(item.get("id") or item.get("name") or item.get("indicator_type") or "").strip()
+    }
+    acknowledged_ids = {
+        str(value).strip()
+        for value in (judgment.get("market_sentiment_support_indicator_ids") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("market_sentiment_support_indicator_ids"), list) else set()
+    if expected_ids and not (acknowledged_ids & expected_ids):
+        reasons.append("market_sentiment_support_indicator_ids_missing_or_unmatched")
+
+    notes = judgment.get("market_sentiment_support_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("market_sentiment_support_notes_missing")
+    return reasons
+
+
+def market_sentiment_coverage_attention(item):
+    attention = set(required_attention(item))
+    if "market_sentiment_coverage_limit_requires_acknowledgement" not in attention:
+        return {}
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    sentiment = digest.get("market_sentiment") if isinstance(digest.get("market_sentiment"), dict) else {}
+    return {
+        "attention": ["market_sentiment_coverage_limit_requires_acknowledgement"],
+        "status": sentiment.get("status"),
+    }
+
+
+def market_sentiment_coverage_acknowledgement_reasons(judgment, coverage_attention):
+    if not coverage_attention:
+        return []
+    reasons = []
+    if judgment.get("market_sentiment_coverage_acknowledged") is not True:
+        reasons.append("missing_market_sentiment_coverage_acknowledgement")
+    notes = judgment.get("market_sentiment_coverage_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("market_sentiment_coverage_notes_missing")
+    acknowledged_status = str(judgment.get("market_sentiment_coverage_status") or "").strip().upper()
+    expected_status = str(coverage_attention.get("status") or "").strip().upper()
+    if expected_status and acknowledged_status and acknowledged_status != expected_status:
+        reasons.append("market_sentiment_coverage_status_mismatch")
+    return reasons
+
+
+def symbol_tokens(value, market=None):
+    raw = str(value or "").strip().upper()
+    if not raw:
+        return set()
+    tokens = {raw}
+    base = raw
+    for suffix in (".HK", ".US"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            tokens.add(base)
+            break
+    if base.isdigit():
+        stripped = base.lstrip("0") or "0"
+        tokens.add(stripped)
+        tokens.add(base.zfill(4))
+        tokens.add(base.zfill(5))
+        if normalize_market(market) == "HK":
+            tokens.add(f"{base.zfill(4)}.HK")
+            tokens.add(f"{base.zfill(5)}.HK")
+    return {token for token in tokens if token}
+
+
+def external_item_symbols(item, market=None):
+    values = []
+    for key in ("symbols", "symbol", "tickers", "ticker", "matched_symbols"):
+        value = (item or {}).get(key)
+        if isinstance(value, list):
+            values.extend(value)
+        elif value not in (None, ""):
+            values.append(value)
+    tokens = set()
+    for value in values:
+        tokens.update(symbol_tokens(value, market=market))
+    return tokens
+
+
+def external_item_is_relevant(item, symbol, market):
+    item_symbols = external_item_symbols(item, market=market)
+    alert_symbols = symbol_tokens(symbol, market=market)
+    if item_symbols and alert_symbols and item_symbols & alert_symbols:
+        return True
+    return sentiment_item_is_relevant(item, market)
+
+
+def external_item_is_negative(item):
+    sentiment = str((item or {}).get("sentiment") or (item or {}).get("direction") or "").strip().lower()
+    score = as_float((item or {}).get("impact_score"), as_float((item or {}).get("score"), 0.0))
+    return sentiment == "negative" and (score is None or score >= 0)
+
+
+def external_item_is_positive_support(item):
+    sentiment = str((item or {}).get("sentiment") or (item or {}).get("direction") or "").strip().lower()
+    score = as_float((item or {}).get("impact_score"), as_float((item or {}).get("score"), 0.0))
+    return sentiment == "positive" and (item or {}).get("stale") is not True and score is not None and score >= 0.7
+
+
+def relevant_negative_external_context(packet, item):
+    alert = item.get("alert") or {}
+    if str(alert.get("signal_type") or "").upper() != "BUY":
+        return []
+    symbol = str(alert.get("symbol") or "").strip()
+    market = normalize_market(alert.get("market"))
+    if market not in ("HK", "US"):
+        market = "HK" if symbol[:1].isdigit() and len(symbol) == 5 else "US"
+
+    rows = []
+    seen = set()
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    digest_external = digest.get("external_market_context") if isinstance(digest.get("external_market_context"), dict) else {}
+    sources = []
+    if isinstance(digest_external.get("items"), list):
+        sources.append(digest_external.get("items") or [])
+    external_payload = packet.get("external_market_context") if isinstance(packet.get("external_market_context"), dict) else {}
+    if isinstance(external_payload.get("items"), list):
+        sources.append(external_payload.get("items") or [])
+
+    for external_items in sources:
+        for external_item in external_items:
+            if not isinstance(external_item, dict):
+                continue
+            key = (
+                str(external_item.get("id") or external_item.get("title") or external_item.get("url") or ""),
+                str(external_item.get("published_at") or external_item.get("observed_at") or ""),
+                tuple(sorted(sentiment_item_markets(external_item))),
+                tuple(sorted(external_item_symbols(external_item, market=market))),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            if external_item_is_relevant(external_item, symbol, market) and external_item_is_negative(external_item):
+                rows.append(external_item)
+    return rows
+
+
+def relevant_positive_external_context(packet, item):
+    alert = item.get("alert") or {}
+    if str(alert.get("signal_type") or "").upper() != "BUY":
+        return []
+    symbol = str(alert.get("symbol") or "").strip()
+    market = normalize_market(alert.get("market"))
+    if market not in ("HK", "US"):
+        market = "HK" if symbol[:1].isdigit() and len(symbol) == 5 else "US"
+
+    rows = []
+    seen = set()
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    digest_external = digest.get("external_market_context") if isinstance(digest.get("external_market_context"), dict) else {}
+    sources = []
+    if isinstance(digest_external.get("items"), list):
+        sources.append(digest_external.get("items") or [])
+    external_payload = packet.get("external_market_context") if isinstance(packet.get("external_market_context"), dict) else {}
+    if isinstance(external_payload.get("items"), list):
+        sources.append(external_payload.get("items") or [])
+
+    for external_items in sources:
+        for external_item in external_items:
+            if not isinstance(external_item, dict):
+                continue
+            key = (
+                str(external_item.get("id") or external_item.get("title") or external_item.get("url") or ""),
+                str(external_item.get("published_at") or external_item.get("observed_at") or ""),
+                tuple(sorted(sentiment_item_markets(external_item))),
+                tuple(sorted(external_item_symbols(external_item, market=market))),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            if external_item_is_relevant(external_item, symbol, market) and external_item_is_positive_support(external_item):
+                rows.append(external_item)
+    return rows
+
+
+def external_context_acknowledgement_reasons(judgment, relevant_items):
+    if not relevant_items:
+        return []
+    reasons = []
+    if judgment.get("external_market_context_risk_acknowledged") is not True:
+        reasons.append("missing_external_market_context_risk_acknowledgement")
+
+    expected_ids = {
+        str(item.get("id") or item.get("title") or item.get("url") or "").strip()
+        for item in relevant_items
+        if str(item.get("id") or item.get("title") or item.get("url") or "").strip()
+    }
+    acknowledged_ids = {
+        str(value).strip()
+        for value in (judgment.get("external_market_context_ids") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("external_market_context_ids"), list) else set()
+    if expected_ids and not (acknowledged_ids & expected_ids):
+        reasons.append("external_market_context_ids_missing_or_unmatched")
+
+    notes = judgment.get("external_market_context_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("external_market_context_notes_missing")
+    return reasons
+
+
+def external_context_support_acknowledgement_reasons(judgment, relevant_items):
+    if not relevant_items:
+        return []
+    reasons = []
+    if judgment.get("external_market_context_support_acknowledged") is not True:
+        reasons.append("missing_external_market_context_support_acknowledgement")
+
+    expected_ids = {
+        str(item.get("id") or item.get("title") or item.get("url") or "").strip()
+        for item in relevant_items
+        if str(item.get("id") or item.get("title") or item.get("url") or "").strip()
+    }
+    acknowledged_ids = {
+        str(value).strip()
+        for value in (judgment.get("external_market_context_support_ids") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("external_market_context_support_ids"), list) else set()
+    if expected_ids and not (acknowledged_ids & expected_ids):
+        reasons.append("external_market_context_support_ids_missing_or_unmatched")
+
+    notes = judgment.get("external_market_context_support_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("external_market_context_support_notes_missing")
+    return reasons
+
+
+def external_market_context_coverage_attention(item):
+    attention = set(required_attention(item))
+    if "external_market_context_coverage_limit_requires_acknowledgement" not in attention:
+        return {}
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    external = digest.get("external_market_context") if isinstance(digest.get("external_market_context"), dict) else {}
+    return {
+        "attention": ["external_market_context_coverage_limit_requires_acknowledgement"],
+        "status": external.get("status"),
+    }
+
+
+def external_market_context_coverage_acknowledgement_reasons(judgment, coverage_attention):
+    if not coverage_attention:
+        return []
+    reasons = []
+    if judgment.get("external_market_context_coverage_acknowledged") is not True:
+        reasons.append("missing_external_market_context_coverage_acknowledgement")
+    notes = judgment.get("external_market_context_coverage_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("external_market_context_coverage_notes_missing")
+    acknowledged_status = str(judgment.get("external_market_context_coverage_status") or "").strip().upper()
+    expected_status = str(coverage_attention.get("status") or "").strip().upper()
+    if expected_status and acknowledged_status and acknowledged_status != expected_status:
+        reasons.append("external_market_context_coverage_status_mismatch")
+    return reasons
+
+
+def relevant_partial_fundamentals(packet, item):
+    fundamentals = packet.get("fundamentals_context") if isinstance(packet.get("fundamentals_context"), dict) else {}
+    if str(fundamentals.get("schema") or "") != "fundamentals_context_report_v1":
+        return []
+    alert = item.get("alert") or {}
+    if str(alert.get("signal_type") or "").upper() != "BUY":
+        return []
+    symbol = str(alert.get("symbol") or "").strip().upper()
+    if not symbol:
+        return []
+    relevant = []
+    for row in fundamentals.get("items") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("symbol") or "").strip().upper() != symbol:
+            continue
+        completeness = row.get("fundamental_completeness") if isinstance(row.get("fundamental_completeness"), dict) else {}
+        flags = {str(flag) for flag in row.get("valuation_flags") or []}
+        source = str(row.get("source") or "")
+        if (
+            completeness.get("level") in ("partial", "empty")
+            or "partial_fundamentals" in flags
+            or source == "tencent_quote_snapshot"
+        ):
+            relevant.append(row)
+    return relevant
+
+
+def relevant_supportive_fundamentals(packet, item):
+    fundamentals = packet.get("fundamentals_context") if isinstance(packet.get("fundamentals_context"), dict) else {}
+    if str(fundamentals.get("schema") or "") != "fundamentals_context_report_v1":
+        return []
+    alert = item.get("alert") or {}
+    if str(alert.get("signal_type") or "").upper() != "BUY":
+        return []
+    symbol = str(alert.get("symbol") or "").strip().upper()
+    if not symbol:
+        return []
+    relevant = []
+    for row in fundamentals.get("items") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("symbol") or "").strip().upper() != symbol:
+            continue
+        completeness = row.get("fundamental_completeness") if isinstance(row.get("fundamental_completeness"), dict) else {}
+        flags = {str(flag) for flag in row.get("valuation_flags") or []}
+        if row.get("stale") is not True and completeness.get("level") == "full" and not flags:
+            relevant.append(row)
+    return relevant
+
+
+def fundamentals_limit_acknowledgement_reasons(judgment, relevant_rows):
+    if not relevant_rows:
+        return []
+    reasons = []
+    if judgment.get("fundamentals_context_limit_acknowledged") is not True:
+        reasons.append("missing_fundamentals_context_limit_acknowledgement")
+    expected_symbols = {str(row.get("symbol") or "").strip().upper() for row in relevant_rows if row.get("symbol")}
+    acknowledged_symbols = {
+        str(value).strip().upper()
+        for value in (judgment.get("fundamentals_context_symbols") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("fundamentals_context_symbols"), list) else set()
+    if expected_symbols and not (acknowledged_symbols & expected_symbols):
+        reasons.append("fundamentals_context_symbols_missing_or_unmatched")
+
+    expected_missing = set()
+    for row in relevant_rows:
+        completeness = row.get("fundamental_completeness") if isinstance(row.get("fundamental_completeness"), dict) else {}
+        expected_missing.update(str(value) for value in completeness.get("missing_metrics") or [] if str(value))
+    acknowledged_missing = {
+        str(value).strip()
+        for value in (judgment.get("fundamentals_context_missing_metrics") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("fundamentals_context_missing_metrics"), list) else set()
+    if expected_missing and not (acknowledged_missing & expected_missing):
+        reasons.append("fundamentals_context_missing_metrics_not_discussed")
+
+    notes = judgment.get("fundamentals_context_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("fundamentals_context_notes_missing")
+    return reasons
+
+
+def fundamentals_support_acknowledgement_reasons(judgment, relevant_rows):
+    if not relevant_rows:
+        return []
+    reasons = []
+    if judgment.get("fundamentals_context_support_acknowledged") is not True:
+        reasons.append("missing_fundamentals_context_support_acknowledgement")
+
+    expected_symbols = {
+        str(row.get("symbol") or "").strip().upper()
+        for row in relevant_rows
+        if str(row.get("symbol") or "").strip()
+    }
+    acknowledged_symbols = {
+        str(value).strip().upper()
+        for value in (judgment.get("fundamentals_context_support_symbols") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("fundamentals_context_support_symbols"), list) else set()
+    if expected_symbols and not (acknowledged_symbols & expected_symbols):
+        reasons.append("fundamentals_context_support_symbols_missing_or_unmatched")
+
+    expected_metrics = set()
+    for row in relevant_rows:
+        completeness = row.get("fundamental_completeness") if isinstance(row.get("fundamental_completeness"), dict) else {}
+        expected_metrics.update(str(value) for value in completeness.get("available_metrics") or [] if str(value))
+    acknowledged_metrics = {
+        str(value).strip()
+        for value in (judgment.get("fundamentals_context_support_metrics") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("fundamentals_context_support_metrics"), list) else set()
+    if expected_metrics and not (acknowledged_metrics & expected_metrics):
+        reasons.append("fundamentals_context_support_metrics_missing_or_unmatched")
+
+    notes = judgment.get("fundamentals_context_support_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("fundamentals_context_support_notes_missing")
+    return reasons
+
+
+def fundamentals_context_coverage_attention(item):
+    attention = set(required_attention(item))
+    if "fundamentals_context_coverage_limit_requires_acknowledgement" not in attention:
+        return {}
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    fundamentals = digest.get("fundamentals_context") if isinstance(digest.get("fundamentals_context"), dict) else {}
+    return {
+        "attention": ["fundamentals_context_coverage_limit_requires_acknowledgement"],
+        "status": fundamentals.get("status"),
+    }
+
+
+def fundamentals_context_coverage_acknowledgement_reasons(judgment, coverage_attention):
+    if not coverage_attention:
+        return []
+    reasons = []
+    if judgment.get("fundamentals_context_coverage_acknowledged") is not True:
+        reasons.append("missing_fundamentals_context_coverage_acknowledgement")
+    notes = judgment.get("fundamentals_context_coverage_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("fundamentals_context_coverage_notes_missing")
+    acknowledged_status = str(judgment.get("fundamentals_context_coverage_status") or "").strip().upper()
+    expected_status = str(coverage_attention.get("status") or "").strip().upper()
+    if expected_status and acknowledged_status and acknowledged_status != expected_status:
+        reasons.append("fundamentals_context_coverage_status_mismatch")
+    return reasons
+
+
+def degraded_source_reliability(packet):
+    payload = packet.get("source_reliability") if isinstance(packet.get("source_reliability"), dict) else {}
+    if not payload:
+        return {}
+    status = str(payload.get("status") or "").upper()
+    degraded_statuses = {"DEGRADED", "STALE", "MISSING", "FAIL"}
+    components = []
+    for component in payload.get("components") or []:
+        if not isinstance(component, dict):
+            continue
+        reliability_status = str(component.get("reliability_status") or component.get("status") or "").upper()
+        reasons = [
+            str(reason)
+            for reason in (component.get("reasons") or [])
+            if str(reason).strip()
+        ]
+        if reliability_status in degraded_statuses or reasons:
+            components.append(
+                {
+                    "name": str(component.get("name") or component.get("component") or "").strip(),
+                    "status": reliability_status,
+                    "reasons": reasons,
+                }
+            )
+    top_reasons = [
+        str(reason)
+        for reason in (payload.get("recommendations") or payload.get("reasons") or [])
+        if str(reason).strip()
+    ]
+    if status in degraded_statuses or components:
+        return {
+            "status": status or "UNKNOWN",
+            "components": components,
+            "reasons": top_reasons,
+        }
+    return {}
+
+
+def source_reliability_acknowledgement_reasons(judgment, source_reliability):
+    if not source_reliability:
+        return []
+    reasons = []
+    if judgment.get("source_reliability_limit_acknowledged") is not True:
+        reasons.append("missing_source_reliability_limit_acknowledgement")
+
+    expected_reasons = set(source_reliability.get("reasons") or [])
+    expected_components = set()
+    for component in source_reliability.get("components") or []:
+        name = str(component.get("name") or "").strip()
+        if name:
+            expected_components.add(name)
+        expected_reasons.update(component.get("reasons") or [])
+
+    acknowledged_reasons = {
+        str(value).strip()
+        for value in (judgment.get("source_reliability_reasons") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("source_reliability_reasons"), list) else set()
+    acknowledged_components = {
+        str(value).strip()
+        for value in (judgment.get("source_reliability_components") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("source_reliability_components"), list) else set()
+
+    if expected_reasons and not (acknowledged_reasons & expected_reasons):
+        reasons.append("source_reliability_reasons_missing_or_unmatched")
+    if expected_components and not (acknowledged_components & expected_components):
+        reasons.append("source_reliability_components_missing_or_unmatched")
+
+    notes = judgment.get("source_reliability_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("source_reliability_notes_missing")
+    return reasons
+
+
+def weak_simulation_performance(packet):
+    payload = packet.get("simulation_performance") if isinstance(packet.get("simulation_performance"), dict) else {}
+    if not payload:
+        return {}
+    if payload.get("schema") != "simulation_performance_report_v1":
+        return {}
+    status = str(payload.get("status") or "").strip().upper()
+    if status not in ("WARN", "FAIL"):
+        return {}
+    reason_codes = [
+        str(reason)
+        for reason in (payload.get("reason_codes") or [])
+        if str(reason).strip()
+    ]
+    recommendations = [
+        str(reason)
+        for reason in (payload.get("recommendations") or [])
+        if str(reason).strip()
+    ]
+    remediation = payload.get("remediation_plan") if isinstance(payload.get("remediation_plan"), dict) else {}
+    return {
+        "status": status,
+        "reason_codes": reason_codes,
+        "recommendations": recommendations,
+        "remediation_plan_hash": remediation.get("proposal_hash"),
+    }
+
+
+def simulation_performance_acknowledgement_reasons(judgment, simulation_performance):
+    if not simulation_performance:
+        return []
+    reasons = []
+    if judgment.get("simulation_performance_acknowledged") is not True:
+        reasons.append("missing_simulation_performance_acknowledgement")
+
+    acknowledged_status = str(judgment.get("simulation_performance_status") or "").strip().upper()
+    expected_status = str(simulation_performance.get("status") or "").strip().upper()
+    if expected_status and acknowledged_status and acknowledged_status != expected_status:
+        reasons.append("simulation_performance_status_mismatch")
+    if expected_status and not acknowledged_status:
+        reasons.append("simulation_performance_status_missing")
+
+    expected_reasons = set(simulation_performance.get("reason_codes") or [])
+    acknowledged_reasons = {
+        str(value).strip()
+        for value in (judgment.get("simulation_performance_reason_codes") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("simulation_performance_reason_codes"), list) else set()
+    if expected_reasons and not (acknowledged_reasons & expected_reasons):
+        reasons.append("simulation_performance_reason_codes_missing_or_unmatched")
+
+    notes = judgment.get("simulation_performance_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("simulation_performance_notes_missing")
+    return reasons
+
+
+def required_attention(item):
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    return [str(value) for value in digest.get("required_judgment_attention") or [] if str(value).strip()]
+
+
+def intraday_context_attention(item):
+    attention = set(required_attention(item))
+    relevant = [
+        value
+        for value in sorted(attention)
+        if value
+        in (
+            "intraday_context_missing_or_stale_requires_disclosure",
+            "intraday_context_challenges_buy_requires_discussion",
+            "intraday_context_challenges_sell_requires_discussion",
+            "intraday_context_quality_degraded_requires_disclosure",
+            "intraday_context_timeframe_conflict_requires_disclosure",
+            "intraday_minute_producer_limit_requires_acknowledgement",
+            "intraday_market_not_open_requires_session_context",
+            "intraday_market_session_overrides_limit_requires_disclosure",
+        )
+    ]
+    if not relevant:
+        return {}
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    intraday = digest.get("intraday_context") if isinstance(digest.get("intraday_context"), dict) else {}
+    return {
+        "attention": relevant,
+        "status": intraday.get("status"),
+        "notes": intraday.get("notes") or intraday.get("hermes_notes") or [],
+    }
+
+
+def intraday_context_acknowledgement_reasons(judgment, intraday_attention):
+    if not intraday_attention:
+        return []
+    reasons = []
+    if judgment.get("intraday_context_acknowledged") is not True:
+        reasons.append("missing_intraday_context_acknowledgement")
+    notes = judgment.get("intraday_context_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("intraday_context_notes_missing")
+    acknowledged_status = str(judgment.get("intraday_context_status") or "").strip().upper()
+    expected_status = str(intraday_attention.get("status") or "").strip().upper()
+    if expected_status and acknowledged_status and acknowledged_status != expected_status:
+        reasons.append("intraday_context_status_mismatch")
+    return reasons
+
+
+def intraday_signal_evidence_attention(item):
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    evidence = (
+        digest.get("intraday_signal_evidence")
+        if isinstance(digest.get("intraday_signal_evidence"), dict)
+        else {}
+    )
+    if not evidence.get("requires_judgment_acknowledgement"):
+        return {}
+    return {
+        "alignment": evidence.get("alignment"),
+        "codes": [str(value).strip() for value in evidence.get("codes") or [] if str(value).strip()],
+    }
+
+
+def intraday_signal_evidence_acknowledgement_reasons(judgment, evidence_attention):
+    if not evidence_attention:
+        return []
+    reasons = []
+    if judgment.get("intraday_signal_evidence_acknowledged") is not True:
+        reasons.append("missing_intraday_signal_evidence_acknowledgement")
+
+    expected_alignment = str(evidence_attention.get("alignment") or "").strip()
+    acknowledged_alignment = str(judgment.get("intraday_signal_evidence_alignment") or "").strip()
+    if expected_alignment and not acknowledged_alignment:
+        reasons.append("intraday_signal_evidence_alignment_missing")
+    elif expected_alignment and acknowledged_alignment and acknowledged_alignment != expected_alignment:
+        reasons.append("intraday_signal_evidence_alignment_mismatch")
+
+    expected_codes = set(evidence_attention.get("codes") or [])
+    acknowledged_codes = {
+        str(value).strip()
+        for value in (judgment.get("intraday_signal_evidence_codes") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("intraday_signal_evidence_codes"), list) else set()
+    if expected_codes and not (acknowledged_codes & expected_codes):
+        reasons.append("intraday_signal_evidence_codes_missing_or_unmatched")
+
+    notes = judgment.get("intraday_signal_evidence_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("intraday_signal_evidence_notes_missing")
+    return reasons
+
+
+def context_review_reasons(judgment):
+    review = judgment.get("context_review")
+    if not isinstance(review, dict):
+        return ["context_review_missing"]
+    reasons = []
+    for flag in REQUIRED_CONTEXT_REVIEW_FLAGS:
+        if review.get(flag) is not True:
+            reasons.append(f"context_review_missing_{flag}")
+    notes = review.get("notes")
+    if notes is not None and not isinstance(notes, list):
+        reasons.append("context_review_notes_invalid")
+    return reasons
+
+
 def strategy_evidence_reasons(packet, item):
     evidence = packet.get("strategy_evidence") or {}
     if evidence.get("schema") != "rt_signal_outcome_report_v1":
@@ -160,6 +1221,56 @@ def strategy_evidence_reasons(packet, item):
             reasons.append("trigger_outcome_missing")
         else:
             reasons.extend(intake.metric_reasons(trigger_metric, "resolved_count", intake.MIN_TRIGGER_OUTCOME_SAMPLE, "trigger"))
+    return reasons
+
+
+def weak_hermes_alpha_evidence(packet):
+    brief = packet.get("strategy_learning_brief") if isinstance(packet.get("strategy_learning_brief"), dict) else {}
+    if not brief:
+        return {
+            "schema": "hermes_alpha_evidence_summary_v1",
+            "status": "MISSING",
+            "reasons": ["strategy_learning_brief_missing"],
+        }
+    evidence = brief.get("hermes_alpha_evidence") if isinstance(brief.get("hermes_alpha_evidence"), dict) else {}
+    if not evidence:
+        return {
+            "schema": "hermes_alpha_evidence_summary_v1",
+            "status": "MISSING",
+            "reasons": ["hermes_alpha_evidence_missing"],
+        }
+    status = str(evidence.get("status") or "").strip().upper()
+    if status not in ("INSUFFICIENT", "NEGATIVE", "MISSING", "INVALID"):
+        return {}
+    return evidence
+
+
+def hermes_alpha_evidence_acknowledgement_reasons(judgment, evidence):
+    if not evidence:
+        return []
+    reasons = []
+    if judgment.get("hermes_alpha_evidence_acknowledged") is not True:
+        reasons.append("missing_hermes_alpha_evidence_acknowledgement")
+
+    expected_status = str(evidence.get("status") or "").strip().upper()
+    acknowledged_status = str(judgment.get("hermes_alpha_evidence_status") or "").strip().upper()
+    if expected_status and not acknowledged_status:
+        reasons.append("hermes_alpha_evidence_status_missing")
+    elif expected_status and acknowledged_status and acknowledged_status != expected_status:
+        reasons.append("hermes_alpha_evidence_status_mismatch")
+
+    expected_reasons = {str(value).strip() for value in evidence.get("reasons") or [] if str(value).strip()}
+    acknowledged_reasons = {
+        str(value).strip()
+        for value in (judgment.get("hermes_alpha_evidence_reasons") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("hermes_alpha_evidence_reasons"), list) else set()
+    if expected_reasons and not (acknowledged_reasons & expected_reasons):
+        reasons.append("hermes_alpha_evidence_reasons_missing_or_unmatched")
+
+    notes = judgment.get("hermes_alpha_evidence_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("hermes_alpha_evidence_notes_missing")
     return reasons
 
 
@@ -191,12 +1302,12 @@ def validate_judgment_contract(judgment):
                 reasons.append("max_quantity_invalid")
         except (TypeError, ValueError):
             reasons.append("max_quantity_missing")
-    if decision in ("approve", "reduce"):
-        reasons.extend(context_review_reasons(judgment))
     if judgment.get("market_regime_exception") is True:
         ok, exception_reasons = intake.market_exception_from_judgment(judgment)
         if not ok:
             reasons.extend(exception_reasons)
+    if decision in ("approve", "reduce"):
+        reasons.extend(context_review_reasons(judgment))
     return reasons
 
 
@@ -224,7 +1335,59 @@ def audit_judgment(judgment, packet, review_by_id, eligible_ids, now=None, packe
                 if not ok:
                     reasons.append(f"{market}_risk_off_buy_approval_without_exception")
                     reasons.extend(exception_reasons)
+            _market, cross_market = market_cross_context_for_item(packet, item)
+            reasons.extend(cross_market_conflict_acknowledgement_reasons(judgment, cross_market))
+            native_index_context = native_index_context_for_item(packet, item)
+            reasons.extend(native_index_conflict_acknowledgement_reasons(judgment, native_index_context))
+            relevant_catalysts = relevant_negative_event_catalysts(packet, item)
+            reasons.extend(event_catalyst_acknowledgement_reasons(judgment, relevant_catalysts))
+            relevant_event_signals = relevant_challenge_buy_event_signals(packet, item)
+            reasons.extend(event_catalyst_signal_acknowledgement_reasons(judgment, relevant_event_signals))
+            relevant_support_event_signals = relevant_support_buy_event_signals(packet, item)
+            reasons.extend(event_catalyst_support_acknowledgement_reasons(judgment, relevant_support_event_signals))
+            relevant_external = relevant_negative_external_context(packet, item)
+            reasons.extend(external_context_acknowledgement_reasons(judgment, relevant_external))
+            relevant_positive_external = relevant_positive_external_context(packet, item)
+            reasons.extend(external_context_support_acknowledgement_reasons(judgment, relevant_positive_external))
+            relevant_sentiment = relevant_risk_market_sentiment(packet, item)
+            reasons.extend(market_sentiment_acknowledgement_reasons(judgment, relevant_sentiment))
+            relevant_positive_sentiment = relevant_positive_market_sentiment(packet, item)
+            reasons.extend(market_sentiment_support_acknowledgement_reasons(judgment, relevant_positive_sentiment))
+            relevant_fundamentals = relevant_partial_fundamentals(packet, item)
+            reasons.extend(fundamentals_limit_acknowledgement_reasons(judgment, relevant_fundamentals))
+            relevant_fundamentals_support = relevant_supportive_fundamentals(packet, item)
+            reasons.extend(fundamentals_support_acknowledgement_reasons(judgment, relevant_fundamentals_support))
         if approval:
+            market_coverage_attention = market_context_coverage_attention(item)
+            reasons.extend(market_context_coverage_acknowledgement_reasons(judgment, market_coverage_attention))
+            external_coverage_attention = external_market_context_coverage_attention(item)
+            reasons.extend(
+                external_market_context_coverage_acknowledgement_reasons(judgment, external_coverage_attention)
+            )
+            event_coverage_attention = event_catalyst_coverage_attention(item)
+            reasons.extend(event_catalyst_coverage_acknowledgement_reasons(judgment, event_coverage_attention))
+            coverage_attention = event_catalyst_signal_coverage_attention(item)
+            reasons.extend(event_catalyst_signal_coverage_acknowledgement_reasons(judgment, coverage_attention))
+            sentiment_coverage_attention = market_sentiment_coverage_attention(item)
+            reasons.extend(
+                market_sentiment_coverage_acknowledgement_reasons(judgment, sentiment_coverage_attention)
+            )
+            fundamentals_coverage_attention = fundamentals_context_coverage_attention(item)
+            reasons.extend(
+                fundamentals_context_coverage_acknowledgement_reasons(judgment, fundamentals_coverage_attention)
+            )
+            intraday_attention = intraday_context_attention(item)
+            reasons.extend(intraday_context_acknowledgement_reasons(judgment, intraday_attention))
+            intraday_evidence_attention = intraday_signal_evidence_attention(item)
+            reasons.extend(
+                intraday_signal_evidence_acknowledgement_reasons(judgment, intraday_evidence_attention)
+            )
+            source_reliability = degraded_source_reliability(packet)
+            reasons.extend(source_reliability_acknowledgement_reasons(judgment, source_reliability))
+            simulation_performance = weak_simulation_performance(packet)
+            reasons.extend(simulation_performance_acknowledgement_reasons(judgment, simulation_performance))
+            alpha_evidence = weak_hermes_alpha_evidence(packet)
+            reasons.extend(hermes_alpha_evidence_acknowledgement_reasons(judgment, alpha_evidence))
             for reason in strategy_evidence_reasons(packet, item):
                 reasons.append(f"approval_with_{reason}")
 
@@ -337,6 +1500,110 @@ def build_recommendations(rows, reason_counts):
             recs.append(f"fix_or_reject_judgments:{reason}")
     if any("risk_off_buy_approval_without_exception" in reason for reason in reason_counts):
         recs.append("risk_off_buy_approvals_require_market_regime_exception")
+    if reason_counts.get("missing_market_context_coverage_acknowledgement") or reason_counts.get(
+        "market_context_coverage_notes_missing"
+    ) or reason_counts.get("market_context_coverage_status_mismatch"):
+        recs.append("market_context_coverage_limits_require_structured_acknowledgement")
+    if reason_counts.get("cross_market_conflict_breadth_not_discussed") or reason_counts.get(
+        "cross_market_conflict_sentiment_not_discussed"
+    ):
+        recs.append("cross_market_conflicts_require_explicit_breadth_and_sentiment_discussion")
+    if reason_counts.get("native_index_conflict_breadth_not_discussed") or reason_counts.get(
+        "native_index_conflict_index_not_discussed"
+    ):
+        recs.append("native_index_conflicts_require_explicit_breadth_and_index_discussion")
+    if reason_counts.get("missing_event_catalyst_risk_acknowledgement") or reason_counts.get(
+        "event_catalyst_ids_missing_or_unmatched"
+    ) or reason_counts.get("event_catalyst_risk_notes_missing"):
+        recs.append("negative_event_catalyst_buy_approvals_require_structured_acknowledgement")
+    if reason_counts.get("missing_event_catalyst_signal_risk_acknowledgement") or reason_counts.get(
+        "event_catalyst_signal_ids_missing_or_unmatched"
+    ) or reason_counts.get("event_catalyst_signal_risk_notes_missing"):
+        recs.append("challenge_buy_event_signals_require_structured_acknowledgement")
+    if reason_counts.get("missing_event_catalyst_support_acknowledgement") or reason_counts.get(
+        "event_catalyst_support_signal_ids_missing_or_unmatched"
+    ) or reason_counts.get("event_catalyst_support_notes_missing"):
+        recs.append("support_buy_event_signals_require_structured_acknowledgement")
+    if reason_counts.get("missing_event_catalyst_coverage_acknowledgement") or reason_counts.get(
+        "event_catalyst_coverage_notes_missing"
+    ) or reason_counts.get("event_catalyst_coverage_status_mismatch"):
+        recs.append("event_catalyst_coverage_limits_require_structured_acknowledgement")
+    if reason_counts.get("missing_event_catalyst_signal_coverage_acknowledgement") or reason_counts.get(
+        "event_catalyst_signal_coverage_notes_missing"
+    ) or reason_counts.get("event_catalyst_signal_coverage_status_mismatch"):
+        recs.append("event_catalyst_signal_coverage_limits_require_structured_acknowledgement")
+    if reason_counts.get("missing_external_market_context_risk_acknowledgement") or reason_counts.get(
+        "external_market_context_ids_missing_or_unmatched"
+    ) or reason_counts.get("external_market_context_notes_missing"):
+        recs.append("negative_external_context_buy_approvals_require_structured_acknowledgement")
+    if reason_counts.get("missing_external_market_context_support_acknowledgement") or reason_counts.get(
+        "external_market_context_support_ids_missing_or_unmatched"
+    ) or reason_counts.get("external_market_context_support_notes_missing"):
+        recs.append("positive_external_context_buy_support_requires_structured_acknowledgement")
+    if reason_counts.get("missing_external_market_context_coverage_acknowledgement") or reason_counts.get(
+        "external_market_context_coverage_notes_missing"
+    ) or reason_counts.get("external_market_context_coverage_status_mismatch"):
+        recs.append("external_market_context_coverage_limits_require_structured_acknowledgement")
+    if reason_counts.get("missing_market_sentiment_risk_acknowledgement") or reason_counts.get(
+        "market_sentiment_indicator_ids_missing_or_unmatched"
+    ) or reason_counts.get("market_sentiment_notes_missing"):
+        recs.append("market_sentiment_risk_approvals_require_structured_acknowledgement")
+    if reason_counts.get("missing_market_sentiment_support_acknowledgement") or reason_counts.get(
+        "market_sentiment_support_indicator_ids_missing_or_unmatched"
+    ) or reason_counts.get("market_sentiment_support_notes_missing"):
+        recs.append("positive_market_sentiment_buy_support_requires_structured_acknowledgement")
+    if reason_counts.get("missing_market_sentiment_coverage_acknowledgement") or reason_counts.get(
+        "market_sentiment_coverage_notes_missing"
+    ) or reason_counts.get("market_sentiment_coverage_status_mismatch"):
+        recs.append("market_sentiment_coverage_limits_require_structured_acknowledgement")
+    if reason_counts.get("context_review_missing") or any(
+        reason.startswith("context_review_missing_") for reason in reason_counts
+    ):
+        recs.append("approve_reduce_judgments_require_structured_context_review")
+    if reason_counts.get("missing_fundamentals_context_limit_acknowledgement") or reason_counts.get(
+        "fundamentals_context_symbols_missing_or_unmatched"
+    ) or reason_counts.get("fundamentals_context_missing_metrics_not_discussed") or reason_counts.get(
+        "fundamentals_context_notes_missing"
+    ):
+        recs.append("partial_fundamentals_buy_approvals_require_structured_limitation_acknowledgement")
+    if reason_counts.get("missing_fundamentals_context_support_acknowledgement") or reason_counts.get(
+        "fundamentals_context_support_symbols_missing_or_unmatched"
+    ) or reason_counts.get("fundamentals_context_support_metrics_missing_or_unmatched") or reason_counts.get(
+        "fundamentals_context_support_notes_missing"
+    ):
+        recs.append("supportive_fundamentals_buy_approvals_require_structured_acknowledgement")
+    if reason_counts.get("missing_fundamentals_context_coverage_acknowledgement") or reason_counts.get(
+        "fundamentals_context_coverage_notes_missing"
+    ) or reason_counts.get("fundamentals_context_coverage_status_mismatch"):
+        recs.append("fundamentals_context_coverage_limits_require_structured_acknowledgement")
+    if reason_counts.get("missing_source_reliability_limit_acknowledgement") or reason_counts.get(
+        "source_reliability_reasons_missing_or_unmatched"
+    ) or reason_counts.get("source_reliability_components_missing_or_unmatched") or reason_counts.get(
+        "source_reliability_notes_missing"
+    ):
+        recs.append("source_reliability_degraded_approvals_require_structured_limitation_acknowledgement")
+    if reason_counts.get("missing_simulation_performance_acknowledgement") or reason_counts.get(
+        "simulation_performance_status_missing"
+    ) or reason_counts.get("simulation_performance_status_mismatch") or reason_counts.get(
+        "simulation_performance_reason_codes_missing_or_unmatched"
+    ) or reason_counts.get("simulation_performance_notes_missing"):
+        recs.append("simulation_performance_warnings_require_structured_acknowledgement")
+    if reason_counts.get("missing_hermes_alpha_evidence_acknowledgement") or reason_counts.get(
+        "hermes_alpha_evidence_status_missing"
+    ) or reason_counts.get("hermes_alpha_evidence_status_mismatch") or reason_counts.get(
+        "hermes_alpha_evidence_reasons_missing_or_unmatched"
+    ) or reason_counts.get("hermes_alpha_evidence_notes_missing"):
+        recs.append("weak_hermes_alpha_evidence_requires_structured_acknowledgement")
+    if reason_counts.get("missing_intraday_context_acknowledgement") or reason_counts.get(
+        "intraday_context_notes_missing"
+    ) or reason_counts.get("intraday_context_status_mismatch"):
+        recs.append("intraday_context_attention_requires_structured_acknowledgement")
+    if reason_counts.get("missing_intraday_signal_evidence_acknowledgement") or reason_counts.get(
+        "intraday_signal_evidence_alignment_missing"
+    ) or reason_counts.get("intraday_signal_evidence_alignment_mismatch") or reason_counts.get(
+        "intraday_signal_evidence_codes_missing_or_unmatched"
+    ) or reason_counts.get("intraday_signal_evidence_notes_missing"):
+        recs.append("intraday_signal_evidence_requires_structured_acknowledgement")
     if any(reason.startswith("approval_with_") for reason in reason_counts):
         recs.append("approvals_conflict_with_execution_gates_keep_alert_sim_disabled")
     if reason_counts.get("judgment_expired"):
@@ -345,10 +1612,6 @@ def build_recommendations(rows, reason_counts):
         recs.append("include_packet_id_in_future_judgments")
     if reason_counts.get("packet_archive_missing_for_packet_id"):
         recs.append("retain_packet_archive_for_judgment_audit")
-    if reason_counts.get("context_review_missing") or any(
-        reason.startswith("context_review_missing_") for reason in reason_counts
-    ):
-        recs.append("approve_reduce_judgments_require_structured_context_review")
     if not recs:
         recs.append("judgment_audit_clean_continue_review_only_observation")
     return recs

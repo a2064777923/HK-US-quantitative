@@ -1,0 +1,33 @@
+{
+  "schema": "intraday_market_sessions_v1",
+  "updated_at": "2026-06-13T00:00:00",
+  "source_note": "Operator-maintained example. Replace dates with reviewed HKEX/NYSE holiday and half-day calendars before deployment.",
+  "markets": {
+    "HK": {
+      "closed_dates": {
+        "2026-07-01": "hkex_public_holiday_example"
+      },
+      "half_days": {
+        "2026-12-24": {
+          "reason": "hkex_half_day_example",
+          "session_windows": [
+            {"open": "09:30", "close": "12:00"}
+          ]
+        }
+      }
+    },
+    "US": {
+      "closed_dates": {
+        "2026-07-03": "nyse_observed_holiday_example"
+      },
+      "session_overrides": {
+        "2026-11-27": {
+          "reason": "nyse_early_close_example",
+          "session_windows": [
+            {"open": "09:30", "close": "13:00"}
+          ]
+        }
+      }
+    }
+  }
+}

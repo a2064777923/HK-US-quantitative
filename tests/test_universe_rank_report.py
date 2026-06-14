@@ -1,5 +1,6 @@
 import unittest
 from datetime import date, timedelta
+from unittest.mock import patch
 
 from scripts import universe_rank_report as report
 
@@ -27,6 +28,30 @@ def kline_series(symbol, market="US", exchange="NASDAQ", start_close=100, amount
 
 
 class UniverseRankReportTests(unittest.TestCase):
+    def test_fetch_kline_rows_reads_canonical_daily_bars(self):
+        captured = {}
+
+        def fake_psql(sql):
+            captured["sql"] = sql
+            return type(
+                "Result",
+                (),
+                {"returncode": 0, "stdout": "NASDAQ\tAAPL\t2026-06-12\t100\t101\t99\t1000\t100000\n", "stderr": ""},
+            )()
+
+        with patch.object(report, "psql", side_effect=fake_psql):
+            rows, warnings = report.fetch_kline_rows()
+
+        sql = captured["sql"]
+        normalized = " ".join(sql.split())
+        self.assertEqual(warnings, [])
+        self.assertEqual(rows[0]["symbol"], "AAPL")
+        self.assertIn("WITH latest AS", sql)
+        self.assertIn("daily_bar AS", sql)
+        self.assertIn("SELECT DISTINCT ON (k.symbol, k.timestamp::date)", sql)
+        self.assertIn("ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC", normalized)
+        self.assertNotIn("s.symbol = k.symbol ON", normalized)
+
     def test_ranked_universe_prefers_fresh_liquid_buy_supported_symbol(self):
         fresh = kline_series("AAA", amount=2_000_000)
         stale = kline_series("BBB", amount=100_000, end=date(2026, 6, 9))

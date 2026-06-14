@@ -85,12 +85,17 @@ def first_existing(table, candidates):
 
 def latest_kline_date():
     raw = db("""
-        SELECT max(k.timestamp::date)
-        FROM klines k
-        JOIN stocks s ON k.symbol = s.symbol
-        WHERE k.interval = 'day'
-        AND s.is_active = true
-        AND s.exchange IN ('HKEX','NASDAQ','NYSE')
+        SELECT max(daily_bar.trade_date)
+        FROM (
+            SELECT DISTINCT ON (k.symbol, k.timestamp::date)
+                   k.symbol, k.timestamp::date AS trade_date
+            FROM klines k
+            WHERE k.interval = 'day'
+            ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC
+        ) daily_bar
+        JOIN stocks s ON daily_bar.symbol = s.symbol
+        WHERE s.is_active = true
+          AND s.exchange IN ('HKEX','NASDAQ','NYSE')
     """)
     return raw.strip() if raw else ""
 
@@ -136,6 +141,7 @@ def ensure_feature_run(run_id, trade_date, expected_count):
         "status = EXCLUDED.status",
         "source = EXCLUDED.source",
         "quality = EXCLUDED.quality",
+        "updated_at = NOW()",
     ]
     for col, value in (
         (expected_col, expected_count),
@@ -169,6 +175,7 @@ def finalize_feature_run(run_id, expected_count, ready_count, side_counts):
     assignments = [
         "status = 'signal_ready'",
         f"quality = '{jsonb_literal(quality)}'::jsonb",
+        "updated_at = NOW()",
     ]
     if ready_col:
         assignments.append(f"{ready_col} = {ready_count}")
@@ -204,13 +211,21 @@ def upsert_signal_score(result, trade_date, run_id, quality):
 
 def candidate_stocks_for_date(trade_date):
     return db(f"""
-        SELECT k.symbol, s.exchange FROM klines k
-        JOIN stocks s ON k.symbol = s.symbol
-        WHERE k.interval = 'day' AND s.is_active = true
-        AND s.exchange IN ('HKEX','NASDAQ','NYSE')
-        GROUP BY k.symbol, s.exchange
-        HAVING count(*) >= 30 AND max(k.timestamp::date) = '{sql_quote(trade_date)}'::date
-        ORDER BY k.symbol
+        WITH daily_bar AS (
+            SELECT DISTINCT ON (k.symbol, k.timestamp::date)
+                   k.symbol, k.timestamp::date AS trade_date
+            FROM klines k
+            WHERE k.interval = 'day'
+            ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC
+        )
+        SELECT d.symbol, s.exchange
+        FROM daily_bar d
+        JOIN stocks s ON d.symbol = s.symbol
+        WHERE s.is_active = true
+          AND s.exchange IN ('HKEX','NASDAQ','NYSE')
+        GROUP BY d.symbol, s.exchange
+        HAVING count(*) >= 30 AND max(d.trade_date) = '{sql_quote(trade_date)}'::date
+        ORDER BY d.symbol
     """)
 
 def parse_stock_rows(raw):
@@ -602,9 +617,17 @@ def analyze_stock(symbol, exchange):
     
     # 獲取K線
     raw = db(f"""
-        SELECT open_price, high_price, low_price, close_price, volume 
-        FROM klines WHERE symbol='{symbol}' AND interval='day'
-        ORDER BY timestamp DESC LIMIT 120
+        WITH daily_bar AS (
+            SELECT DISTINCT ON (timestamp::date)
+                   timestamp::date AS trade_date,
+                   open_price, high_price, low_price, close_price, volume
+            FROM klines
+            WHERE symbol='{sql_quote(symbol)}' AND interval='day'
+            ORDER BY timestamp::date, timestamp DESC
+        )
+        SELECT open_price, high_price, low_price, close_price, volume
+        FROM daily_bar
+        ORDER BY trade_date DESC LIMIT 120
     """)
     if not raw: return None
     

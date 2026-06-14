@@ -19,6 +19,23 @@ MIN_LATEST_COVERAGE_PCT = float(os.environ.get("DATA_HEALTH_MIN_LATEST_COVERAGE_
 MIN_HISTORY_60D_COVERAGE_PCT = float(os.environ.get("DATA_HEALTH_MIN_HISTORY_60D_COVERAGE_PCT", "70"))
 SIGNAL_STALE_WARN_DAYS = int(os.environ.get("DATA_HEALTH_SIGNAL_STALE_WARN_DAYS", "1"))
 DAILY_SIGNAL_READY_TIME = os.environ.get("DATA_HEALTH_DAILY_SIGNAL_READY_TIME", "16:15")
+SIGNAL_ENGINE_COMMAND = os.environ.get("DATA_HEALTH_SIGNAL_ENGINE_COMMAND", "/usr/bin/python3 /root/signal_engine_v4.py")
+DATA_HEALTH_COMMAND = os.environ.get(
+    "DATA_HEALTH_REPORT_COMMAND",
+    "/usr/bin/python3 /root/data_health_report.py --output /tmp/data_health_report.json --text",
+)
+SYSTEM_HEALTH_COMMAND = os.environ.get(
+    "DATA_HEALTH_SYSTEM_HEALTH_COMMAND",
+    "/usr/bin/python3 /root/system_health_check.py --output /tmp/quantmind_system_health.json",
+)
+READINESS_REFRESH_COMMAND = os.environ.get(
+    "DATA_HEALTH_READINESS_REFRESH_COMMAND",
+    "/usr/bin/python3 /root/readiness_refresh.py --skip-network-producers --output /tmp/readiness_refresh_report.json --text",
+)
+KLINE_DAILY_GAP_REPAIR_COMMAND = os.environ.get(
+    "DATA_HEALTH_KLINE_DAILY_GAP_REPAIR_COMMAND",
+    "/usr/bin/python3 /root/kline_daily_gap_repair.py --output /tmp/kline_daily_gap_repair.json --text",
+)
 
 SEVERITY = {"OK": 0, "WARN": 1, "FAIL": 2}
 _COLUMN_CACHE = {}
@@ -29,10 +46,17 @@ def now_iso():
 
 
 def save_json_atomic(path, payload):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    tmp = f"{path}.{os.getpid()}.{datetime.now().strftime('%Y%m%d%H%M%S%f')}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 def run_cmd(args, timeout=90):
@@ -153,6 +177,37 @@ def time_minutes_from_text(value):
         return None
 
 
+def timestamp_text_from_quality(value):
+    if not value:
+        return None
+    payload = value
+    if isinstance(value, str):
+        try:
+            payload = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+    generated_at = payload.get("generated_at")
+    return str(generated_at) if generated_at else None
+
+
+def feature_run_effective_timestamp(latest):
+    """Use the freshest trusted v4 generation timestamp while exposing metadata drift."""
+    latest = latest or {}
+    metadata_timestamp = latest.get("updated_at") or latest.get("created_at")
+    quality_timestamp = latest.get("quality_generated_at") or timestamp_text_from_quality(latest.get("quality"))
+    metadata_minutes = time_minutes_from_text(metadata_timestamp)
+    quality_minutes = time_minutes_from_text(quality_timestamp)
+    if quality_minutes is not None and (metadata_minutes is None or quality_minutes > metadata_minutes):
+        return quality_timestamp, "quality_generated_at"
+    if metadata_minutes is not None:
+        return metadata_timestamp, "metadata_timestamp"
+    if quality_minutes is not None:
+        return quality_timestamp, "quality_generated_at"
+    return None, "missing"
+
+
 def date_lag_days(later, earlier):
     later_date = parse_date(later)
     earlier_date = parse_date(earlier)
@@ -197,6 +252,34 @@ def normalize_kline_points(kline_rows):
     return points
 
 
+def duplicate_symbol_day_summary(kline_rows):
+    duplicate_count = 0
+    duplicate_dates = Counter()
+    duplicate_examples = []
+    for row in kline_rows or []:
+        duplicates = as_int(row.get("duplicate_symbol_day_count"), 0)
+        if duplicates <= 0:
+            continue
+        duplicate_count += duplicates
+        date_text = str(row.get("date") or row.get("latest_date") or "")[:10]
+        if date_text:
+            duplicate_dates[date_text] += duplicates
+        if len(duplicate_examples) < 20:
+            duplicate_examples.append(
+                {
+                    "symbol": str(row.get("symbol") or "").upper(),
+                    "date": date_text,
+                    "duplicate_symbol_day_count": duplicates,
+                    "raw_symbol_day_row_count": as_int(row.get("raw_symbol_day_row_count"), 0),
+                }
+            )
+    return {
+        "duplicate_symbol_day_count": duplicate_count,
+        "duplicate_date_counts": dict(duplicate_dates),
+        "duplicate_examples": duplicate_examples,
+    }
+
+
 def latest_point(points):
     dated = [row for row in points if row.get("date")]
     if not dated:
@@ -211,6 +294,96 @@ def history_rows(points):
     if explicit:
         return max(explicit)
     return len([row for row in points if row.get("date")])
+
+
+def is_repair_source(value):
+    return "repair" in str(value or "").lower()
+
+
+def source_family(value):
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if "repair" in text:
+        return "repair"
+    if text.startswith("tencent"):
+        return "tencent"
+    return text
+
+
+def build_source_quality(symbol_summaries):
+    daily_sources = Counter()
+    minute_sources = Counter()
+    repair_latest = []
+    missing_latest_source = []
+    missing_minute_source = []
+    source_mismatch = []
+    daily_with_source = 0
+    minute_with_source = 0
+    for item in symbol_summaries:
+        daily_source = item.get("data_source")
+        minute_source = item.get("latest_minute_data_source")
+        if item.get("latest_date"):
+            daily_sources[str(daily_source or "missing")] += 1
+            if daily_source:
+                daily_with_source += 1
+            else:
+                missing_latest_source.append(item["symbol"])
+            if is_repair_source(daily_source):
+                repair_latest.append(
+                    {
+                        "symbol": item["symbol"],
+                        "latest_daily_date": item.get("latest_date"),
+                        "data_source": daily_source,
+                    }
+                )
+        if item.get("latest_minute_date"):
+            minute_sources[str(minute_source or "missing")] += 1
+            if minute_source:
+                minute_with_source += 1
+            else:
+                missing_minute_source.append(item["symbol"])
+            daily_family = source_family(daily_source)
+            minute_family = source_family(minute_source)
+            if daily_family and minute_family and daily_family != minute_family:
+                source_mismatch.append(
+                    {
+                        "symbol": item["symbol"],
+                        "daily_source": daily_source,
+                        "minute_source": minute_source,
+                        "daily_source_family": daily_family,
+                        "minute_source_family": minute_family,
+                        "latest_daily_date": item.get("latest_date"),
+                        "latest_minute_date": item.get("latest_minute_date"),
+                    }
+                )
+    latest_count = sum(daily_sources.values())
+    minute_count = sum(minute_sources.values())
+    repair_count = len(repair_latest)
+    return {
+        "schema": "kline_source_quality_v1",
+        "daily_latest_source_counts": dict(daily_sources),
+        "minute_latest_source_counts": dict(minute_sources),
+        "source_family_normalization": {
+            "tencent": ["tencent", "tencent_hk", "tencent_us", "tencent_min"],
+            "repair": ["values containing repair"],
+        },
+        "daily_latest_source_coverage_pct": rate(daily_with_source, latest_count),
+        "minute_latest_source_coverage_pct": rate(minute_with_source, minute_count),
+        "missing_daily_latest_source_count": len(missing_latest_source),
+        "missing_minute_latest_source_count": len(missing_minute_source),
+        "repair_daily_latest_count": repair_count,
+        "repair_daily_latest_pct": rate(repair_count, latest_count),
+        "daily_minute_source_mismatch_count": len(source_mismatch),
+        "sample_repair_daily_latest_symbols": repair_latest[:20],
+        "sample_missing_daily_latest_source_symbols": missing_latest_source[:20],
+        "sample_missing_minute_latest_source_symbols": missing_minute_source[:20],
+        "sample_daily_minute_source_mismatches": source_mismatch[:20],
+        "notes": [
+            "Counts use each active symbol's latest daily and latest minute K-line rows only.",
+            "Repair data sources are expected after manual hash-confirmed repairs but should remain explainable and limited.",
+        ],
+    }
 
 
 def latest_ohlc_errors(row):
@@ -288,9 +461,16 @@ def summarize_market(market, symbols, kline_points, signal_rows):
     latest_dates = Counter()
     data_sources = Counter()
     invalid_latest = []
+    duplicate_symbol_day_count = 0
+    duplicate_date_counts = Counter()
+    duplicate_examples = []
     for symbol in symbols:
         points = kline_points.get((market, symbol), [])
         latest = latest_point(points)
+        duplicates = duplicate_symbol_day_summary(points)
+        duplicate_symbol_day_count += duplicates["duplicate_symbol_day_count"]
+        duplicate_date_counts.update(duplicates["duplicate_date_counts"])
+        duplicate_examples.extend(duplicates["duplicate_examples"])
         latest_date = latest.get("date")
         if latest_date:
             latest_dates[latest_date] += 1
@@ -302,9 +482,12 @@ def summarize_market(market, symbols, kline_points, signal_rows):
             {
                 "symbol": symbol,
                 "latest_date": latest_date,
+                "latest_minute_date": latest.get("latest_minute_date") or None,
+                "latest_minute_data_source": latest.get("latest_minute_data_source") or None,
                 "history_rows_120d": history_rows(points),
                 "data_source": latest.get("data_source") or None,
                 "integrity_errors": errors,
+                "duplicate_symbol_day_count": duplicates["duplicate_symbol_day_count"],
             }
         )
 
@@ -318,6 +501,15 @@ def summarize_market(market, symbols, kline_points, signal_rows):
         for item in symbol_summaries
         if item["latest_date"] and latest_date and item["latest_date"] < latest_date
     ]
+    minute_fresh_daily_stale = [
+        item
+        for item in symbol_summaries
+        if item["latest_date"]
+        and item.get("latest_minute_date")
+        and latest_date
+        and item["latest_date"] < latest_date
+        and item["latest_minute_date"] >= latest_date
+    ]
     history_60d_count = len([item for item in symbol_summaries if item["history_rows_120d"] >= 60])
     signal = signal_summary(signal_rows, market, latest_date)
 
@@ -329,6 +521,8 @@ def summarize_market(market, symbols, kline_points, signal_rows):
         failures.append("no_daily_klines_for_active_symbols")
     if invalid_latest:
         failures.append("invalid_latest_ohlc")
+    if duplicate_symbol_day_count:
+        failures.append("duplicate_daily_symbol_dates")
     latest_coverage_pct = rate(latest_count, active_count)
     history_60d_coverage_pct = rate(history_60d_count, active_count)
     if active_count and latest_coverage_pct < 50:
@@ -341,8 +535,15 @@ def summarize_market(market, symbols, kline_points, signal_rows):
         warnings.append("active_symbols_missing_daily_klines")
     if stale:
         warnings.append("active_symbols_stale_vs_market_latest")
+    if minute_fresh_daily_stale:
+        warnings.append("minute_fresh_daily_stale_symbols")
     if signal["status"] != "OK":
         warnings.extend(signal["notes"])
+    source_quality = build_source_quality(symbol_summaries)
+    if source_quality["missing_daily_latest_source_count"]:
+        warnings.append("daily_latest_data_source_missing")
+    if source_quality["repair_daily_latest_count"]:
+        warnings.append("daily_latest_contains_repair_sources")
 
     status = "FAIL" if failures else "WARN" if warnings else "OK"
     return {
@@ -358,18 +559,31 @@ def summarize_market(market, symbols, kline_points, signal_rows):
             "latest_date_coverage_pct": latest_coverage_pct,
             "missing_kline_symbol_count": len(missing),
             "stale_vs_market_latest_count": len(stale),
+            "minute_fresh_daily_stale_count": len(minute_fresh_daily_stale),
             "history_60d_count": history_60d_count,
             "history_60d_coverage_pct": history_60d_coverage_pct,
         },
         "integrity": {
             "invalid_latest_ohlc_count": len(invalid_latest),
             "invalid_latest_ohlc_examples": invalid_latest[:20],
+            "duplicate_daily_symbol_date_count": duplicate_symbol_day_count,
+            "duplicate_daily_symbol_date_counts_by_date": dict(duplicate_date_counts),
+            "duplicate_daily_symbol_date_examples": duplicate_examples[:20],
         },
+        "source_quality": source_quality,
         "signals": signal,
         "failures": failures,
         "warnings": warnings,
         "sample_missing_symbols": missing[:20],
         "sample_stale_symbols": stale[:20],
+        "sample_minute_fresh_daily_stale_symbols": [
+            {
+                "symbol": item["symbol"],
+                "latest_daily_date": item["latest_date"],
+                "latest_minute_date": item.get("latest_minute_date"),
+            }
+            for item in minute_fresh_daily_stale[:20]
+        ],
     }
 
 
@@ -381,31 +595,150 @@ def feature_run_timing_notes(latest, current_dt):
     ready_minutes = parse_hhmm_minutes(DAILY_SIGNAL_READY_TIME)
     if minutes_since_midnight(current_dt) < ready_minutes:
         notes.append("current_session_before_daily_signal_ready_time")
-    updated_minutes = time_minutes_from_text(latest.get("updated_at") or latest.get("created_at"))
-    if updated_minutes is None:
+    effective_timestamp, timestamp_source = feature_run_effective_timestamp(latest)
+    effective_minutes = time_minutes_from_text(effective_timestamp)
+    metadata_minutes = time_minutes_from_text(latest.get("updated_at") or latest.get("created_at"))
+    quality_minutes = time_minutes_from_text(latest.get("quality_generated_at"))
+    if (
+        metadata_minutes is not None
+        and quality_minutes is not None
+        and metadata_minutes < quality_minutes
+    ):
+        notes.append("feature_run_metadata_timestamp_lagged_quality_generated_at")
+    if timestamp_source == "quality_generated_at" and metadata_minutes is None:
+        notes.append("feature_run_effective_timestamp_from_quality_generated_at")
+    if effective_minutes is None:
         notes.append("latest_daily_signal_run_timestamp_missing")
-    elif updated_minutes < ready_minutes:
+    elif effective_minutes < ready_minutes:
         notes.append("latest_daily_signal_run_generated_before_full_day_cutoff")
     return notes
 
 
+def feature_run_remediation(latest, status, notes, current_dt):
+    latest = latest or {}
+    notes = notes or []
+    ready_minutes = parse_hhmm_minutes(DAILY_SIGNAL_READY_TIME)
+    current_after_cutoff = minutes_since_midnight(current_dt) >= ready_minutes
+    effective_timestamp, timestamp_source = feature_run_effective_timestamp(latest)
+    updated_minutes = time_minutes_from_text(effective_timestamp)
+    generated_before_cutoff = updated_minutes is not None and updated_minutes < ready_minutes
+
+    remediation = {
+        "schema": "signal_v4_daily_run_remediation_v1",
+        "status": "not_required",
+        "required_action": "none",
+        "reason": "latest_feature_run_is_acceptable",
+        "read_only_report": True,
+        "submits_orders": False,
+        "changes_crontab": False,
+        "write_command_requires_operator": True,
+        "current_time": current_dt.isoformat(timespec="seconds"),
+        "daily_signal_ready_time": DAILY_SIGNAL_READY_TIME,
+        "current_after_cutoff": current_after_cutoff,
+        "latest_run_id": latest.get("run_id"),
+        "latest_trade_date": latest.get("trade_date"),
+        "latest_status": latest.get("status"),
+        "latest_expected_count": latest.get("expected_count"),
+        "latest_ready_count": latest.get("ready_count"),
+        "latest_missing_count": latest.get("missing_count"),
+        "latest_created_at": latest.get("created_at"),
+        "latest_updated_at": latest.get("updated_at"),
+        "latest_quality_generated_at": latest.get("quality_generated_at"),
+        "latest_effective_generated_at": effective_timestamp,
+        "latest_effective_generated_at_source": timestamp_source,
+        "latest_generated_before_cutoff": generated_before_cutoff,
+        "notes": notes,
+        "safe_preflight_command": f"{SIGNAL_ENGINE_COMMAND} --preflight --json",
+        "manual_write_command": SIGNAL_ENGINE_COMMAND,
+        "post_run_verification_commands": [
+            DATA_HEALTH_COMMAND,
+            SYSTEM_HEALTH_COMMAND,
+            READINESS_REFRESH_COMMAND,
+        ],
+    }
+
+    if not latest:
+        remediation.update(
+            {
+                "status": "operator_action_required",
+                "required_action": "run_signal_engine_v4_preflight_then_operator_run_if_ok",
+                "reason": "missing_signal_v4_feature_run_rows",
+            }
+        )
+    elif "current_session_before_daily_signal_ready_time" in notes:
+        remediation.update(
+            {
+                "status": "wait",
+                "required_action": "wait_until_daily_signal_ready_time_then_run_signal_engine_v4_preflight",
+                "reason": "current_session_is_before_full_day_signal_cutoff",
+            }
+        )
+    elif "latest_daily_signal_run_generated_before_full_day_cutoff" in notes and current_after_cutoff:
+        remediation.update(
+            {
+                "status": "operator_action_required",
+                "required_action": "run_signal_engine_v4_post_close_under_operator_control",
+                "reason": "latest_current_day_signal_v4_run_was_generated_before_full_day_cutoff",
+            }
+        )
+    elif "latest_daily_signal_run_timestamp_missing" in notes:
+        remediation.update(
+            {
+                "status": "operator_action_required",
+                "required_action": "inspect_signal_v4_feature_run_timestamp_then_run_preflight",
+                "reason": "latest_signal_v4_feature_run_timestamp_missing",
+            }
+        )
+    elif status != "OK":
+        remediation.update(
+            {
+                "status": "operator_action_required",
+                "required_action": "inspect_signal_engine_v4_preflight_and_latest_feature_run",
+                "reason": "latest_signal_v4_feature_run_not_ready",
+            }
+        )
+
+    return remediation
+
+
 def feature_run_summary(feature_run_rows, current_dt=None):
     rows_in = feature_run_rows or []
-    if not rows_in:
-        return {"status": "WARN", "latest": None, "notes": ["missing_feature_run_rows"]}
     current_dt = current_dt or datetime.now()
+    if not rows_in:
+        notes = ["missing_feature_run_rows"]
+        return {
+            "status": "WARN",
+            "latest": None,
+            "notes": notes,
+            "daily_signal_ready_time": DAILY_SIGNAL_READY_TIME,
+            "remediation": feature_run_remediation(None, "WARN", notes, current_dt),
+        }
     latest = rows_in[0]
     status = "OK" if latest.get("status") == "signal_ready" and as_int(latest.get("ready_count")) > 0 else "WARN"
     notes = [] if status == "OK" else ["latest_feature_run_not_signal_ready"]
+    effective_timestamp, timestamp_source = feature_run_effective_timestamp(latest)
+    latest["effective_generated_at"] = effective_timestamp
+    latest["effective_generated_at_source"] = timestamp_source
     timing_notes = feature_run_timing_notes(latest, current_dt)
     if timing_notes:
-        status = "FAIL"
+        blocking_timing_notes = [
+            note
+            for note in timing_notes
+            if note
+            not in (
+                "feature_run_metadata_timestamp_lagged_quality_generated_at",
+                "feature_run_effective_timestamp_from_quality_generated_at",
+            )
+        ]
+        if blocking_timing_notes:
+            status = "FAIL"
         notes.extend(timing_notes)
     return {
         "status": status,
         "latest": latest,
         "notes": notes,
         "daily_signal_ready_time": DAILY_SIGNAL_READY_TIME,
+        "remediation": feature_run_remediation(latest, status, notes, current_dt),
     }
 
 
@@ -425,8 +758,44 @@ def build_recommendations(markets, feature_run):
     return recs
 
 
+def daily_gap_remediation(markets):
+    gap_symbols = []
+    for market, summary in sorted((markets or {}).items()):
+        for item in summary.get("sample_minute_fresh_daily_stale_symbols") or []:
+            symbol = item.get("symbol")
+            if symbol:
+                gap_symbols.append(
+                    {
+                        "market": market,
+                        "symbol": symbol,
+                        "latest_daily_date": item.get("latest_daily_date"),
+                        "latest_minute_date": item.get("latest_minute_date"),
+                    }
+                )
+    status = "operator_action_required" if gap_symbols else "not_required"
+    return {
+        "schema": "kline_daily_gap_remediation_v1",
+        "status": status,
+        "read_only_report": True,
+        "submits_orders": False,
+        "changes_crontab": False,
+        "write_command_requires_operator": True,
+        "gap_symbol_count": len(gap_symbols),
+        "gap_symbols": gap_symbols[:40],
+        "dry_run_command": KLINE_DAILY_GAP_REPAIR_COMMAND,
+        "apply_command_template": KLINE_DAILY_GAP_REPAIR_COMMAND
+        + " --apply --confirm-plan-hash <plan_hash>",
+        "post_run_verification_commands": [
+            DATA_HEALTH_COMMAND,
+            SYSTEM_HEALTH_COMMAND,
+            READINESS_REFRESH_COMMAND,
+        ],
+    }
+
+
 def fetch_kline_rows():
     data_source_expr = "k.data_source" if "data_source" in table_columns("klines") else "'missing'"
+    minute_data_source_expr = "k.data_source" if "data_source" in table_columns("klines") else "'missing'"
     sql = """
         WITH active AS (
             SELECT CASE WHEN exchange = 'HKEX' THEN 'HK' ELSE 'US' END AS market,
@@ -436,34 +805,75 @@ def fetch_kline_rows():
             WHERE is_active = true
               AND exchange IN ('HKEX','NASDAQ','NYSE')
         ),
+        raw_daily AS (
+            SELECT k.symbol,
+                   k.timestamp::date AS trade_date,
+                   count(*) AS raw_symbol_day_row_count
+            FROM klines k
+            JOIN active a ON a.symbol = k.symbol
+            WHERE k.interval = 'day'
+            GROUP BY k.symbol, k.timestamp::date
+        ),
+        daily_bar AS (
+            SELECT DISTINCT ON (k.symbol, k.timestamp::date)
+                   k.symbol,
+                   k.timestamp::date AS trade_date,
+                   k.open_price, k.high_price, k.low_price, k.close_price,
+                   k.volume, {data_source_expr} AS data_source,
+                   COALESCE(r.raw_symbol_day_row_count, 0) AS raw_symbol_day_row_count,
+                   GREATEST(COALESCE(r.raw_symbol_day_row_count, 0) - 1, 0) AS duplicate_symbol_day_count
+            FROM klines k
+            JOIN active a ON a.symbol = k.symbol
+            LEFT JOIN raw_daily r
+              ON r.symbol = k.symbol
+             AND r.trade_date = k.timestamp::date
+            WHERE k.interval = 'day'
+            ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC
+        ),
         latest AS (
             SELECT DISTINCT ON (a.symbol)
                    a.market, a.exchange, a.symbol,
-                   k.timestamp::date AS latest_date,
-                   k.open_price, k.high_price, k.low_price, k.close_price,
-                   k.volume, {data_source_expr} AS data_source
+                   d.trade_date AS latest_date,
+                   d.open_price, d.high_price, d.low_price, d.close_price,
+                   d.volume, d.data_source,
+                   COALESCE(d.raw_symbol_day_row_count, 0) AS raw_symbol_day_row_count,
+                   COALESCE(d.duplicate_symbol_day_count, 0) AS duplicate_symbol_day_count
             FROM active a
-            LEFT JOIN klines k
-              ON k.symbol = a.symbol
-             AND k.interval = 'day'
-            ORDER BY a.symbol, k.timestamp DESC NULLS LAST
+            LEFT JOIN daily_bar d
+              ON d.symbol = a.symbol
+            ORDER BY a.symbol, d.trade_date DESC NULLS LAST
         ),
         history AS (
             SELECT a.symbol,
-                   count(k.*) FILTER (WHERE k.timestamp::date >= CURRENT_DATE - INTERVAL '120 days') AS history_rows_120d
+                   count(d.*) FILTER (WHERE d.trade_date >= CURRENT_DATE - INTERVAL '120 days') AS history_rows_120d,
+                   COALESCE(sum(d.duplicate_symbol_day_count), 0) AS duplicate_symbol_day_count_120d
+            FROM active a
+            LEFT JOIN daily_bar d
+              ON d.symbol = a.symbol
+            GROUP BY a.symbol
+        ),
+        minute_latest AS (
+            SELECT DISTINCT ON (a.symbol)
+                   a.symbol,
+                   k.timestamp::date AS latest_minute_date,
+                   {minute_data_source_expr} AS latest_minute_data_source
             FROM active a
             LEFT JOIN klines k
               ON k.symbol = a.symbol
-             AND k.interval = 'day'
-            GROUP BY a.symbol
+             AND k.interval = 'min'
+            ORDER BY a.symbol, k.timestamp DESC NULLS LAST
         )
         SELECT l.market, l.exchange, l.symbol, COALESCE(h.history_rows_120d, 0),
                l.latest_date, l.open_price, l.high_price, l.low_price, l.close_price,
-               l.volume, l.data_source
+               l.volume, l.data_source, m.latest_minute_date, m.latest_minute_data_source,
+               COALESCE(h.duplicate_symbol_day_count_120d, 0),
+               COALESCE(l.raw_symbol_day_row_count, 0),
+               COALESCE(l.duplicate_symbol_day_count, 0)
         FROM latest l
         LEFT JOIN history h ON h.symbol = l.symbol
+        LEFT JOIN minute_latest m ON m.symbol = l.symbol
         ORDER BY l.market, l.symbol
-    """.format(data_source_expr=data_source_expr)
+    """.format(data_source_expr=data_source_expr, minute_data_source_expr=minute_data_source_expr)
     r = psql(sql)
     if r.returncode != 0:
         return [], [f"kline_coverage_query_failed:{r.stderr.strip()}"]
@@ -484,6 +894,11 @@ def fetch_kline_rows():
                 "close": as_float(row[8]),
                 "volume": as_float(row[9]),
                 "data_source": row[10],
+                "latest_minute_date": row[11] if len(row) > 11 else None,
+                "latest_minute_data_source": row[12] if len(row) > 12 else None,
+                "duplicate_symbol_day_count": as_int(row[13]) if len(row) > 13 else 0,
+                "raw_symbol_day_row_count": as_int(row[14]) if len(row) > 14 else 0,
+                "latest_duplicate_symbol_day_count": as_int(row[15]) if len(row) > 15 else 0,
             }
         )
     return parsed, []
@@ -541,9 +956,10 @@ def fetch_feature_run_rows():
     missing_expr = first_existing("engine_feature_runs", ("missing_count", "missing_symbols"), "NULL")
     created_expr = first_existing("engine_feature_runs", ("created_at",), "NULL")
     updated_expr = first_existing("engine_feature_runs", ("updated_at",), "NULL")
+    quality_expr = "quality->>'generated_at'" if "quality" in table_columns("engine_feature_runs") else "NULL"
     sql = """
         SELECT run_id, trade_date, status, {expected_expr}, {ready_expr}, {missing_expr},
-               {created_expr}, {updated_expr}
+               {created_expr}, {updated_expr}, {quality_expr}
         FROM engine_feature_runs
         WHERE run_id LIKE 'signal_v4_%'
         ORDER BY trade_date DESC, run_id DESC
@@ -554,6 +970,7 @@ def fetch_feature_run_rows():
         missing_expr=missing_expr,
         created_expr=created_expr,
         updated_expr=updated_expr,
+        quality_expr=quality_expr,
     )
     r = psql(sql)
     if r.returncode != 0:
@@ -572,6 +989,7 @@ def fetch_feature_run_rows():
                 "missing_count": as_int(row[5]),
                 "created_at": row[6] if len(row) > 6 else None,
                 "updated_at": row[7] if len(row) > 7 else None,
+                "quality_generated_at": row[8] if len(row) > 8 else None,
             }
         )
     return parsed, []
@@ -600,6 +1018,7 @@ def build_report(stock_rows=None, kline_rows=None, signal_rows=None, feature_run
     status = max_status([summary["status"] for summary in markets.values()] + [feature_run["status"]])
     if warnings and status == "OK":
         status = "WARN"
+    gap_remediation = daily_gap_remediation(markets)
     payload = {
         "schema": "data_health_report_v1",
         "generated_at": now_iso(),
@@ -615,6 +1034,7 @@ def build_report(stock_rows=None, kline_rows=None, signal_rows=None, feature_run
         },
         "markets": markets,
         "feature_run": feature_run,
+        "daily_gap_remediation": gap_remediation,
         "recommendations": build_recommendations(markets, feature_run),
         "warnings": warnings,
     }
@@ -628,17 +1048,49 @@ def build_text_report(payload):
             f"{market}: status={summary['status']} active={summary['active_symbol_count']} "
             f"latest={summary['latest_date']} latest_coverage={summary['coverage']['latest_date_coverage_pct']}% "
             f"history60={summary['coverage']['history_60d_coverage_pct']}% "
+            f"minute_fresh_daily_stale={summary['coverage'].get('minute_fresh_daily_stale_count', 0)} "
             f"invalid_ohlc={summary['integrity']['invalid_latest_ohlc_count']} "
+            f"duplicate_day_rows={summary['integrity'].get('duplicate_daily_symbol_date_count', 0)} "
             f"signal_date={summary['signals']['latest_signal_date']} lag={summary['signals']['lag_days_vs_latest_kline']}"
         )
+        source_quality = summary.get("source_quality") or {}
+        if source_quality:
+            lines.append(
+                f"{market}_source_quality: daily_sources={source_quality.get('daily_latest_source_counts', {})} "
+                f"repair_daily_latest={source_quality.get('repair_daily_latest_count', 0)} "
+                f"missing_daily_source={source_quality.get('missing_daily_latest_source_count', 0)} "
+                f"minute_sources={source_quality.get('minute_latest_source_counts', {})}"
+            )
     feature = payload.get("feature_run") or {}
     latest = feature.get("latest") or {}
     lines.append(
         f"feature_run: status={feature.get('status')} run_id={latest.get('run_id')} "
-        f"trade_date={latest.get('trade_date')} ready={latest.get('ready_count')}/{latest.get('expected_count')}"
+        f"trade_date={latest.get('trade_date')} ready={latest.get('ready_count')}/{latest.get('expected_count')} "
+        f"effective_generated_at={latest.get('effective_generated_at')}"
     )
     if feature.get("notes"):
         lines.append("feature_run_notes: " + ", ".join(feature.get("notes") or []))
+    remediation = feature.get("remediation") or {}
+    if remediation and remediation.get("required_action") != "none":
+        lines.append(
+            "feature_run_remediation: status={status} action={action} reason={reason}".format(
+                status=remediation.get("status"),
+                action=remediation.get("required_action"),
+                reason=remediation.get("reason"),
+            )
+        )
+        if remediation.get("safe_preflight_command"):
+            lines.append("feature_run_preflight: " + remediation["safe_preflight_command"])
+        if remediation.get("manual_write_command"):
+            lines.append("feature_run_manual_write: " + remediation["manual_write_command"])
+    gap_remediation = payload.get("daily_gap_remediation") or {}
+    if gap_remediation.get("status") == "operator_action_required":
+        lines.append(
+            "daily_gap_remediation: gaps={count} dry_run={command}".format(
+                count=gap_remediation.get("gap_symbol_count"),
+                command=gap_remediation.get("dry_run_command"),
+            )
+        )
     if payload.get("warnings"):
         lines.append("Warnings: " + ", ".join(payload["warnings"]))
     lines.append("Recommendations: " + ", ".join(payload.get("recommendations") or []))

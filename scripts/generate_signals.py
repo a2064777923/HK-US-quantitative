@@ -48,9 +48,15 @@ def generate():
         symbol = line.strip()
         
         klines = db(f"""
-            SELECT close_price FROM klines 
-            WHERE symbol = '{symbol}' AND interval = 'day'
-            ORDER BY timestamp DESC LIMIT 30
+            WITH daily_bar AS (
+                SELECT DISTINCT ON (timestamp::date)
+                       timestamp::date AS trade_date, close_price
+                FROM klines
+                WHERE symbol = '{symbol}' AND interval = 'day'
+                ORDER BY timestamp::date, timestamp DESC
+            )
+            SELECT close_price FROM daily_bar
+            ORDER BY trade_date DESC LIMIT 30
         """)
         if not klines: continue
         
@@ -88,9 +94,15 @@ def generate():
         
         vol_ratio = 1.0
         volumes = db(f"""
-            SELECT volume FROM klines 
-            WHERE symbol = '{symbol}' AND interval = 'day'
-            ORDER BY timestamp DESC LIMIT 10
+            WITH daily_bar AS (
+                SELECT DISTINCT ON (timestamp::date)
+                       timestamp::date AS trade_date, volume
+                FROM klines
+                WHERE symbol = '{symbol}' AND interval = 'day'
+                ORDER BY timestamp::date, timestamp DESC
+            )
+            SELECT volume FROM daily_bar
+            ORDER BY trade_date DESC LIMIT 10
         """)
         if volumes:
             vols = [float(x) for x in volumes.split('\n') if x]

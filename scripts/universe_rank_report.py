@@ -132,23 +132,35 @@ def daily_returns(closes):
 def fetch_kline_rows():
     sql = f"""
         WITH latest AS (
-            SELECT max(k.timestamp::date) AS latest_date
-            FROM klines k
-            JOIN stocks s ON s.symbol = k.symbol
-            WHERE k.interval = 'day'
-              AND s.is_active = true
+            SELECT max(d.trade_date) AS latest_date
+            FROM (
+                SELECT DISTINCT ON (k.symbol, k.timestamp::date)
+                       k.symbol, k.timestamp::date AS trade_date
+                FROM klines k
+                WHERE k.interval = 'day'
+                ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC
+            ) d
+            JOIN stocks s ON s.symbol = d.symbol
+            WHERE s.is_active = true
               AND s.exchange IN ('HKEX','NASDAQ','NYSE')
+        ),
+        daily_bar AS (
+            SELECT DISTINCT ON (k.symbol, k.timestamp::date)
+                   k.symbol, k.timestamp::date AS trade_date,
+                   k.close_price, k.high_price, k.low_price, k.volume, COALESCE(k.amount, 0) AS amount
+            FROM klines k
+            WHERE k.interval = 'day'
+            ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC
         )
-        SELECT s.exchange, k.symbol, k.timestamp::date,
-               k.close_price, k.high_price, k.low_price, k.volume, COALESCE(k.amount, 0)
-        FROM klines k
-        JOIN stocks s ON s.symbol = k.symbol
+        SELECT s.exchange, d.symbol, d.trade_date,
+               d.close_price, d.high_price, d.low_price, d.volume, d.amount
+        FROM daily_bar d
+        JOIN stocks s ON s.symbol = d.symbol
         CROSS JOIN latest
-        WHERE k.interval = 'day'
-          AND s.is_active = true
+        WHERE s.is_active = true
           AND s.exchange IN ('HKEX','NASDAQ','NYSE')
-          AND k.timestamp::date >= latest.latest_date - INTERVAL '{LOOKBACK_DAYS} days'
-        ORDER BY s.exchange, k.symbol, k.timestamp
+          AND d.trade_date >= latest.latest_date - INTERVAL '{LOOKBACK_DAYS} days'
+        ORDER BY s.exchange, d.symbol, d.trade_date
     """
     result = psql(sql)
     if result.returncode != 0:

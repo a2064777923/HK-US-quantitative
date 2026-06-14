@@ -147,30 +147,40 @@ def fetch_universe_rows():
             WHERE is_active = true
               AND exchange IN ('HKEX','NASDAQ','NYSE')
         ),
-        latest AS (
-            SELECT DISTINCT ON (a.symbol)
-                   a.symbol,
-                   k.timestamp::date AS latest_date,
+        daily_bar AS (
+            SELECT DISTINCT ON (k.symbol, k.timestamp::date)
+                   k.symbol,
+                   k.timestamp::date AS trade_date,
                    k.close_price,
                    k.volume,
                    {data_source_expr} AS data_source
+            FROM klines k
+            JOIN active a ON a.symbol = k.symbol
+            WHERE k.interval = 'day'
+            ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC
+        ),
+        latest AS (
+            SELECT DISTINCT ON (a.symbol)
+                   a.symbol,
+                   d.trade_date AS latest_date,
+                   d.close_price,
+                   d.volume,
+                   d.data_source
             FROM active a
-            LEFT JOIN klines k
-              ON k.symbol = a.symbol
-             AND k.interval = 'day'
-            ORDER BY a.symbol, k.timestamp DESC NULLS LAST
+            LEFT JOIN daily_bar d
+              ON d.symbol = a.symbol
+            ORDER BY a.symbol, d.trade_date DESC NULLS LAST
         ),
         history AS (
             SELECT a.symbol,
-                   count(k.*) FILTER (WHERE k.timestamp::date >= CURRENT_DATE - INTERVAL '120 days') AS history_rows_120d,
-                   count(k.*) FILTER (
-                       WHERE k.timestamp::date >= CURRENT_DATE - INTERVAL '20 days'
-                         AND COALESCE(k.volume, 0) <= 0
+                   count(d.*) FILTER (WHERE d.trade_date >= CURRENT_DATE - INTERVAL '120 days') AS history_rows_120d,
+                   count(d.*) FILTER (
+                       WHERE d.trade_date >= CURRENT_DATE - INTERVAL '20 days'
+                         AND COALESCE(d.volume, 0) <= 0
                    ) AS zero_volume_rows_20d
             FROM active a
-            LEFT JOIN klines k
-              ON k.symbol = a.symbol
-             AND k.interval = 'day'
+            LEFT JOIN daily_bar d
+              ON d.symbol = a.symbol
             GROUP BY a.symbol
         )
         SELECT a.market, a.symbol, a.name, a.exchange, a.list_date,

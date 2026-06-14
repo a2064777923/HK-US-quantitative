@@ -1,9 +1,27 @@
 import unittest
+from unittest.mock import patch
 
 from scripts import sim_position_reconcile as reconcile
 
 
 class SimPositionReconcileTests(unittest.TestCase):
+    def test_fetch_latest_prices_reads_canonical_daily_bars(self):
+        captured = {}
+
+        def fake_psql(sql, timeout=60):
+            captured["sql"] = sql
+            return type("Result", (), {"returncode": 0, "stdout": "AAPL\t100\t2026-06-12\n", "stderr": ""})()
+
+        with patch.object(reconcile, "psql", side_effect=fake_psql):
+            prices = reconcile.fetch_latest_prices(["AAPL"])
+
+        sql = captured["sql"]
+        normalized = " ".join(sql.split())
+        self.assertEqual(prices["AAPL"], {"price": 100.0, "date": "2026-06-12"})
+        self.assertIn("WITH daily_bar AS", sql)
+        self.assertIn("SELECT DISTINCT ON (symbol, timestamp::date)", sql)
+        self.assertIn("ORDER BY symbol, timestamp::date, timestamp DESC", normalized)
+
     def test_derive_expected_positions_from_buy_sell_ledger(self):
         trades = [
             {"symbol": "00017", "side": "buy", "price": 10, "quantity": 1000, "created_at": "t1"},

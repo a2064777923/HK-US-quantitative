@@ -37,10 +37,17 @@ def run_cmd(args, timeout=10):
 
 
 def save_json_atomic(path, payload):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    tmp = f"{path}.{os.getpid()}.{datetime.now().strftime('%Y%m%d%H%M%S%f')}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 def psql(sql, timeout=20):
@@ -170,12 +177,18 @@ def alert_contract_check(checks, alerts):
 
 def latest_kline_check(checks):
     sql = """
-        SELECT s.exchange, count(DISTINCT k.symbol), max(k.timestamp::date)
-        FROM klines k
-        JOIN stocks s ON s.symbol = k.symbol
-        WHERE k.interval = 'day'
-        AND s.is_active = true
-        AND s.exchange IN ('HKEX','NASDAQ','NYSE')
+        WITH daily_bar AS (
+            SELECT DISTINCT ON (k.symbol, k.timestamp::date)
+                   k.symbol, k.timestamp::date AS trade_date
+            FROM klines k
+            WHERE k.interval = 'day'
+            ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC
+        )
+        SELECT s.exchange, count(DISTINCT d.symbol), max(d.trade_date)
+        FROM daily_bar d
+        JOIN stocks s ON s.symbol = d.symbol
+        WHERE s.is_active = true
+          AND s.exchange IN ('HKEX','NASDAQ','NYSE')
         GROUP BY s.exchange
         ORDER BY s.exchange
     """
@@ -251,12 +264,15 @@ def data_health_check(checks):
     if feature_run:
         latest = feature_run.get("latest") or {}
         notes = feature_run.get("notes") or []
+        remediation = feature_run.get("remediation") or {}
+        remediation_action = remediation.get("required_action") or "none"
         detail_parts.append(
-            "feature_run={status} run_id={run_id} trade_date={trade_date} notes={notes}".format(
+            "feature_run={status} run_id={run_id} trade_date={trade_date} notes={notes} remediation={remediation}".format(
                 status=feature_run.get("status"),
                 run_id=latest.get("run_id"),
                 trade_date=latest.get("trade_date"),
                 notes=",".join(notes) if notes else "none",
+                remediation=remediation_action,
             )
         )
     detail = "; ".join(detail_parts)

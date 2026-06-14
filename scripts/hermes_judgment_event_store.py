@@ -323,6 +323,61 @@ def event_summary(events):
     }
 
 
+def audit_coverage(events, audit_payload=None):
+    audit_payload = audit_payload if isinstance(audit_payload, dict) else {}
+    audit_rows = audit_payload.get("judgments") if isinstance(audit_payload.get("judgments"), list) else []
+    counts = audit_payload.get("counts") if isinstance(audit_payload.get("counts"), dict) else {}
+    report_judgment_count = int(counts.get("judgment_count") or len(audit_rows))
+    missing_events = []
+    failed_events = []
+    pass_count = 0
+    fail_count = 0
+    for event in events:
+        audit_row = event.get("audit") or {}
+        status = str(audit_row.get("status") or "missing")
+        if status == "PASS":
+            pass_count += 1
+        elif status == "FAIL":
+            fail_count += 1
+            failed_events.append(event)
+        else:
+            missing_events.append(event)
+
+    def example(event):
+        judgment = event.get("judgment") or {}
+        return {
+            "judgment_key": event.get("judgment_key"),
+            "packet_id": judgment.get("packet_id"),
+            "signal_id": judgment.get("signal_id"),
+            "decision": str(judgment.get("decision") or "").strip().lower(),
+            "reviewed_at": judgment.get("reviewed_at") or judgment.get("created_at"),
+        }
+
+    return {
+        "schema": "hermes_judgment_event_store_audit_coverage_v1",
+        "audit_report_schema": audit_payload.get("schema"),
+        "audit_report_status": audit_payload.get("status"),
+        "audit_report_generated_at": audit_payload.get("generated_at"),
+        "audit_report_judgment_count": report_judgment_count,
+        "audit_report_row_count": len(audit_rows),
+        "audit_report_truncated": report_judgment_count > len(audit_rows),
+        "event_count": len(events),
+        "audit_pass_event_count": pass_count,
+        "audit_fail_event_count": fail_count,
+        "audit_missing_event_count": len(missing_events),
+        "audit_matched_event_count": pass_count + fail_count,
+        "audit_missing_examples": [example(event) for event in missing_events[:10]],
+        "audit_fail_examples": [
+            {
+                **example(event),
+                "audit_reasons": (event.get("audit") or {}).get("reasons") or [],
+                "packet_source": (event.get("audit") or {}).get("packet_source"),
+            }
+            for event in failed_events[:10]
+        ],
+    }
+
+
 def build_report(
     judgment_file=JUDGMENT_FILE,
     audit_file=AUDIT_FILE,
@@ -342,6 +397,16 @@ def build_report(
     elif not audit_payload:
         warnings.append(f"audit_report_missing:{audit_file}")
     events, event_stats = build_events(judgments, audit_payload)
+    coverage = audit_coverage(events, audit_payload)
+    if events and coverage["audit_missing_event_count"]:
+        warnings.append(f"judgment_events_missing_audit_rows:{coverage['audit_missing_event_count']}")
+    if coverage["audit_report_truncated"] and coverage["audit_missing_event_count"]:
+        warnings.append(
+            "audit_report_truncated_unmatched_judgments:"
+            + str(coverage["audit_missing_event_count"])
+        )
+    if coverage["audit_fail_event_count"]:
+        warnings.append(f"judgment_events_include_audit_failures:{coverage['audit_fail_event_count']}")
     current_schema_hash = schema_hash(table_name) if not reasons else ""
     current_batch_hash = batch_hash(events, table_name) if not reasons else ""
     if apply and not confirm_schema_hash:
@@ -386,6 +451,7 @@ def build_report(
         "event_count": len(events),
         "duplicate_count": event_stats["duplicate_count"],
         "event_summary": event_summary(events),
+        "audit_coverage": coverage,
         "warnings": warnings,
         "validation_reasons": reasons,
         "applied": applied,
@@ -399,6 +465,8 @@ def build_report(
             "does_not_change_strategy_config": True,
             "does_not_restart_services": True,
             "writes_audit_table_only": True,
+            "preserves_audit_status": True,
+            "reports_missing_audit_rows": True,
         },
     }
 
@@ -418,6 +486,7 @@ def build_text_report(payload):
         lines.append("Warnings: " + ", ".join(payload["warnings"]))
     lines.append("by_decision=" + json.dumps(payload["event_summary"]["by_decision"], ensure_ascii=False))
     lines.append("by_audit_status=" + json.dumps(payload["event_summary"]["by_audit_status"], ensure_ascii=False))
+    lines.append("audit_coverage=" + json.dumps(payload.get("audit_coverage") or {}, ensure_ascii=False))
     if payload.get("apply_result"):
         lines.append("apply_result=" + json.dumps(payload["apply_result"], ensure_ascii=False))
     return "\n".join(lines)

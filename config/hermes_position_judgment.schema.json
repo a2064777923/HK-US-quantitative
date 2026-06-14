@@ -4,6 +4,30 @@
   "title": "Hermes Position Review Judgment",
   "type": "object",
   "additionalProperties": true,
+  "$defs": {
+    "required_context_review": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "position_context_reviewed",
+        "portfolio_risk_reviewed",
+        "market_context_reviewed",
+        "external_context_reviewed",
+        "intraday_context_reviewed"
+      ],
+      "properties": {
+        "position_context_reviewed": {"const": true},
+        "portfolio_risk_reviewed": {"const": true},
+        "market_context_reviewed": {"const": true},
+        "external_context_reviewed": {"const": true},
+        "intraday_context_reviewed": {"const": true},
+        "notes": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  },
   "required": [
     "schema",
     "packet_id",
@@ -92,6 +116,50 @@
       "type": "array",
       "items": {"type": "string"},
       "minItems": 1
+    },
+    "context_review": {
+      "$ref": "#/$defs/required_context_review",
+      "description": "Required by hermes_position_judgment_audit_report.py when the reviewed position_review item includes context_digest."
+    },
+    "position_attention_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when the reviewed position_review.items[].context_digest.position_attention[] is non-empty."
+    },
+    "position_attention_codes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "The position_review.items[].context_digest.position_attention[] codes Hermes explicitly considered."
+    },
+    "position_attention_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes explaining how holding-specific attention items affected hold/watch/reduce/exit/trail-stop advice."
+    },
+    "position_attention_effects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "effect", "decision_impact"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One reviewed position_review.items[].context_digest.position_attention[] code."
+          },
+          "effect": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Specific holding-risk interpretation for this attention code."
+          },
+          "decision_impact": {
+            "type": "string",
+            "minLength": 1,
+            "description": "How this attention code affected hold/watch/reduce/exit/trail-stop advice."
+          }
+        },
+        "additionalProperties": true
+      },
+      "description": "One object per reviewed position_attention code, required by audit when position_attention is non-empty."
     },
     "follow_up": {
       "type": "array",

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from scripts import universe_hygiene_report as report
 
@@ -20,6 +21,38 @@ def row(symbol, latest_date, history=80, market="HK", exchange="HKEX", volume=10
 
 
 class UniverseHygieneReportTests(unittest.TestCase):
+    def test_fetch_universe_rows_reads_canonical_daily_bars(self):
+        captured = {}
+
+        def fake_table_columns(table):
+            return {"data_source"} if table == "klines" else set()
+
+        def fake_psql(sql):
+            captured["sql"] = sql
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "US\tAAPL\tApple\tNASDAQ\t2020-01-01\t2026-06-12\t100\t1000\ttencent\t80\t0\n",
+                    "stderr": "",
+                },
+            )()
+
+        with patch.object(report, "table_columns", side_effect=fake_table_columns), patch.object(
+            report, "psql", side_effect=fake_psql
+        ):
+            rows, warnings = report.fetch_universe_rows()
+
+        sql = captured["sql"]
+        normalized = " ".join(sql.split())
+        self.assertEqual(warnings, [])
+        self.assertEqual(rows[0]["symbol"], "AAPL")
+        self.assertIn("daily_bar AS", sql)
+        self.assertIn("SELECT DISTINCT ON (k.symbol, k.timestamp::date)", sql)
+        self.assertIn("ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC", normalized)
+        self.assertIn("count(d.*) FILTER", sql)
+
     def test_clean_universe_is_read_only_and_has_clean_recommendation(self):
         payload = report.build_report(
             [

@@ -300,11 +300,17 @@ def fetch_latest_prices(symbols):
         return {}
     r = psql(
         f"""
-        SELECT DISTINCT ON (symbol) symbol, close_price, timestamp::date
-        FROM klines
-        WHERE interval = 'day'
-          AND symbol IN ({sql_in(symbols)})
-        ORDER BY symbol, timestamp DESC
+        WITH daily_bar AS (
+            SELECT DISTINCT ON (symbol, timestamp::date)
+                   symbol, close_price, timestamp::date AS trade_date
+            FROM klines
+            WHERE interval = 'day'
+              AND symbol IN ({sql_in(symbols)})
+            ORDER BY symbol, timestamp::date, timestamp DESC
+        )
+        SELECT DISTINCT ON (symbol) symbol, close_price, trade_date
+        FROM daily_bar
+        ORDER BY symbol, trade_date DESC
         """,
         timeout=90,
     )

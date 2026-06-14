@@ -7,6 +7,19 @@ from pathlib import Path
 from scripts import hermes_position_judgment_audit_report as audit
 
 
+def context_review(**overrides):
+    item = {
+        "position_context_reviewed": True,
+        "portfolio_risk_reviewed": True,
+        "market_context_reviewed": True,
+        "external_context_reviewed": True,
+        "intraday_context_reviewed": True,
+        "notes": ["position context digest reviewed before advisory judgment"],
+    }
+    item.update(overrides)
+    return item
+
+
 def position_item(review_id="simulation:8:00929:2026-06-12:reduce_or_exit_review", **extra):
     item = {
         "review_id": review_id,
@@ -23,6 +36,22 @@ def position_item(review_id="simulation:8:00929:2026-06-12:reduce_or_exit_review
         },
     }
     item.update(extra)
+    return item
+
+
+def position_item_with_context(review_id="simulation:8:00929:2026-06-12:reduce_or_exit_review", **extra):
+    item = position_item(review_id, **extra)
+    item["context_digest"] = {
+        "schema": "hermes_position_review_context_digest_v1",
+        "read_only": True,
+        "advisory_only": True,
+        "submits_orders": False,
+        "symbol": item.get("symbol"),
+        "position_attention": [
+            "position_negative_external_context_requires_discussion",
+            "position_source_reliability_limit_requires_discussion",
+        ],
+    }
     return item
 
 
@@ -61,13 +90,70 @@ def judgment(review_id="simulation:8:00929:2026-06-12:reduce_or_exit_review", de
     return item
 
 
+def position_attention_acknowledgement(*codes):
+    selected_codes = list(codes) or [
+        "position_negative_external_context_requires_discussion",
+        "position_source_reliability_limit_requires_discussion",
+    ]
+    return {
+        "position_attention_acknowledged": True,
+        "position_attention_codes": selected_codes,
+        "position_attention_notes": ["position attention items were reflected in advisory risk notes"],
+        "position_attention_effects": [
+            {
+                "code": code,
+                "effect": f"{code} was reviewed as holding-specific risk context",
+                "decision_impact": "kept the advice conservative and prevented adding exposure",
+            }
+            for code in selected_codes
+        ],
+    }
+
+
 class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
     def test_no_position_judgments_is_not_a_failure(self):
         payload = audit.build_report([], packet())
 
         self.assertEqual(payload["status"], "OK")
         self.assertEqual(payload["counts"]["judgment_count"], 0)
+        self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 0)
         self.assertEqual(payload["recommendations"], ["no_position_judgments_observed_yet"])
+
+    def test_unjudged_high_urgency_position_review_warns_for_coverage_gap(self):
+        high = position_item(
+            "simulation:8:00929:2026-06-12:reduce_or_exit_review",
+            urgency="high",
+            recommended_action="reduce_or_exit_review",
+        )
+
+        payload = audit.build_report([], packet([high]))
+
+        self.assertEqual(payload["status"], "WARN")
+        self.assertEqual(payload["coverage"]["high_urgency_review_count"], 1)
+        self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 1)
+        self.assertEqual(
+            payload["coverage"]["unjudged_high_urgency_examples"][0]["review_id"],
+            "simulation:8:00929:2026-06-12:reduce_or_exit_review",
+        )
+        self.assertIn("write_position_judgments_for_high_urgency_reviews:1", payload["recommendations"])
+
+    def test_judged_high_urgency_position_review_clears_coverage_gap(self):
+        high = position_item(
+            "simulation:8:00929:2026-06-12:reduce_or_exit_review",
+            urgency="high",
+            recommended_action="reduce_or_exit_review",
+        )
+        item = judgment(
+            "simulation:8:00929:2026-06-12:reduce_or_exit_review",
+            decision="watch",
+            opposing_factors=["support held above stop", "liquidity risk makes immediate exit worse"],
+            risk_notes=["review again next session", "do not add exposure before review"],
+        )
+
+        payload = audit.build_report([item], packet([high]))
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 0)
 
     def test_clean_position_judgment_passes_against_packet_item(self):
         payload = audit.build_report([judgment()], packet())
@@ -77,6 +163,107 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
         self.assertEqual(row["status"], "PASS")
         self.assertEqual(row["reasons"], [])
         self.assertEqual(payload["recommendations"], ["position_judgment_audit_clean_continue_advisory_review"])
+
+    def test_enriched_position_review_requires_context_review(self):
+        payload = audit.build_report([judgment()], packet([position_item_with_context()]))
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertIn("context_review_missing", row["reasons"])
+        self.assertIn("position_judgments_require_context_review_for_enriched_items", payload["recommendations"])
+
+    def test_enriched_position_review_context_review_passes(self):
+        payload = audit.build_report(
+            [
+                judgment(
+                    context_review=context_review(),
+                    **position_attention_acknowledgement(),
+                )
+            ],
+            packet([position_item_with_context()]),
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(row["status"], "PASS")
+        self.assertEqual(row["reasons"], [])
+
+    def test_position_attention_requires_structured_acknowledgement(self):
+        payload = audit.build_report(
+            [judgment(context_review=context_review())],
+            packet([position_item_with_context()]),
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertIn("missing_position_attention_acknowledgement", row["reasons"])
+        self.assertIn("position_attention_codes_missing_or_unmatched", row["reasons"])
+        self.assertIn("position_attention_notes_missing", row["reasons"])
+        self.assertIn("position_attention_effects_missing", row["reasons"])
+        self.assertIn("position_attention_requires_structured_acknowledgement", payload["recommendations"])
+
+    def test_position_attention_acknowledgement_must_cover_all_codes(self):
+        payload = audit.build_report(
+            [
+                judgment(
+                    context_review=context_review(),
+                    **position_attention_acknowledgement(
+                        "position_negative_external_context_requires_discussion"
+                    ),
+                )
+            ],
+            packet([position_item_with_context()]),
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertIn("position_attention_codes_missing_or_unmatched", row["reasons"])
+        self.assertIn("position_attention_effects_missing_or_unmatched", row["reasons"])
+
+    def test_position_attention_effects_must_explain_each_code(self):
+        ack = position_attention_acknowledgement()
+        ack["position_attention_effects"] = [
+            {
+                "code": "position_negative_external_context_requires_discussion",
+                "effect": "",
+                "decision_impact": "",
+            },
+            {
+                "code": "position_source_reliability_limit_requires_discussion",
+                "effect": "source reliability was degraded",
+                "decision_impact": "kept advice as watch instead of add",
+            },
+        ]
+        payload = audit.build_report(
+            [
+                judgment(
+                    context_review=context_review(),
+                    **ack,
+                )
+            ],
+            packet([position_item_with_context()]),
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertIn("position_attention_effect_detail_missing", row["reasons"])
+        self.assertIn("position_attention_effect_decision_impact_missing", row["reasons"])
+
+    def test_enriched_position_review_partial_context_review_flags_missing_fields(self):
+        payload = audit.build_report(
+            [
+                judgment(
+                    context_review=context_review(external_context_reviewed=False),
+                    **position_attention_acknowledgement(),
+                )
+            ],
+            packet([position_item_with_context()]),
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertIn("context_review_missing_external_context_reviewed", row["reasons"])
+        self.assertIn("position_judgments_require_context_review_for_enriched_items", payload["recommendations"])
 
     def test_orphan_review_id_is_flagged(self):
         payload = audit.build_report([judgment("missing-review")], packet())

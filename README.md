@@ -1,203 +1,193 @@
-# HK-US Quantitative Trading System
+# HK-US Quantitative
 
-港股+美股量化交易系統 — 信號引擎、組合回測、模擬交易、飛書通知
+HK/US equities quantitative research and realtime signal system. The current production path is v5 realtime alerting with Hermes review context, Feishu/operator notifications, user-position risk review, and guarded simulation or Alpaca paper execution.
 
-## 📊 回測結果摘要
+This repository is not configured for automatic real-money trading. Real broker execution should remain manual until paper/live-signal evidence is reviewed separately.
 
-### 現實版回測（固定$1萬/筆、唔複利、2021-2026）
-| 指標 | 數值 |
-|------|------|
-| 初始資金 | $100,000 |
-| 最終資金 | $335,814 |
-| 總回報 | 235.8% |
-| 年化回報 | **42.4%** |
-| MaxDD | **12.4%** |
-| Sharpe | **1.09** |
-| 交易筆數 | 1,232 |
-| 勝率 | 44.2% |
-| 盈虧比 | 2.4:1 |
-| 期望值 | +2.11%/筆 |
+## Current Status
 
-### 每年表現
-| 年份 | 交易 | 港股/美股 | 勝率 | P&L |
-|------|------|----------|------|-----|
-| 2021 | 173 | 158/15 | 46% | +$31,765 |
-| 2022 | 251 | 230/21 | 41% | +$38,875 |
-| 2023 | 249 | 228/21 | 42% | +$40,577 |
-| 2024 | 233 | 208/25 | 45% | +$58,552 |
-| 2025 | 223 | 209/14 | 43% | +$19,379 |
-| 2026 | 103 | 92/11 | 52% | +$46,668 |
+- `scripts/rt_signal_engine_v5.py` is the intended realtime signal source.
+- v5 scans HK/US watchlists, polls realtime quotes, and writes alerts to `/tmp/rt_signal_alerts.jsonl`.
+- Signal scoring uses completed daily OHLCV history plus one realtime quote bar.
+- Minute/hour data is read-only context for Hermes and quality reports; it is not the core v5 scoring authority.
+- `scripts/rt_alert_bridge.py` defaults to notify-only mode.
+- `scripts/portfolio_report.py` produces advisory `position_review` items for user and simulation holdings.
+- `scripts/rt_order_intake.py` is the gated paper/simulation intake path.
+- HK simulated orders use the QuantMind simulation API.
+- US paper orders may use Alpaca paper only when explicitly enabled.
 
-### 純美股組合回測（64年，1962-2026）
-| 指標 | 數值 |
-|------|------|
-| CAGR | 19.1% |
-| MaxDD | 13.5% |
-| Sharpe | 1.55 |
-| Calmar | 1.41 |
+## Safety Model
 
-## 🏗️ 系統架構
+The safe default is:
 
-```
-├── backtest/
-│   ├── backtest_trades.py          # 單股回測
-│   ├── segment_backtest.py         # 分段回測（熊市/震盪/牛市）
-│   ├── portfolio_backtest_combined.py  # 港股+美股組合回測（複利版）
-│   └── portfolio_backtest_realistic.py # 現實版回測（固定倉位）
-├── scripts/
-│   ├── signal_engine_v4.py         # 信號引擎v4（RSI/MACD/ATR/布林/動量）
-│   ├── kline_batch.py              # K線批量更新（騰訊API）
-│   ├── generate_signals.py         # 信號生成
-│   ├── quantmind_strategy_runner.py # 策略執行器
-│   ├── quantmind_sim_trader.py     # 模擬交易
-│   ├── feishu_notify.py            # 飛書通知
-│   └── quantmind_daily_pipeline.py # 每日數據流水線
-├── config/
-│   ├── config.template.json        # 配置模板
-│   └── crontab.txt                 # 定時任務
-├── docs/
-│   └── scoring_logic.md            # 評分邏輯文檔
-└── results/
-    ├── portfolio_bt_combined_summary.json
-    ├── portfolio_bt_realistic_summary.json
-    └── segment_backtest_results.json
+```bash
+RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 \
+python3 scripts/rt_alert_bridge.py
 ```
 
-## 📈 信號引擎 v4
+Execution modes:
 
-### 評分維度（-1 到 +1）
-1. **趨勢 (Trend)**: 多頭/空頭排列、均線斜率
-2. **動量 (Momentum)**: RSI、MACD柱狀圖
-3. **結構 (Structure)**: 布林帶位置
-4. **成交量 (Volume)**: 量比、放量突破
+| Mode | Effect |
+| --- | --- |
+| `notify` | Print/send alert text only. No orders. |
+| `alert-dry-run` | Run order-intake checks and report the proposed action or rejection. No orders. |
+| `alert-sim` | Submit to simulation/paper only after all gates pass. Requires pilot flags and caps. |
+| `legacy-sim` | Compatibility path for the old simulation trader. Keep disabled unless intentionally reviewed. |
 
-### 買賣門檻
-- **BUY**: score >= 0.65
-- **SELL**: score <= 0.35
-- **止損**: Chandelier Trailing Stop (ATR × 2)
+Paper/simulation execute mode is fail-closed by default. To enable the pilot path, the runtime must explicitly set caps such as:
 
-### 動態倉位管理
-- 單股倉位: 3%-15%（按信號強度調整）
-- 波動率調整: ATR越高倉位越小
-- 最多同時持倉: 10-16隻
-- 冷卻期: 止損後3日唔再買同一隻
+```bash
+RT_ALERT_EXECUTION_MODE=alert-sim
+RT_ORDER_EXECUTE_PILOT_ENABLED=1
+RT_ORDER_PILOT_MAX_ORDER_NOTIONAL_HKD=5000
+RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=500
+RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=1
+```
 
-## 📊 數據覆蓋
+For US Alpaca paper:
 
-| 市場 | 股票數 | 歷史數據 |
-|------|--------|---------|
-| 港股 | 242隻 | 2018-2026 (2000日) |
-| 美股 | 32隻 | 1962-2026 (16000+日) |
+```bash
+RT_ORDER_US_BROKER=alpaca-paper
+APCA_API_KEY_ID=...
+APCA_API_SECRET_KEY=...
+```
 
-### 本地回測數據
+Put runtime secrets in the server environment or `/root/.quantmind_env`; do not commit them.
 
-Raw K線數據只應保存在本地資料目錄，默認 `/tmp`，不要提交到 GitHub，也不要默認同步到服務器。可重跑入口：
+## Realtime v5 Contract
+
+Each v5 alert declares its timeframe basis:
+
+- `timeframe_scope=completed_daily_ohlcv_with_realtime_quote`
+- `primary_timeframe=1d`
+- `realtime_input=single_quote_temporary_bar`
+- `intraday_minute_bars_used=false`
+- `intraday_evidence_policy=external_read_only_context_only`
+
+Executable alerts must be confirmed directional BUY/SELL candidates with valid entry, stop, take-profit, risk/reward, liquidity, and execution-candidate fields. Diagnostic `WATCH` rows may still carry candidate geometry for review, but order intake rejects them as non-executable.
+
+## Hermes Review Layer
+
+Hermes consumes compact review packets from:
+
+```bash
+python3 scripts/hermes_review_packet.py --output /tmp/hermes_signal_review_packet.json
+```
+
+The packet combines:
+
+- v5 alert and order-intake context;
+- market regime and breadth;
+- intraday confirmation/contradiction context;
+- external news/event/sentiment/fundamentals summaries;
+- source reliability and data-health state;
+- simulation performance and postmortem coverage;
+- execution readiness blockers;
+- user/simulation `position_review` items.
+
+Hermes judgments are advisory artifacts. Position review decisions must stay advisory and must not be confused with user-broker order instructions.
+
+## Feishu Notifications
+
+`scripts/feishu_notify.py` reads credentials from env or `FEISHU_ENV_FILE`, defaulting to `/root/.quantmind_env`.
+
+Expected secret file shape:
+
+```bash
+export FEISHU_APP_ID="..."
+export FEISHU_APP_SECRET="..."
+export FEISHU_CHAT_ID="..."
+```
+
+Enable Feishu delivery explicitly:
+
+```bash
+RT_ALERT_REMOTE=local RT_ALERT_SEND_FEISHU=1 RT_ALERT_EXECUTION_MODE=notify \
+python3 scripts/rt_alert_bridge.py
+```
+
+The bridge marks alerts or position reviews as sent only after Feishu delivery succeeds.
+
+## Recommended Server Jobs
+
+Use `config/hermes_v5_crontab.txt` as the reviewed cron template. The active default lines are read-only or notify-only. Lines that submit simulation/paper orders, apply DB repairs, promote watchlists, or promote strategy config are commented and hash/pilot gated.
+
+Core runtime:
+
+```bash
+cp config/rt_signal_watchlist.json /root/rt_signal_watchlist.json
+cp config/rt_signal_strategy_config.json /root/rt_signal_strategy_config.json
+cp config/rt_signal_engine_v5.service /etc/systemd/system/rt_signal_engine_v5.service
+systemctl daemon-reload
+systemctl enable --now rt_signal_engine_v5
+```
+
+Readiness refresh, useful after deploy or missing cron:
+
+```bash
+python3 scripts/readiness_refresh.py --output /tmp/readiness_refresh_report.json --text
+python3 scripts/execution_readiness_report.py --output /tmp/execution_readiness_report.json --text
+```
+
+## Data Policy
+
+Raw market data should stay local by default. Do not commit raw CSV/parquet/DB files or secret-bearing runtime state.
+
+Recommended local research flow:
 
 ```bash
 APCA_API_KEY_ID=... APCA_API_SECRET_KEY=... \
 python3 scripts/local_backtest_dataset.py --output-dir /tmp --start-date 2021-01-01 --end-date 2026-06-14
-```
 
-輸出文件：
-
-- `/tmp/hk_klines_v2.csv` - `portfolio_backtest_realistic.py` 的港股輸入；
-- `/tmp/us_klines.csv` - `portfolio_backtest_realistic.py` 的美股輸入；
-- `/tmp/all_klines.csv` - `portfolio_backtest_combined.py` 的合併輸入；
-- `/tmp/hk_us_dataset_metadata.json` - 來源、覆蓋、local-only 存儲策略。
-
-US Alpaca 默認使用 `feed=iex`，適合快速基線；需要機構級全市場覆蓋時應使用已授權的 SIP/高質量 vendor feed 並保留 metadata。可選的 US 小時線/分鐘線也應落本地 raw data 目錄，例如：
-
-```bash
-APCA_API_KEY_ID=... APCA_API_SECRET_KEY=... \
-python3 scripts/local_backtest_dataset.py --output-dir /tmp --us-intraday-timeframe 1Hour
-```
-
-本地 raw data lake 可以盡量做廣、做細，例如保存更多股票池、分鐘線、小時線、第三方 vendor 原始快照和 provider metadata。這些數據的價值是「可重播、可審計、可重新做特徵」，不是直接進 production。默認接入邊界：
-
-- 原始大文件只放本地資料目錄，例如 `/tmp`、`/data`、`/market_data` 或外接磁碟；
-- 不提交 GitHub，不默認同步到服務器，不放進 cron 自動產物；
-- 大文件優先用分區/壓縮格式保存，例如按 `provider/market/timeframe/symbol/date` 分區的 Parquet+Zstd 或 gzip CSV；
-- 每個 raw dataset 必須保留小型 manifest：provider、feed、adjustment、timezone、retrieved_at、coverage、gaps、freshness、license_scope、checksum；
-- 只把小型 metadata、coverage、freshness、gap、source reliability、replay/quality report 給 Hermes；
-- v5、Hermes、模擬交易和 operator queue 只能消費通過質量門檻的摘要或特徵，不直接依賴未驗證 raw minute/hour bars；
-- 若之後要把某個高粒度數據源提升到服務器，應先提供來源授權、時間戳/時區規則、復權規則、缺口處理、延遲 SLA、存儲容量預估和回滾方案。
-
-把本地數據和回測結果整理成可靠性報告：
-
-```bash
 python3 scripts/local_backtest_reliability_report.py \
   --metadata-file /tmp/hk_us_dataset_metadata.json \
   --realistic-result-file /tmp/portfolio_bt_realistic.json \
   --combined-result-file /tmp/portfolio_bt_v4.json \
   --output /tmp/local_backtest_reliability_report.json --text
-```
 
-這份報告只用來支撐研究判斷，不會改 v5、Hermes、模擬倉或任何 cron。
-
-再做一層 v5 本地 replay，只把觸發/確認/風控分布喂給 Hermes：
-
-```bash
 python3 scripts/v5_local_replay_report.py \
   --hk-csv /tmp/hk_klines_v2.csv \
   --us-csv /tmp/us_klines.csv \
   --output /tmp/v5_local_replay_report.json --text
-python3 scripts/v5_replay_strategy_review_report.py \
-  --v5-local-replay-file /tmp/v5_local_replay_report.json \
-  --output /tmp/v5_replay_strategy_review_report.json --text
-python3 scripts/trigger_evidence_convergence_report.py \
-  --strategy-review-file /tmp/strategy_review_report.json \
-  --v5-replay-strategy-review-file /tmp/v5_replay_strategy_review_report.json \
-  --output /tmp/trigger_evidence_convergence_report.json --text
 ```
 
-這份 replay 也是研究上下文，不是 PnL 回測，不會寫 alert queue、下單、或改生產門檻。
-它還會把 alert 密度、確認率、降級率、同日多 trigger 堆疊，以及按 trigger/market 的噪音分解標成 quality 風險，方便 Hermes 保持批判態度。
-`v5_replay_strategy_review_report.py` 會把 replay 噪音轉成 Hermes 可讀的 trigger policy hints，但仍是 promotion-ineligible research context，不能單獨推送策略配置。
-`trigger_evidence_convergence_report.py` 會把 forward outcome 的 `strategy_review_report.py` 和 replay 噪音對齊，標出收斂風險、衝突和樣本不足；它同樣不輸出可被 promotion 消化的標準 `trigger_policies`。
+Use raw minute/hour data for research, replay, and feature engineering, but promote only compact metadata, coverage, freshness, gap, source-quality, and replay reports into Hermes/server workflows.
 
-檢查本地回測與 v5 實時引擎的因子契約是否對齊：
+## Backtesting
+
+Backtest scripts remain under `backtest/`, with summary JSON under `results/`. These are research evidence, not a guarantee of live performance.
+
+Important limitations:
+
+- historical backtests can contain survivorship, liquidity, slippage, and universe-selection bias;
+- v5 replay is closer to current trigger semantics than legacy portfolio backtests, but it is not a true intraday PnL path reconstruction;
+- no report should be treated as fully eliminating overfitting or lookahead risk until walk-forward/out-of-sample validation is complete.
+
+## Repository Layout
+
+```text
+backtest/   Historical research backtests.
+config/     Runtime templates, schemas, watchlists, crontab template.
+docs/       Integration notes, especially docs/HERMES_V5_INTEGRATION.md.
+results/    Small checked-in summary artifacts only.
+scripts/    Realtime engine, reports, readiness gates, notifications, intake.
+tests/      Unit tests for contracts and safety gates.
+```
+
+## Verification
+
+Run before release:
 
 ```bash
-python3 scripts/factor_contract_alignment_report.py \
-  --output /tmp/factor_contract_alignment_report.json --text
+python -m unittest discover -s tests
+git diff --check
 ```
 
-若報告顯示 `PARTIAL_ALIGNMENT_REQUIRES_CAUTION`，代表本地回測仍可作研究基線，但不能直接當成 v5 replay 證據。
+Also scan for secrets before pushing. Placeholder names such as `FEISHU_APP_SECRET` or `APCA_API_SECRET_KEY` are expected in docs/tests; real values are not.
 
-## 🚀 部署
+## Known Gaps
 
-### 依賴
-```bash
-pip install -r requirements.txt
-```
-
-### 數據更新
-```bash
-# K線批量更新（每30分鐘）
-python3 scripts/kline_batch.py
-
-# 信號生成
-python3 scripts/generate_signals.py
-
-# 策略執行
-python3 scripts/quantmind_strategy_runner.py
-```
-
-### 定時任務
-參考 `config/crontab.txt`
-
-## ⚠️ 風險提示
-
-1. 回測結果唔代表未來表現
-2. 港股數據只有8年，樣本偏短
-3. 美股長期數據有幸存者偏差（只揀咗最後嘅赢家）
-4. 實際交易有滑點、流動性、衝擊成本等問題
-5. 建議先用模擬盤驗證至少3個月
-
-## 📝 優化方向
-
-1. **提高港股BUY門檻** — 港股勝率偏低（43%），可試0.70
-2. **市場情緒過濾** — 大市跌時減少開倉
-3. **分鐘級回測** — 用分鐘數據做更精確嘅入場/出場
-4. **行業輪動** — 按行業/概念過濾信號
-5. **風險平價** — 按波動率分配倉位而非固定金額
+- Dynamic target adjustment and T-trading are advisory/incomplete, not a full automated position-management engine.
+- v5 core scoring is daily-history plus realtime quote; intraday data is contextual evidence.
+- Full visual backtest dashboards are not the primary artifact yet.
+- Strategy promotion should remain blocked unless execution readiness, forward outcomes, Hermes audit-pass learning, and simulation performance support it.

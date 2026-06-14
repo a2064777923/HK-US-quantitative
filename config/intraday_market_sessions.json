@@ -1,0 +1,82 @@
+{
+  "schema": "intraday_market_sessions_v1",
+  "updated_at": "2026-06-13T21:30:00+08:00",
+  "source_note": "Operator-maintained HK/US cash-equity session overrides for 2026. Review official exchange calendars before extending to later years.",
+  "source_urls": {
+    "HK": [
+      "https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/SEHK/2025/ce_SEHK_CT_075_2025.pdf"
+    ],
+    "US": [
+      "https://www.nyse.com/trade/hours-calendars",
+      "https://www.nasdaqtrader.com/trader.aspx?id=Calendar"
+    ]
+  },
+  "markets": {
+    "HK": {
+      "closed_dates": {
+        "2026-01-01": "hkex_first_day_of_january",
+        "2026-02-17": "hkex_lunar_new_year_day_1",
+        "2026-02-18": "hkex_lunar_new_year_day_2",
+        "2026-02-19": "hkex_lunar_new_year_day_3",
+        "2026-04-03": "hkex_good_friday",
+        "2026-04-06": "hkex_day_following_ching_ming_festival",
+        "2026-04-07": "hkex_day_following_easter_monday",
+        "2026-05-01": "hkex_labour_day",
+        "2026-05-25": "hkex_day_following_birthday_of_buddha",
+        "2026-06-19": "hkex_tuen_ng_festival",
+        "2026-07-01": "hkex_hksar_establishment_day",
+        "2026-10-01": "hkex_national_day",
+        "2026-10-19": "hkex_day_following_chung_yeung_festival",
+        "2026-12-25": "hkex_christmas_day"
+      },
+      "half_days": {
+        "2026-02-16": {
+          "reason": "hkex_eve_of_lunar_new_year",
+          "session_windows": [
+            {"open": "09:30", "close": "12:00"}
+          ]
+        },
+        "2026-12-24": {
+          "reason": "hkex_eve_of_christmas_day",
+          "session_windows": [
+            {"open": "09:30", "close": "12:00"}
+          ]
+        },
+        "2026-12-31": {
+          "reason": "hkex_eve_of_new_year",
+          "session_windows": [
+            {"open": "09:30", "close": "12:00"}
+          ]
+        }
+      }
+    },
+    "US": {
+      "closed_dates": {
+        "2026-01-01": "us_equity_new_years_day",
+        "2026-01-19": "us_equity_martin_luther_king_jr_day",
+        "2026-02-16": "us_equity_washingtons_birthday",
+        "2026-04-03": "us_equity_good_friday",
+        "2026-05-25": "us_equity_memorial_day",
+        "2026-06-19": "us_equity_juneteenth",
+        "2026-07-03": "us_equity_independence_day_observed",
+        "2026-09-07": "us_equity_labor_day",
+        "2026-11-26": "us_equity_thanksgiving_day",
+        "2026-12-25": "us_equity_christmas_day"
+      },
+      "session_overrides": {
+        "2026-11-27": {
+          "reason": "us_equity_day_after_thanksgiving_early_close",
+          "session_windows": [
+            {"open": "09:30", "close": "13:00"}
+          ]
+        },
+        "2026-12-24": {
+          "reason": "us_equity_christmas_eve_early_close",
+          "session_windows": [
+            {"open": "09:30", "close": "13:00"}
+          ]
+        }
+      }
+    }
+  }
+}

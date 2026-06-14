@@ -23,6 +23,13 @@ REPORT_FILE = os.environ.get(
 )
 MAX_JUDGMENT_AGE_MINUTES = int(os.environ.get("HERMES_POSITION_MAX_JUDGMENT_AGE_MINUTES", "1440"))
 VALID_DECISIONS = {"hold", "watch", "reduce", "exit", "trail_stop"}
+REQUIRED_CONTEXT_REVIEW_FLAGS = (
+    "position_context_reviewed",
+    "portfolio_risk_reviewed",
+    "market_context_reviewed",
+    "external_context_reviewed",
+    "intraday_context_reviewed",
+)
 
 
 def now_iso():
@@ -174,6 +181,67 @@ def validate_judgment_contract(judgment):
     return reasons
 
 
+def context_review_reasons(judgment, item):
+    if not isinstance((item or {}).get("context_digest"), dict):
+        return []
+    review = judgment.get("context_review")
+    if not isinstance(review, dict):
+        return ["context_review_missing"]
+    reasons = []
+    for flag in REQUIRED_CONTEXT_REVIEW_FLAGS:
+        if review.get(flag) is not True:
+            reasons.append(f"context_review_missing_{flag}")
+    notes = review.get("notes")
+    if notes is not None and not isinstance(notes, list):
+        reasons.append("context_review_notes_invalid")
+    return reasons
+
+
+def position_attention_for_item(item):
+    digest = (item or {}).get("context_digest") if isinstance((item or {}).get("context_digest"), dict) else {}
+    values = digest.get("position_attention") if isinstance(digest.get("position_attention"), list) else []
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
+def position_attention_acknowledgement_reasons(judgment, item):
+    attention = position_attention_for_item(item)
+    if not attention:
+        return []
+    reasons = []
+    if judgment.get("position_attention_acknowledged") is not True:
+        reasons.append("missing_position_attention_acknowledgement")
+    acknowledged = {
+        str(value).strip()
+        for value in (judgment.get("position_attention_codes") or [])
+        if str(value).strip()
+    } if isinstance(judgment.get("position_attention_codes"), list) else set()
+    if not set(attention).issubset(acknowledged):
+        reasons.append("position_attention_codes_missing_or_unmatched")
+    notes = judgment.get("position_attention_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("position_attention_notes_missing")
+    effects = judgment.get("position_attention_effects")
+    if not isinstance(effects, list) or not effects:
+        reasons.append("position_attention_effects_missing")
+    else:
+        effect_codes = {
+            str(effect.get("code") or "").strip()
+            for effect in effects
+            if isinstance(effect, dict) and str(effect.get("code") or "").strip()
+        }
+        if not set(attention).issubset(effect_codes):
+            reasons.append("position_attention_effects_missing_or_unmatched")
+        for effect in effects:
+            if not isinstance(effect, dict):
+                reasons.append("position_attention_effect_invalid")
+                continue
+            if not str(effect.get("effect") or "").strip():
+                reasons.append("position_attention_effect_detail_missing")
+            if not str(effect.get("decision_impact") or "").strip():
+                reasons.append("position_attention_effect_decision_impact_missing")
+    return reasons
+
+
 def audit_judgment(judgment, packet, review_by_id, now=None, packet_source="latest_packet", packet_reasons=None):
     now = now or datetime.now()
     review_id = str(judgment.get("review_id", "")).strip()
@@ -193,6 +261,8 @@ def audit_judgment(judgment, packet, review_by_id, now=None, packet_source="late
         item_policy = item.get("execution_policy") or {}
         if item_policy.get("submits_orders") is not False:
             reasons.append("review_item_execution_policy_not_review_only")
+        reasons.extend(context_review_reasons(judgment, item))
+        reasons.extend(position_attention_acknowledgement_reasons(judgment, item))
         if item.get("role") == "user" and decision in ("reduce", "exit", "trail_stop"):
             reasons.append("user_position_decision_must_remain_advice_only")
         if item.get("urgency") == "high" and decision in ("hold", "watch"):
@@ -252,12 +322,70 @@ def build_recommendations(rows, reason_counts):
         recs.append("retain_packet_archive_for_position_judgment_audit")
     if reason_counts.get("high_urgency_hold_or_watch_requires_strong_rationale"):
         recs.append("review_high_urgency_hold_watch_rationale")
+    if reason_counts.get("context_review_missing") or any(
+        reason.startswith("context_review_missing_") for reason in reason_counts
+    ):
+        recs.append("position_judgments_require_context_review_for_enriched_items")
+    if reason_counts.get("missing_position_attention_acknowledgement") or reason_counts.get(
+        "position_attention_codes_missing_or_unmatched"
+    ) or reason_counts.get("position_attention_notes_missing") or reason_counts.get(
+        "position_attention_effects_missing"
+    ) or reason_counts.get("position_attention_effects_missing_or_unmatched") or reason_counts.get(
+        "position_attention_effect_invalid"
+    ) or reason_counts.get("position_attention_effect_detail_missing") or reason_counts.get(
+        "position_attention_effect_decision_impact_missing"
+    ):
+        recs.append("position_attention_requires_structured_acknowledgement")
     if reason_counts.get("judgment_expired"):
         recs.append("refresh_expired_position_judgments")
     if reason_counts.get("duplicate_position_judgments_for_review"):
         recs.append("dedupe_position_judgments_keep_latest_review_id_only")
     if not recs:
         recs.append("position_judgment_audit_clean_continue_advisory_review")
+    return recs
+
+
+def coverage_summary(review_by_id, rows):
+    judged_ids = {str(row.get("review_id") or "").strip() for row in rows if row.get("review_id")}
+    high_priority = [
+        item
+        for item in (review_by_id or {}).values()
+        if str(item.get("urgency") or "").lower() == "high"
+    ]
+    unjudged_high = [
+        item
+        for item in high_priority
+        if str(item.get("review_id") or "").strip() not in judged_ids
+    ]
+    return {
+        "schema": "hermes_position_judgment_coverage_v1",
+        "position_review_item_count": len(review_by_id or {}),
+        "judged_review_count": len(judged_ids),
+        "unjudged_review_count": max(len(review_by_id or {}) - len(judged_ids), 0),
+        "high_urgency_review_count": len(high_priority),
+        "unjudged_high_urgency_review_count": len(unjudged_high),
+        "unjudged_high_urgency_examples": [
+            {
+                "review_id": item.get("review_id"),
+                "portfolio_id": item.get("portfolio_id"),
+                "role": item.get("role"),
+                "symbol": item.get("symbol"),
+                "recommended_action": item.get("recommended_action"),
+                "urgency": item.get("urgency"),
+            }
+            for item in unjudged_high[:20]
+        ],
+    }
+
+
+def append_coverage_recommendations(recs, coverage):
+    if (coverage or {}).get("unjudged_high_urgency_review_count"):
+        rec = (
+            "write_position_judgments_for_high_urgency_reviews:"
+            + str(coverage["unjudged_high_urgency_review_count"])
+        )
+        if rec not in recs:
+            recs.append(rec)
     return recs
 
 
@@ -311,7 +439,11 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
             for reason in row["reasons"]:
                 reason_counts[reason] += 1
 
+    coverage = coverage_summary(latest_review_by_id, rows)
     status = "FAIL" if status_counts.get("FAIL") or duplicates else "OK"
+    if status == "OK" and coverage.get("unjudged_high_urgency_review_count"):
+        status = "WARN"
+    recommendations = append_coverage_recommendations(build_recommendations(rows, reason_counts), coverage)
 
     return {
         "schema": "hermes_position_judgment_audit_report_v1",
@@ -333,18 +465,25 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
             "duplicate_review_ids": duplicates,
             "packet_source_counts": dict(packet_source_counts),
         },
+        "coverage": coverage,
         "judgments": rows[-100:],
-        "recommendations": build_recommendations(rows, reason_counts),
+        "recommendations": recommendations,
     }
 
 
 def build_text_report(payload):
     counts = payload["counts"]
+    coverage = payload.get("coverage") or {}
     lines = [
         f"Hermes position judgment audit {payload['generated_at']}",
         (
             f"judgments={counts['judgment_count']} position_reviews={counts['position_review_item_count']} "
             f"status={counts['status_counts']} decisions={counts['decision_counts']}"
+        ),
+        (
+            f"coverage=judged:{coverage.get('judged_review_count')} "
+            f"unjudged:{coverage.get('unjudged_review_count')} "
+            f"high_unjudged:{coverage.get('unjudged_high_urgency_review_count')}"
         ),
     ]
     if counts["reason_counts"]:

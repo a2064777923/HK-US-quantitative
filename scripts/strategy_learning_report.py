@@ -15,15 +15,41 @@ except ImportError:
 
 ALERT_QUEUE_FILE = os.environ.get("RT_ALERT_QUEUE_FILE", "/tmp/rt_signal_alerts.jsonl")
 JUDGMENT_FILE = os.environ.get("RT_ORDER_JUDGMENT_FILE", "/tmp/hermes_trade_judgments.jsonl")
+JUDGMENT_AUDIT_FILE = os.environ.get("HERMES_JUDGMENT_AUDIT_FILE", "/tmp/hermes_judgment_audit_report.json")
 INTAKE_STATE_FILE = os.environ.get("RT_ORDER_STATE_FILE", "/tmp/rt_order_intake_state.json")
 OUTCOME_REPORT_FILE = os.environ.get("RT_SIGNAL_OUTCOME_REPORT_FILE", "/tmp/rt_signal_outcome_report.json")
 WATCHLIST_DIFF_REPORT_FILE = os.environ.get("WATCHLIST_DIFF_REPORT_FILE", "/tmp/watchlist_diff_report.json")
-JUDGMENT_AUDIT_REPORT_FILE = os.environ.get("HERMES_JUDGMENT_AUDIT_FILE", "/tmp/hermes_judgment_audit_report.json")
 REPORT_FILE = os.environ.get("STRATEGY_LEARNING_REPORT_FILE", "/tmp/strategy_learning_report.json")
 DEFAULT_QUEUE_SCAN_LIMIT = int(os.environ.get("STRATEGY_LEARNING_QUEUE_SCAN_LIMIT", "2000"))
 DEFAULT_HORIZON = os.environ.get("STRATEGY_LEARNING_HORIZON", "1d")
 MIN_LEARNING_SAMPLE = int(os.environ.get("STRATEGY_LEARNING_MIN_SAMPLE", "5"))
 DEFAULT_SAMPLE_SCOPE_MODE = os.environ.get("STRATEGY_LEARNING_SAMPLE_SCOPE", "current")
+INTRADAY_SUPPORT_ALIGNMENTS = ("supports_signal", "supports_with_limits")
+INTRADAY_CHALLENGE_ALIGNMENTS = ("challenges_signal",)
+INTRADAY_ALIGNMENT_ALIASES = {
+    "conflicting_intraday_context": "conflicting_timeframes",
+    "insufficient_intraday_context": "neutral_or_insufficient",
+    "missing_minute_rows_before_signal": "unavailable_or_stale",
+    "missing_signal_timestamp_or_symbol": "unavailable_or_stale",
+    "missing_intraday_signal_context": "unavailable_or_stale",
+}
+REQUIRED_CONTEXT_REVIEW_FLAGS = (
+    "technical_signal_reviewed",
+    "portfolio_risk_reviewed",
+    "strategy_evidence_reviewed",
+    "data_health_reviewed",
+    "execution_readiness_reviewed",
+    "market_context_reviewed",
+    "intraday_context_reviewed",
+    "external_market_context_reviewed",
+    "event_catalysts_reviewed",
+    "event_catalyst_signals_reviewed",
+    "market_sentiment_reviewed",
+    "fundamentals_context_reviewed",
+    "source_reliability_reviewed",
+    "simulation_performance_reviewed",
+    "cron_wiring_reviewed",
+)
 
 
 def now_iso():
@@ -31,10 +57,17 @@ def now_iso():
 
 
 def save_json_atomic(path, payload):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    tmp = f"{path}.{os.getpid()}.{datetime.now().strftime('%Y%m%d%H%M%S%f')}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 def load_json_file(path, default=None):
@@ -106,6 +139,37 @@ def load_judgments(path=JUDGMENT_FILE):
     }
 
 
+def load_judgment_audit(path=JUDGMENT_AUDIT_FILE):
+    if not path or not os.path.exists(path):
+        return {}, {
+            "path": path,
+            "available": False,
+            "schema": None,
+            "status": "MISSING",
+            "generated_at": None,
+            "judgment_count": 0,
+            "audited_judgment_count": 0,
+            "report_truncated": False,
+        }, [f"judgment_audit_missing:{path}"]
+    report = load_json_file(path)
+    rows = report.get("judgments") if isinstance(report.get("judgments"), list) else []
+    rows = [row for row in rows if isinstance(row, dict)]
+    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
+    judgment_count = int(counts.get("judgment_count") or len(rows))
+    return latest_by_signal_id(rows), {
+        "path": path,
+        "available": True,
+        "schema": report.get("schema"),
+        "status": report.get("status"),
+        "generated_at": report.get("generated_at"),
+        "judgment_count": judgment_count,
+        "audited_judgment_count": len(rows),
+        "report_truncated": judgment_count > len(rows),
+        "status_counts": counts.get("status_counts") or {},
+        "reason_counts": counts.get("reason_counts") or {},
+    }, []
+
+
 def load_intake_decisions(path=INTAKE_STATE_FILE):
     state = intake.load_state(path)
     decisions = {}
@@ -146,6 +210,7 @@ def load_outcomes(path=OUTCOME_REPORT_FILE):
         "resolved_signal_count": report.get("resolved_signal_count"),
         "pending_signal_count": report.get("pending_signal_count"),
         "recent_only": recent_only,
+        "outcome_maturity": report.get("outcome_maturity") if isinstance(report.get("outcome_maturity"), dict) else {},
     }
 
 
@@ -232,38 +297,55 @@ def outcome_status(outcome, horizon=DEFAULT_HORIZON):
     return row.get("status") or outcome.get("status") or "missing"
 
 
-def bool_or_none(value):
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return None
-    text = str(value).strip().lower()
-    if text in ("1", "true", "yes", "y"):
-        return True
-    if text in ("0", "false", "no", "n"):
-        return False
-    return None
+def intraday_signal_alignment(outcome):
+    context = outcome.get("intraday_signal_context") if isinstance((outcome or {}).get("intraday_signal_context"), dict) else {}
+    return normalize_intraday_signal_alignment(context.get("alignment"))
 
 
-def execution_candidate_value(alert, outcome):
-    for source in (outcome or {}, alert or {}):
-        if "execution_candidate" in source:
-            return bool_or_none(source.get("execution_candidate"))
-    return None
-
-
-def execution_sample_role(execution_candidate, downgraded_directional):
-    if execution_candidate is True:
-        return "execution_candidate"
-    if downgraded_directional:
-        return "diagnostic_downgraded_directional"
-    if execution_candidate is False:
-        return "non_execution_candidate"
-    return "unknown_execution_candidate"
+def normalize_intraday_signal_alignment(value):
+    text = str(value or "unavailable_or_stale").strip() or "unavailable_or_stale"
+    return INTRADAY_ALIGNMENT_ALIASES.get(text, text)
 
 
 def judgment_decision(judgment):
     return str((judgment or {}).get("decision") or "missing").strip().lower() or "missing"
+
+
+def context_review_summary(judgment):
+    if not judgment:
+        return {
+            "present": False,
+            "complete": False,
+            "missing_flags": list(REQUIRED_CONTEXT_REVIEW_FLAGS),
+            "reviewed_count": 0,
+            "required_count": len(REQUIRED_CONTEXT_REVIEW_FLAGS),
+        }
+    review = judgment.get("context_review")
+    if not isinstance(review, dict):
+        return {
+            "present": False,
+            "complete": False,
+            "missing_flags": list(REQUIRED_CONTEXT_REVIEW_FLAGS),
+            "reviewed_count": 0,
+            "required_count": len(REQUIRED_CONTEXT_REVIEW_FLAGS),
+        }
+    missing = [flag for flag in REQUIRED_CONTEXT_REVIEW_FLAGS if review.get(flag) is not True]
+    return {
+        "present": True,
+        "complete": not missing,
+        "missing_flags": missing,
+        "reviewed_count": len(REQUIRED_CONTEXT_REVIEW_FLAGS) - len(missing),
+        "required_count": len(REQUIRED_CONTEXT_REVIEW_FLAGS),
+    }
+
+
+def context_review_cohort(row):
+    decision = row.get("judgment_decision")
+    if decision in ("approve", "reduce"):
+        return "approved_or_reduced_context_complete" if row.get("context_review_complete") else "approved_or_reduced_context_incomplete"
+    if decision in ("reject", "hold"):
+        return "rejected_or_held"
+    return "missing_judgment"
 
 
 def intake_status(decision):
@@ -363,15 +445,6 @@ def as_float(value):
         return None
 
 
-def as_int(value, default=0):
-    try:
-        if value in (None, ""):
-            return default
-        return int(float(value))
-    except (TypeError, ValueError):
-        return default
-
-
 def sizing_diagnostics(alert, decision):
     reasons = set((decision or {}).get("reasons") or [])
     if "quantity_zero_after_risk_and_lot_rounding" not in reasons:
@@ -443,19 +516,28 @@ def sizing_diagnostics(alert, decision):
     }
 
 
-def build_join_rows(alerts, judgments, intake_decisions, outcomes, horizon=DEFAULT_HORIZON):
+def audit_status_for_row(judgment, audit_row):
+    if not judgment:
+        return "not_applicable"
+    if not audit_row:
+        return "MISSING"
+    return str(audit_row.get("status") or "MISSING").strip().upper() or "MISSING"
+
+
+def build_join_rows(alerts, judgments, intake_decisions, outcomes, judgment_audit=None, horizon=DEFAULT_HORIZON):
+    judgment_audit = judgment_audit or {}
     ids = sorted(set(alerts) | set(judgments) | set(intake_decisions) | set(outcomes))
     rows = []
     for sid in ids:
         alert = alerts.get(sid) or {}
         judgment = judgments.get(sid) or {}
+        audit_row = judgment_audit.get(sid) or {}
         decision = intake_decisions.get(sid) or {}
         outcome = outcomes.get(sid) or {}
         ret = signed_return(outcome, horizon=horizon)
-        execution_candidate = execution_candidate_value(alert, outcome)
-        downgraded_directional = bool_or_none(
-            outcome.get("downgraded_directional", alert.get("downgraded_directional"))
-        ) is True
+        context_review = context_review_summary(judgment)
+        audit_status = audit_status_for_row(judgment, audit_row)
+        audit_reasons = audit_row.get("reasons") if isinstance(audit_row.get("reasons"), list) else []
         row = {
             "signal_id": sid,
             "symbol": alert.get("symbol") or outcome.get("symbol"),
@@ -464,26 +546,31 @@ def build_join_rows(alerts, judgments, intake_decisions, outcomes, horizon=DEFAU
             "watchlist_id": alert.get("watchlist_id") or outcome.get("watchlist_id"),
             "trigger_key": trigger_key(alert, outcome),
             "signal_type": str((alert or outcome).get("signal_type") or "").upper(),
-            "emitted_signal_type": str(outcome.get("emitted_signal_type") or alert.get("signal_type") or "").upper(),
-            "candidate_signal_type": str(
-                outcome.get("candidate_signal_type") or alert.get("candidate_signal_type") or ""
-            ).upper(),
             "confirmed": alert.get("confirmed", outcome.get("confirmed")),
             "full_score": alert.get("full_score", outcome.get("full_score")),
-            "execution_candidate": execution_candidate,
-            "downgraded_directional": downgraded_directional,
-            "execution_sample_role": execution_sample_role(execution_candidate, downgraded_directional),
             "judgment_decision": judgment_decision(judgment),
             "judgment_confidence": judgment.get("confidence"),
+            "judgment_audit_status": audit_status,
+            "judgment_audit_pass": audit_status == "PASS",
+            "judgment_audit_reasons": audit_reasons,
+            "judgment_audit_packet_source": audit_row.get("packet_source"),
+            "context_review_present": context_review["present"],
+            "context_review_complete": context_review["complete"],
+            "context_review_missing_flags": context_review["missing_flags"],
+            "context_review_reviewed_count": context_review["reviewed_count"],
+            "context_review_required_count": context_review["required_count"],
+            "context_review_cohort": None,
             "intake_status": intake_status(decision),
             "intake_ledger": decision.get("_ledger"),
             "intake_reason_bucket": intake_reason_bucket(decision),
             "actionability_category": actionability_category(decision),
             "outcome_status": outcome_status(outcome, horizon=horizon),
+            "intraday_signal_alignment": intraday_signal_alignment(outcome),
             "signed_return_pct": ret,
             "win": ret is not None and ret > 0,
             "generated_at": alert.get("generated_at") or outcome.get("generated_at"),
         }
+        row["context_review_cohort"] = context_review_cohort(row)
         diagnostics = sizing_diagnostics(alert, decision)
         if diagnostics:
             row["sizing_diagnostics"] = diagnostics
@@ -519,6 +606,98 @@ def grouped_summary(rows, key_fn):
     return out
 
 
+def intraday_alignment_rows(rows, alignments):
+    wanted = set(alignments or [])
+    return [
+        row
+        for row in rows
+        if normalize_intraday_signal_alignment(row.get("intraday_signal_alignment")) in wanted
+    ]
+
+
+def intraday_alignment_effect(rows, minimum_sample=MIN_LEARNING_SAMPLE):
+    groups = grouped_summary(
+        rows,
+        lambda row: normalize_intraday_signal_alignment(row.get("intraday_signal_alignment")),
+    )
+    support = metric_summary(intraday_alignment_rows(rows, INTRADAY_SUPPORT_ALIGNMENTS))
+    challenge = metric_summary(intraday_alignment_rows(rows, INTRADAY_CHALLENGE_ALIGNMENTS))
+    support_avg = support.get("avg_signed_return_pct")
+    challenge_avg = challenge.get("avg_signed_return_pct")
+    delta = round(support_avg - challenge_avg, 6) if support_avg is not None and challenge_avg is not None else None
+    reasons = []
+    if not rows:
+        reasons.append("intraday_alignment_learning_rows_missing")
+    if support.get("resolved_count", 0) < minimum_sample:
+        reasons.append("support_alignment_sample_below_minimum")
+    if challenge.get("resolved_count", 0) < minimum_sample:
+        reasons.append("challenge_alignment_sample_below_minimum")
+    if support_avg is None:
+        reasons.append("support_alignment_avg_return_missing")
+    elif support_avg <= 0:
+        reasons.append("support_alignment_avg_return_not_positive")
+    if challenge_avg is None:
+        reasons.append("challenge_alignment_avg_return_missing")
+    elif challenge_avg > 0:
+        reasons.append("challenge_alignment_avg_return_positive")
+    if delta is None:
+        reasons.append("support_vs_challenge_delta_missing")
+    elif delta <= 0:
+        reasons.append("support_alignment_not_outperforming_challenge")
+
+    insufficient_reasons = {
+        "intraday_alignment_learning_rows_missing",
+        "support_alignment_sample_below_minimum",
+        "challenge_alignment_sample_below_minimum",
+        "support_alignment_avg_return_missing",
+        "challenge_alignment_avg_return_missing",
+        "support_vs_challenge_delta_missing",
+    }
+    negative_reasons = {
+        "support_alignment_avg_return_not_positive",
+        "challenge_alignment_avg_return_positive",
+        "support_alignment_not_outperforming_challenge",
+    }
+    if "intraday_alignment_learning_rows_missing" in reasons:
+        status = "MISSING"
+    elif any(reason in reasons for reason in insufficient_reasons):
+        status = "INSUFFICIENT"
+    elif any(reason in reasons for reason in negative_reasons):
+        status = "NEGATIVE"
+    else:
+        status = "SUPPORTIVE"
+
+    if status == "SUPPORTIVE":
+        hermes_note = "intraday_alignment_supportive_as_soft_confirmation_not_execution_permission"
+        policy = "use_support_as_soft_confirmation_and_challenge_as_confidence_cap"
+    elif status == "NEGATIVE":
+        hermes_note = "intraday_alignment_not_validated_review_labeling_thresholds_or_market_regime"
+        policy = "do_not_use_intraday_alignment_as_filter_until_forward_evidence_improves"
+    elif status == "MISSING":
+        hermes_note = "intraday_alignment_learning_missing_keep_intraday_context_diagnostic_only"
+        policy = "collect_signal_time_minute_context_before_using_alignment"
+    else:
+        hermes_note = "intraday_alignment_samples_below_threshold_keep_collecting_before_using_as_hard_rule"
+        policy = "keep_alignment_read_only_until_support_and_challenge_samples_mature"
+
+    return {
+        "schema": "intraday_alignment_effect_v1",
+        "read_only": True,
+        "submits_orders": False,
+        "status": status,
+        "minimum_sample": minimum_sample,
+        "support_alignments": list(INTRADAY_SUPPORT_ALIGNMENTS),
+        "challenge_alignments": list(INTRADAY_CHALLENGE_ALIGNMENTS),
+        "supports_signal_like": support,
+        "challenges_signal": challenge,
+        "support_vs_challenge_delta_pct": delta,
+        "groups": groups,
+        "reasons": reasons,
+        "hermes_note": hermes_note,
+        "policy": policy,
+    }
+
+
 def compare_judgment_effect(rows):
     approved = [row for row in rows if row["judgment_decision"] in ("approve", "reduce")]
     rejected = [row for row in rows if row["judgment_decision"] in ("reject", "hold")]
@@ -530,163 +709,115 @@ def compare_judgment_effect(rows):
     }
 
 
-def load_judgment_audit_report(path=JUDGMENT_AUDIT_REPORT_FILE):
-    report = load_json_file(path)
-    rows = report.get("judgments") if isinstance(report.get("judgments"), list) else []
-    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
-    judgment_count = as_int(counts.get("judgment_count"), len(rows))
-    truncated = bool(judgment_count and len(rows) < judgment_count)
-    return report, {
-        "path": path,
-        "schema": report.get("schema"),
-        "status": report.get("status"),
-        "generated_at": report.get("generated_at"),
-        "audit_row_count": len(rows),
-        "audit_judgment_count": judgment_count,
-        "truncated": truncated,
+def compare_audit_pass_judgment_effect(rows):
+    approved_pass = [
+        row
+        for row in rows
+        if row.get("judgment_decision") in ("approve", "reduce")
+        and row.get("judgment_audit_status") == "PASS"
+    ]
+    rejected_pass = [
+        row
+        for row in rows
+        if row.get("judgment_decision") in ("reject", "hold")
+        and row.get("judgment_audit_status") == "PASS"
+    ]
+    approved_excluded = [
+        row
+        for row in rows
+        if row.get("judgment_decision") in ("approve", "reduce")
+        and row.get("judgment_audit_status") != "PASS"
+    ]
+    rejected_excluded = [
+        row
+        for row in rows
+        if row.get("judgment_decision") in ("reject", "hold")
+        and row.get("judgment_audit_status") != "PASS"
+    ]
+    return {
+        "sample_filter": "judgment_audit_status_PASS",
+        "approved_or_reduced": metric_summary(approved_pass),
+        "rejected_or_held": metric_summary(rejected_pass),
+        "missing_judgment": metric_summary([row for row in rows if row.get("judgment_decision") == "missing"]),
+        "excluded_approved_or_reduced": metric_summary(approved_excluded),
+        "excluded_rejected_or_held": metric_summary(rejected_excluded),
     }
 
 
-def judgment_audit_by_signal_id(report):
-    rows = report.get("judgments") if isinstance(report, dict) else []
-    by_id = {}
-    if not isinstance(rows, list):
-        return by_id
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        sid = str(row.get("signal_id") or "").strip()
-        if sid:
-            by_id[sid] = row
-    return by_id
-
-
-def is_judged_row(row):
-    return row.get("judgment_decision") in ("approve", "reduce", "reject", "hold")
-
-
-def normalize_audit_status(value):
-    status = str(value or "").strip().upper()
-    if status in ("PASS", "FAIL"):
-        return status
-    return "FAIL"
-
-
-def attach_judgment_audit(rows, audit_report):
-    available = (
-        isinstance(audit_report, dict)
-        and audit_report.get("schema") == "hermes_judgment_audit_report_v1"
-        and isinstance(audit_report.get("judgments"), list)
-    )
-    audit_by_id = judgment_audit_by_signal_id(audit_report) if available else {}
-    for row in rows:
-        if not is_judged_row(row):
-            row["judgment_audit_status"] = "NOT_JUDGED"
-            row["judgment_audit_reasons"] = []
-            continue
-        audit_row = audit_by_id.get(str(row.get("signal_id") or ""))
-        if not available or not audit_row:
-            row["judgment_audit_status"] = "MISSING"
-            row["judgment_audit_reasons"] = ["judgment_audit_missing"]
-            continue
-        status = normalize_audit_status(audit_row.get("status"))
-        reasons = audit_row.get("reasons") if isinstance(audit_row.get("reasons"), list) else []
-        if status == "FAIL" and not reasons:
-            reasons = ["judgment_audit_status_fail_without_reason"]
-        row["judgment_audit_status"] = status
-        row["judgment_audit_reasons"] = sorted({str(reason) for reason in reasons})
-    return rows
-
-
-def judgment_audit_coverage(rows, audit_report, audit_stats):
-    available = (
-        isinstance(audit_report, dict)
-        and audit_report.get("schema") == "hermes_judgment_audit_report_v1"
-        and isinstance(audit_report.get("judgments"), list)
-    )
-    judged = [row for row in rows if is_judged_row(row)]
-    pass_rows = [row for row in judged if row.get("judgment_audit_status") == "PASS"]
-    fail_rows = [row for row in judged if row.get("judgment_audit_status") == "FAIL"]
-    missing_rows = [row for row in judged if row.get("judgment_audit_status") == "MISSING"]
-    approved = [row for row in judged if row["judgment_decision"] in ("approve", "reduce")]
-    rejected = [row for row in judged if row["judgment_decision"] in ("reject", "hold")]
-    approved_fail_or_missing = [
-        row
-        for row in approved
-        if row.get("judgment_audit_status") in ("FAIL", "MISSING")
-    ]
-    rejected_fail_or_missing = [
-        row
-        for row in rejected
-        if row.get("judgment_audit_status") in ("FAIL", "MISSING")
-    ]
+def compare_context_review_effect(rows):
     return {
-        "audit_report_available": available,
-        "audit_report_status": audit_report.get("status") if isinstance(audit_report, dict) else None,
-        "audit_report_truncated": bool((audit_stats or {}).get("truncated")),
-        "joined_judgment_count": len(judged),
+        "approved_or_reduced_context_complete": metric_summary(
+            [row for row in rows if row.get("context_review_cohort") == "approved_or_reduced_context_complete"]
+        ),
+        "approved_or_reduced_context_incomplete": metric_summary(
+            [row for row in rows if row.get("context_review_cohort") == "approved_or_reduced_context_incomplete"]
+        ),
+        "rejected_or_held": metric_summary(
+            [row for row in rows if row.get("context_review_cohort") == "rejected_or_held"]
+        ),
+        "missing_judgment": metric_summary(
+            [row for row in rows if row.get("context_review_cohort") == "missing_judgment"]
+        ),
+    }
+
+
+def build_context_review_quality(rows):
+    approval_rows = [row for row in rows if row.get("judgment_decision") in ("approve", "reduce")]
+    missing_counter = Counter()
+    for row in approval_rows:
+        for flag in row.get("context_review_missing_flags") or []:
+            missing_counter[flag] += 1
+    complete_count = len([row for row in approval_rows if row.get("context_review_complete")])
+    return {
+        "required_flags": list(REQUIRED_CONTEXT_REVIEW_FLAGS),
+        "approved_or_reduced_count": len(approval_rows),
+        "complete_context_review_count": complete_count,
+        "incomplete_context_review_count": len(approval_rows) - complete_count,
+        "complete_context_review_pct": round(complete_count / len(approval_rows) * 100, 2)
+        if approval_rows
+        else None,
+        "missing_flag_counts": [
+            {"key": key, "count": count}
+            for key, count in missing_counter.most_common()
+        ],
+    }
+
+
+def build_judgment_audit_coverage(rows, audit_stats):
+    judgment_rows = [row for row in rows if row.get("judgment_decision") != "missing"]
+    approval_rows = [row for row in judgment_rows if row.get("judgment_decision") in ("approve", "reduce")]
+    rejected_rows = [row for row in judgment_rows if row.get("judgment_decision") in ("reject", "hold")]
+    missing_rows = [row for row in judgment_rows if row.get("judgment_audit_status") == "MISSING"]
+    failed_rows = [row for row in judgment_rows if row.get("judgment_audit_status") == "FAIL"]
+    pass_rows = [row for row in judgment_rows if row.get("judgment_audit_status") == "PASS"]
+    reason_counter = Counter()
+    for row in failed_rows:
+        for reason in row.get("judgment_audit_reasons") or []:
+            reason_counter[str(reason)] += 1
+    return {
+        "audit_report_available": bool((audit_stats or {}).get("available")),
+        "audit_report_status": (audit_stats or {}).get("status"),
+        "audit_report_generated_at": (audit_stats or {}).get("generated_at"),
+        "audit_report_truncated": bool((audit_stats or {}).get("report_truncated")),
+        "joined_judgment_count": len(judgment_rows),
         "audit_pass_count": len(pass_rows),
-        "audit_fail_count": len(fail_rows),
+        "audit_fail_count": len(failed_rows),
         "audit_missing_count": len(missing_rows),
-        "approved_or_reduced_count": len(approved),
+        "approved_or_reduced_count": len(approval_rows),
         "approved_or_reduced_audit_pass_count": len(
-            [row for row in approved if row.get("judgment_audit_status") == "PASS"]
+            [row for row in approval_rows if row.get("judgment_audit_status") == "PASS"]
         ),
-        "approved_or_reduced_audit_fail_or_missing_count": len(approved_fail_or_missing),
-        "rejected_or_held_count": len(rejected),
+        "approved_or_reduced_audit_fail_or_missing_count": len(
+            [row for row in approval_rows if row.get("judgment_audit_status") != "PASS"]
+        ),
+        "rejected_or_held_count": len(rejected_rows),
         "rejected_or_held_audit_pass_count": len(
-            [row for row in rejected if row.get("judgment_audit_status") == "PASS"]
+            [row for row in rejected_rows if row.get("judgment_audit_status") == "PASS"]
         ),
-        "rejected_or_held_audit_fail_or_missing_count": len(rejected_fail_or_missing),
-    }
-
-
-def audit_pass_judgment_effect(rows, judgment_audit_coverage, sample_filter="judgment_audit_status_PASS"):
-    coverage = judgment_audit_coverage if isinstance(judgment_audit_coverage, dict) else {}
-    if coverage.get("audit_report_available") is not True:
-        return {}
-    if coverage.get("audit_report_status") != "OK":
-        return {}
-    if coverage.get("audit_report_truncated"):
-        return {}
-    if as_int(coverage.get("audit_fail_count")) or as_int(coverage.get("audit_missing_count")):
-        return {}
-    if as_int(coverage.get("approved_or_reduced_audit_fail_or_missing_count")) or as_int(
-        coverage.get("rejected_or_held_audit_fail_or_missing_count")
-    ):
-        return {}
-    audit_pass_rows = [row for row in rows if row.get("judgment_audit_status") == "PASS"]
-    approved = [row for row in audit_pass_rows if row["judgment_decision"] in ("approve", "reduce")]
-    rejected = [row for row in audit_pass_rows if row["judgment_decision"] in ("reject", "hold")]
-    return {
-        "sample_filter": sample_filter,
-        "approved_or_reduced": metric_summary(approved),
-        "rejected_or_held": metric_summary(rejected),
-    }
-
-
-def build_execution_candidate_scope(rows):
-    execution_rows = [row for row in rows if row.get("execution_candidate") is True]
-    non_execution_rows = [row for row in rows if row.get("execution_candidate") is False]
-    downgraded_rows = [row for row in rows if row.get("downgraded_directional")]
-    unknown_rows = [row for row in rows if row.get("execution_candidate") is None]
-    return {
-        "schema": "strategy_learning_execution_candidate_scope_v1",
-        "sample_filter": "joined_rows_with_execution_candidate_breakout",
-        "joined_signal_count": len(rows),
-        "execution_candidate_count": len(execution_rows),
-        "non_execution_candidate_count": len(non_execution_rows),
-        "downgraded_directional_count": len(downgraded_rows),
-        "unknown_execution_candidate_count": len(unknown_rows),
-        "execution_candidate": metric_summary(execution_rows),
-        "non_execution_candidate": metric_summary(non_execution_rows),
-        "downgraded_directional": metric_summary(downgraded_rows),
-        "unknown_execution_candidate": metric_summary(unknown_rows),
-        "promotion_evidence_requirement": (
-            "execution_candidate_only_learning_required"
-            if downgraded_rows
-            else "standard_audit_pass_learning"
+        "rejected_or_held_audit_fail_or_missing_count": len(
+            [row for row in rejected_rows if row.get("judgment_audit_status") != "PASS"]
         ),
+        "failed_reason_counts": [{"key": key, "count": count} for key, count in reason_counter.most_common()],
     }
 
 
@@ -825,23 +956,77 @@ def build_recommendations(payload):
     if overall["resolved_count"] < MIN_LEARNING_SAMPLE:
         recs.append(f"learning_sample_below_{MIN_LEARNING_SAMPLE}_keep_collecting_outcomes")
     effect = payload["judgment_effect"]
+    audit_effect = payload.get("audit_pass_judgment_effect") if isinstance(payload.get("audit_pass_judgment_effect"), dict) else None
+    effect_for_prompt_review = audit_effect or effect
     approved_avg = effect["approved_or_reduced"].get("avg_signed_return_pct")
     rejected_avg = effect["rejected_or_held"].get("avg_signed_return_pct")
     if approved_avg is not None and rejected_avg is not None and approved_avg <= rejected_avg:
         recs.append("hermes_approval_not_outperforming_rejections_review_prompt_and_gates")
-    execution_scope = payload.get("execution_candidate_scope") or {}
-    trigger_recommendation_rows = (
-        payload.get("execution_candidate_by_trigger")
-        if execution_scope.get("downgraded_directional_count", 0)
-        else payload.get("by_trigger")
-    ) or []
+    audit_coverage = payload.get("judgment_audit_coverage") or {}
+    if audit_coverage.get("approved_or_reduced_audit_fail_or_missing_count", 0) > 0:
+        recs.append("audit_failed_or_missing_approvals_excluded_from_hermes_effect_learning")
+    if audit_coverage.get("rejected_or_held_audit_fail_or_missing_count", 0) > 0:
+        recs.append("audit_failed_or_missing_rejections_excluded_from_hermes_effect_learning")
+    context_quality = payload.get("context_review_quality") or {}
+    if context_quality.get("incomplete_context_review_count", 0) > 0:
+        recs.append("context_review_incomplete_for_approved_or_reduced_judgments")
+    context_effect = payload.get("context_review_effect") or {}
+    complete = context_effect.get("approved_or_reduced_context_complete") or {}
+    incomplete = context_effect.get("approved_or_reduced_context_incomplete") or {}
+    rejected_context = context_effect.get("rejected_or_held") or {}
+    complete_avg = complete.get("avg_signed_return_pct")
+    incomplete_avg = incomplete.get("avg_signed_return_pct")
+    rejected_context_avg = rejected_context.get("avg_signed_return_pct")
+    if (
+        complete.get("resolved_count", 0) >= MIN_LEARNING_SAMPLE
+        and rejected_context.get("resolved_count", 0) >= MIN_LEARNING_SAMPLE
+        and complete_avg is not None
+        and rejected_context_avg is not None
+        and complete_avg <= rejected_context_avg
+    ):
+        recs.append("context_reviewed_approvals_not_outperforming_rejections_review_prompt")
+    if (
+        complete.get("resolved_count", 0) >= MIN_LEARNING_SAMPLE
+        and incomplete.get("resolved_count", 0) >= MIN_LEARNING_SAMPLE
+        and complete_avg is not None
+        and incomplete_avg is not None
+        and complete_avg <= incomplete_avg
+    ):
+        recs.append("context_review_not_improving_approval_outcomes_review_context_usage")
+    approved_effect = effect_for_prompt_review.get("approved_or_reduced") or {}
+    rejected_effect = effect_for_prompt_review.get("rejected_or_held") or {}
+    approved_effect_avg = approved_effect.get("avg_signed_return_pct")
+    rejected_effect_avg = rejected_effect.get("avg_signed_return_pct")
+    if (
+        audit_effect
+        and approved_effect.get("resolved_count", 0) >= MIN_LEARNING_SAMPLE
+        and rejected_effect.get("resolved_count", 0) >= MIN_LEARNING_SAMPLE
+        and approved_effect_avg is not None
+        and rejected_effect_avg is not None
+        and approved_effect_avg <= rejected_effect_avg
+    ):
+        recs.append("audit_pass_hermes_approval_not_outperforming_rejections_review_prompt_and_gates")
     weak_triggers = [
         row["key"]
-        for row in trigger_recommendation_rows
+        for row in payload["by_trigger"]
         if row["resolved_count"] >= MIN_LEARNING_SAMPLE and row.get("avg_signed_return_pct") is not None and row["avg_signed_return_pct"] <= 0
     ]
     for key in weak_triggers[:8]:
         recs.append(f"trigger_forward_return_non_positive:{key}")
+    intraday_alignment = {
+        normalize_intraday_signal_alignment(row.get("key")): row
+        for row in payload.get("by_intraday_signal_alignment") or []
+    }
+    intraday_effect = payload.get("intraday_alignment_effect") or {}
+    if intraday_effect.get("status") == "NEGATIVE":
+        recs.append("intraday_alignment_effect_negative_keep_diagnostic_only")
+    challenged = intraday_alignment.get("challenges_signal") or {}
+    if challenged.get("resolved_count", 0) >= MIN_LEARNING_SAMPLE:
+        challenged_avg = challenged.get("avg_signed_return_pct")
+        if challenged_avg is not None and challenged_avg <= 0:
+            recs.append("intraday_challenge_alignment_underperforms_consider_hermes_hold_rule")
+        elif challenged_avg is not None and challenged_avg > 0:
+            recs.append("intraday_challenge_alignment_profitable_review_context_labeling")
     sizing_remediation = payload.get("sizing_blocker_remediation") or {}
     sizing_blockers_fully_covered = (
         sizing_remediation.get("sizing_blocker_count", 0) >= MIN_LEARNING_SAMPLE
@@ -888,8 +1073,6 @@ def build_recommendations(payload):
             "review_watchlist_proposal_for_sizing_blockers:"
             + str(sizing_remediation.get("watchlist_proposal_hash") or "missing_hash")
         )
-    if execution_scope.get("downgraded_directional_count", 0):
-        recs.append("downgraded_directional_rows_research_only_require_execution_candidate_learning")
     intake_coverage = payload.get("intake_coverage") or {}
     directional_coverage = intake_coverage.get("directional") or {}
     if (
@@ -907,37 +1090,28 @@ def build_recommendations(payload):
 def build_report(
     alert_queue_file=ALERT_QUEUE_FILE,
     judgment_file=JUDGMENT_FILE,
+    judgment_audit_file=JUDGMENT_AUDIT_FILE,
     intake_state_file=INTAKE_STATE_FILE,
     outcome_report_file=OUTCOME_REPORT_FILE,
     watchlist_diff_report_file=WATCHLIST_DIFF_REPORT_FILE,
-    judgment_audit_report_file=JUDGMENT_AUDIT_REPORT_FILE,
     horizon=DEFAULT_HORIZON,
     queue_scan_limit=DEFAULT_QUEUE_SCAN_LIMIT,
     sample_scope_mode=DEFAULT_SAMPLE_SCOPE_MODE,
 ):
     alerts, alert_stats, alert_warnings = load_alerts(alert_queue_file, queue_scan_limit)
     judgments, judgment_stats = load_judgments(judgment_file)
+    judgment_audit, judgment_audit_stats, judgment_audit_warnings = load_judgment_audit(judgment_audit_file)
     intake_decisions, intake_stats = load_intake_decisions(intake_state_file)
     outcomes, outcome_stats = load_outcomes(outcome_report_file)
     watchlist_diff_payload = load_json_file(watchlist_diff_report_file)
-    judgment_audit_report, judgment_audit_stats = load_judgment_audit_report(judgment_audit_report_file)
-    all_rows = build_join_rows(alerts, judgments, intake_decisions, outcomes, horizon=horizon)
-    attach_judgment_audit(all_rows, judgment_audit_report)
+    all_rows = build_join_rows(alerts, judgments, intake_decisions, outcomes, judgment_audit=judgment_audit, horizon=horizon)
     rows, sample_scope = apply_sample_scope(
         all_rows,
         infer_current_sample_scope(alerts, sample_scope_mode=sample_scope_mode),
     )
-    execution_candidate_rows = [row for row in rows if row.get("execution_candidate") is True]
-    coverage = judgment_audit_coverage(rows, judgment_audit_report, judgment_audit_stats)
-    execution_candidate_coverage = judgment_audit_coverage(
-        execution_candidate_rows,
-        judgment_audit_report,
-        judgment_audit_stats,
-    )
-    by_trigger = sorted(grouped_summary(rows, lambda row: row["trigger_key"]), key=lambda row: (-row["resolved_count"], row["key"]))
-    execution_candidate_by_trigger = sorted(
-        grouped_summary(execution_candidate_rows, lambda row: row["trigger_key"]),
-        key=lambda row: (-row["resolved_count"], row["key"]),
+    intraday_groups = grouped_summary(
+        rows,
+        lambda row: normalize_intraday_signal_alignment(row.get("intraday_signal_alignment")),
     )
     payload = {
         "schema": "strategy_learning_report_v1",
@@ -948,9 +1122,9 @@ def build_report(
             "submits_orders": False,
             "alert_queue": alert_stats,
             "judgments": judgment_stats,
+            "judgment_audit": judgment_audit_stats,
             "intake_state": intake_stats,
             "outcomes": outcome_stats,
-            "judgment_audit": judgment_audit_stats,
             "watchlist_diff": {
                 "path": watchlist_diff_report_file,
                 "schema": watchlist_diff_payload.get("schema"),
@@ -978,20 +1152,15 @@ def build_report(
         },
         "overall": metric_summary(rows),
         "judgment_effect": compare_judgment_effect(rows),
-        "judgment_audit_coverage": coverage,
-        "audit_pass_judgment_effect": audit_pass_judgment_effect(rows, coverage),
-        "execution_candidate_scope": build_execution_candidate_scope(rows),
-        "execution_candidate_judgment_effect": compare_judgment_effect(execution_candidate_rows),
-        "execution_candidate_audit_pass_judgment_effect": audit_pass_judgment_effect(
-            execution_candidate_rows,
-            execution_candidate_coverage,
-            sample_filter="execution_candidate_true_and_judgment_audit_status_PASS",
-        ),
-        "execution_candidate_judgment_audit_coverage": execution_candidate_coverage,
-        "by_trigger": by_trigger,
-        "execution_candidate_by_trigger": execution_candidate_by_trigger,
+        "audit_pass_judgment_effect": compare_audit_pass_judgment_effect(rows),
+        "judgment_audit_coverage": build_judgment_audit_coverage(rows, judgment_audit_stats),
+        "context_review_effect": compare_context_review_effect(rows),
+        "context_review_quality": build_context_review_quality(rows),
+        "by_trigger": sorted(grouped_summary(rows, lambda row: row["trigger_key"]), key=lambda row: (-row["resolved_count"], row["key"])),
         "by_judgment_decision": grouped_summary(rows, lambda row: row["judgment_decision"]),
-        "by_execution_sample_role": grouped_summary(rows, lambda row: row["execution_sample_role"]),
+        "by_context_review_cohort": grouped_summary(rows, lambda row: row["context_review_cohort"]),
+        "by_intraday_signal_alignment": intraday_groups,
+        "intraday_alignment_effect": intraday_alignment_effect(rows),
         "by_intake_status": grouped_summary(rows, lambda row: row["intake_status"]),
         "by_intake_reason": sorted(grouped_summary(rows, lambda row: row["intake_reason_bucket"]), key=lambda row: (-row["count"], row["key"])),
         "by_actionability": sorted(grouped_summary(rows, lambda row: row["actionability_category"]), key=lambda row: (-row["count"], row["key"])),
@@ -1000,7 +1169,7 @@ def build_report(
         "sizing_blocker_remediation": build_sizing_blocker_remediation(rows, watchlist_diff_payload),
         "by_strategy_config": grouped_summary(rows, lambda row: row.get("strategy_config_id") or "missing"),
         "recent_joined_rows": rows[-100:],
-        "warnings": alert_warnings + (["outcome_report_recent_only"] if outcome_stats.get("recent_only") else []),
+        "warnings": alert_warnings + judgment_audit_warnings + (["outcome_report_recent_only"] if outcome_stats.get("recent_only") else []),
     }
     payload["recommendations"] = build_recommendations(payload)
     return payload
@@ -1022,14 +1191,19 @@ def build_text_report(payload):
             "judgment_effect="
             + json.dumps(payload["judgment_effect"], ensure_ascii=False, sort_keys=True)
         ),
+        (
+        "context_review_effect="
+            + json.dumps(payload.get("context_review_effect") or {}, ensure_ascii=False, sort_keys=True)
+        ),
+        (
+            "intraday_alignment_effect="
+            + json.dumps(payload.get("intraday_alignment_effect") or {}, ensure_ascii=False, sort_keys=True)
+        ),
+        (
+            "audit_pass_judgment_effect="
+            + json.dumps(payload.get("audit_pass_judgment_effect") or {}, ensure_ascii=False, sort_keys=True)
+        ),
     ]
-    execution_scope = payload.get("execution_candidate_scope") or {}
-    lines.append(
-        "execution_scope="
-        f"exec={execution_scope.get('execution_candidate_count')} "
-        f"downgraded={execution_scope.get('downgraded_directional_count')} "
-        f"unknown={execution_scope.get('unknown_execution_candidate_count')}"
-    )
     for row in payload["by_trigger"][:10]:
         lines.append(
             f"  {row['key']}: count={row['count']} resolved={row['resolved_count']} "
@@ -1058,10 +1232,10 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--alert-queue-file", default=ALERT_QUEUE_FILE)
     parser.add_argument("--judgment-file", default=JUDGMENT_FILE)
+    parser.add_argument("--judgment-audit-file", default=JUDGMENT_AUDIT_FILE)
     parser.add_argument("--intake-state-file", default=INTAKE_STATE_FILE)
     parser.add_argument("--outcome-report-file", default=OUTCOME_REPORT_FILE)
     parser.add_argument("--watchlist-diff-report-file", default=WATCHLIST_DIFF_REPORT_FILE)
-    parser.add_argument("--judgment-audit-report-file", default=JUDGMENT_AUDIT_REPORT_FILE)
     parser.add_argument("--horizon", default=DEFAULT_HORIZON)
     parser.add_argument("--queue-scan-limit", type=int, default=DEFAULT_QUEUE_SCAN_LIMIT)
     parser.add_argument(
@@ -1081,10 +1255,10 @@ def main():
     payload = build_report(
         alert_queue_file=args.alert_queue_file,
         judgment_file=args.judgment_file,
+        judgment_audit_file=args.judgment_audit_file,
         intake_state_file=args.intake_state_file,
         outcome_report_file=args.outcome_report_file,
         watchlist_diff_report_file=args.watchlist_diff_report_file,
-        judgment_audit_report_file=args.judgment_audit_report_file,
         horizon=args.horizon,
         queue_scan_limit=args.queue_scan_limit,
         sample_scope_mode=args.sample_scope,

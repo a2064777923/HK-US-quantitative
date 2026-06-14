@@ -149,6 +149,7 @@ def build_sql_inserts(symbol, klines, source):
             if not valid_ohlc(o, c, h, l):
                 log(f"  跳過異常K線 {symbol} {dt}: o={o} c={c} h={h} l={l}")
                 continue
+            dt = str(dt)[:10]
             v = float(k[5]) if k[5] else 0
             a = c * v
             chg = ((c - o) / o * 100) if o > 0 else 0

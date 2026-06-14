@@ -7,7 +7,6 @@
   "$defs": {
     "required_context_review": {
       "type": "object",
-      "additionalProperties": true,
       "description": "Approve/reduce must set every required context review flag to true. This mirrors hermes_judgment_audit_report.REQUIRED_CONTEXT_REVIEW_FLAGS.",
       "required": [
         "technical_signal_reviewed",
@@ -46,7 +45,8 @@
           "type": "array",
           "items": {"type": "string"}
         }
-      }
+      },
+      "additionalProperties": true
     }
   },
   "required": [
@@ -113,6 +113,32 @@
       "items": {"type": "string"},
       "minItems": 1
     },
+    "context_review": {
+      "type": "object",
+      "description": "Required for approve/reduce. Machine-readable checklist proving Hermes reviewed technicals, data health, readiness, portfolio risk, forward evidence, external context, event catalysts, market sentiment, fundamentals context, source reliability, simulation performance, and cron/report wiring before supporting a trade.",
+      "properties": {
+        "technical_signal_reviewed": {"type": "boolean"},
+        "portfolio_risk_reviewed": {"type": "boolean"},
+        "strategy_evidence_reviewed": {"type": "boolean"},
+        "data_health_reviewed": {"type": "boolean"},
+        "execution_readiness_reviewed": {"type": "boolean"},
+        "market_context_reviewed": {"type": "boolean"},
+        "intraday_context_reviewed": {"type": "boolean"},
+        "external_market_context_reviewed": {"type": "boolean"},
+        "event_catalysts_reviewed": {"type": "boolean"},
+        "event_catalyst_signals_reviewed": {"type": "boolean"},
+        "market_sentiment_reviewed": {"type": "boolean"},
+        "fundamentals_context_reviewed": {"type": "boolean"},
+        "source_reliability_reviewed": {"type": "boolean"},
+        "simulation_performance_reviewed": {"type": "boolean"},
+        "cron_wiring_reviewed": {"type": "boolean"},
+        "notes": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      },
+      "additionalProperties": true
+    },
     "market_context": {
       "type": "object",
       "description": "Optional snapshot or summary of market_context_report used by Hermes during review."
@@ -124,7 +150,298 @@
     "market_regime_exception_reason": {
       "type": "string",
       "minLength": 20,
-      "description": "Specific reason for overriding risk_off breadth context."
+      "description": "Specific reason for overriding risk_off breadth context. When market_context cross_market.alignment is conflicts_with_breadth, the judgment text must explicitly discuss both breadth and cross-market sentiment/index/VIX evidence. When native_index_context.alignment is conflicts_with_breadth, it must explicitly discuss both stock-pool breadth and native index evidence."
+    },
+    "external_market_context_risk_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing a BUY after reviewing relevant negative external_market_context items."
+    },
+    "external_market_context_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Relevant external_market_context.items[].id values reviewed by Hermes when negative news, macro, capital-flow, event, or sentiment context is present."
+    },
+    "external_market_context_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes about negative external market context and how it affected confidence, sizing, rejection, or hold."
+    },
+    "external_market_context_support_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing a BUY after using relevant positive high-impact external_market_context items as support."
+    },
+    "external_market_context_support_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Relevant positive external_market_context.items[].id values used by Hermes as support."
+    },
+    "external_market_context_support_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes about positive external market context and how it affected confidence, sizing, rejection, or hold."
+    },
+    "external_market_context_coverage_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing after reviewing that external_market_context coverage is missing, stale, failed, or invalid."
+    },
+    "external_market_context_coverage_status": {
+      "type": "string",
+      "description": "Reviewed context_digest.external_market_context.status when external context coverage acknowledgement is required."
+    },
+    "external_market_context_coverage_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Notes explaining how missing/stale/failed news, macro, event, or capital-flow coverage limited confidence or prevented using absence of external items as evidence."
+    },
+    "market_context_coverage_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing after reviewing that market_context coverage is missing, stale, failed, or invalid."
+    },
+    "market_context_coverage_status": {
+      "type": "string",
+      "description": "Reviewed context_digest.market_context.status when market context coverage acknowledgement is required."
+    },
+    "market_context_coverage_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Notes explaining how missing/stale/failed market regime, breadth, native-index, or cross-market context limited confidence or prevented treating absence of risk_off as benign."
+    },
+    "event_catalyst_risk_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing a BUY after reviewing relevant negative event_catalysts."
+    },
+    "event_catalyst_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Relevant event_catalysts.candidates[].id values reviewed by Hermes."
+    },
+    "event_catalyst_signal_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Relevant event_catalyst_signals.signals[].signal_id values reviewed by Hermes, especially CHALLENGE_BUY_REVIEW signals related to the BUY."
+    },
+    "event_catalyst_risk_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Event-specific risk notes for negative watchlist-linked catalysts."
+    },
+    "event_catalyst_coverage_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing after reviewing that event_catalysts coverage is missing, stale, failed, or invalid."
+    },
+    "event_catalyst_coverage_status": {
+      "type": "string",
+      "description": "Reviewed context_digest.event_catalysts.status when event catalyst coverage acknowledgement is required."
+    },
+    "event_catalyst_coverage_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Notes explaining how missing/stale/failed event-catalyst coverage limited confidence or prevented using absence of event catalysts as evidence."
+    },
+    "event_catalyst_signal_coverage_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing after reviewing that event_catalyst_signals coverage is missing, stale, failed, or invalid."
+    },
+    "event_catalyst_signal_coverage_status": {
+      "type": "string",
+      "description": "Reviewed context_digest.event_catalyst_signals.status when event signal coverage acknowledgement is required."
+    },
+    "event_catalyst_signal_coverage_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Notes explaining how missing/stale/failed event-signal coverage limited confidence or prevented using absence of event signals as evidence."
+    },
+    "event_catalyst_support_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing a BUY after using relevant SUPPORT_BUY_REVIEW event_catalyst_signals as support."
+    },
+    "event_catalyst_support_signal_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Relevant event_catalyst_signals.signals[].signal_id values reviewed by Hermes as positive BUY support."
+    },
+    "event_catalyst_support_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes about positive event-catalyst support and how it affected confidence, sizing, rejection, or hold without overriding gates."
+    },
+    "fundamentals_context_limit_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing a BUY after reviewing partial/fallback fundamentals context, such as Tencent quote snapshots with missing PB, PS, ROE, growth, dividend, market cap, or leverage fields."
+    },
+    "fundamentals_context_symbols": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Symbols whose partial/fallback fundamentals were reviewed before approve/reduce."
+    },
+    "fundamentals_context_missing_metrics": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Missing fundamentals metrics Hermes explicitly considered before approve/reduce."
+    },
+    "fundamentals_context_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes about partial/fallback fundamentals coverage and how it affected confidence, sizing, or rejection."
+    },
+    "fundamentals_context_coverage_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing after reviewing that fundamentals_context coverage is missing, stale, failed, or invalid."
+    },
+    "fundamentals_context_coverage_status": {
+      "type": "string",
+      "description": "Reviewed context_digest.fundamentals_context.status when fundamentals coverage acknowledgement is required."
+    },
+    "fundamentals_context_coverage_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Notes explaining how missing/stale/failed valuation, profitability, growth, dividend, or leverage coverage limited confidence or prevented treating absence of fundamentals as neutral."
+    },
+    "fundamentals_context_support_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing a BUY after using full, fresh fundamentals context as support."
+    },
+    "fundamentals_context_support_symbols": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Symbols whose full/fresh fundamentals were used as positive support."
+    },
+    "fundamentals_context_support_metrics": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific valuation, profitability, growth, dividend, or leverage metrics Hermes used as support."
+    },
+    "fundamentals_context_support_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes about full/fresh fundamentals support and how it affected confidence, sizing, rejection, or hold without overriding gates."
+    },
+    "market_sentiment_risk_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing a BUY after reviewing relevant risk_off or negative market_sentiment indicators."
+    },
+    "market_sentiment_indicator_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Relevant market_sentiment.indicators[].id values reviewed by Hermes when sentiment risk is present."
+    },
+    "market_sentiment_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes about quantified risk-off or negative sentiment and how it affected confidence, sizing, rejection, or hold."
+    },
+    "market_sentiment_coverage_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing after reviewing that market_sentiment coverage is missing, stale, failed, or invalid."
+    },
+    "market_sentiment_coverage_status": {
+      "type": "string",
+      "description": "Reviewed context_digest.market_sentiment.status when market sentiment coverage acknowledgement is required."
+    },
+    "market_sentiment_coverage_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Notes explaining how missing/stale/failed volatility, capital-flow, or risk-appetite coverage limited confidence or prevented using absence of sentiment indicators as evidence."
+    },
+    "market_sentiment_support_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing a BUY after using relevant risk_on or positive market_sentiment indicators as support."
+    },
+    "market_sentiment_support_indicator_ids": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Relevant market_sentiment.indicators[].id values used by Hermes as positive support."
+    },
+    "market_sentiment_support_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes about quantified risk-on or positive market sentiment and how it affected confidence, sizing, rejection, or hold without overriding gates."
+    },
+    "source_reliability_limit_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing while source_reliability.status is DEGRADED, STALE, MISSING, or FAIL."
+    },
+    "source_reliability_components": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "source_reliability.components[].name values whose degraded, stale, missing, or failed status was reviewed."
+    },
+    "source_reliability_reasons": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "source_reliability component reasons or report recommendations Hermes considered before approve/reduce."
+    },
+    "source_reliability_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes about source-quality limits and how they affected confidence, sizing, or rejection."
+    },
+    "simulation_performance_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing while simulation_performance.status is WARN or FAIL."
+    },
+    "simulation_performance_status": {
+      "type": "string",
+      "description": "Reviewed top-level simulation_performance.status when simulation performance is WARN or FAIL."
+    },
+    "simulation_performance_reason_codes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "simulation_performance.reason_codes values Hermes considered before approve/reduce."
+    },
+    "simulation_performance_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes about weak realized simulation performance, remediation hash, or portfolio risk and how it affected confidence, sizing, rejection, or hold."
+    },
+    "hermes_alpha_evidence_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing while strategy_learning_brief.hermes_alpha_evidence.status is INSUFFICIENT, NEGATIVE, MISSING, or INVALID, or when the evidence object is absent."
+    },
+    "hermes_alpha_evidence_status": {
+      "type": "string",
+      "description": "Reviewed strategy_learning_brief.hermes_alpha_evidence.status when weak or missing alpha evidence acknowledgement is required."
+    },
+    "hermes_alpha_evidence_reasons": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "strategy_learning_brief.hermes_alpha_evidence.reasons values Hermes considered before approve/reduce."
+    },
+    "hermes_alpha_evidence_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes explaining why Hermes is approving/reducing even though audit-pass approval alpha is unproven or negative."
+    },
+    "intraday_context_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing a signal whose context_digest.required_judgment_attention includes intraday context missing/stale, contradiction, market-session, calendar-override, minute-producer, or minute-quality notes."
+    },
+    "intraday_context_status": {
+      "type": "string",
+      "description": "The reviewed review_items[].context_digest.intraday_context.status value, when intraday context required explicit discussion."
+    },
+    "intraday_context_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes about same-session intraday confirmation, contradiction, missing/stale minute coverage, producer/apply/source limits, market-session state, calendar-override limits, or degraded minute-bar quality and how it affected confidence, sizing, rejection, or hold."
+    },
+    "intraday_signal_evidence_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing after reviewing context_digest.intraday_signal_evidence.requires_judgment_acknowledgement=true."
+    },
+    "intraday_signal_evidence_alignment": {
+      "type": "string",
+      "description": "Copy of context_digest.intraday_signal_evidence.alignment when intraday signal evidence requires acknowledgement."
+    },
+    "intraday_signal_evidence_codes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Reviewed context_digest.intraday_signal_evidence.codes[] values, covering support, challenge, conflict, quality, or source-limit evidence."
+    },
+    "intraday_signal_evidence_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes explaining whether 5m/15m/30m/60m/session evidence supported, challenged, conflicted with, or was too low-quality to strengthen the judgment."
     },
     "portfolio_context": {
       "type": "object"
@@ -132,10 +449,6 @@
     "strategy_evidence": {
       "type": "object",
       "description": "Optional snapshot or summary of rt_signal_outcome_report used by Hermes during review."
-    },
-    "context_review": {
-      "type": "object",
-      "description": "Required for approve/reduce. Every required *_reviewed flag must be true."
     }
   },
   "allOf": [

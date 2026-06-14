@@ -39,6 +39,19 @@ def audit_payload(status="PASS", signal_id="sig-1"):
     }
 
 
+def audit_report(rows, judgment_count=None):
+    status_counts = {}
+    for row in rows:
+        status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
+    return {
+        "schema": "hermes_judgment_audit_report_v1",
+        "generated_at": "2026-06-12T10:10:00",
+        "status": "FAIL" if status_counts.get("FAIL") else "OK",
+        "counts": {"judgment_count": judgment_count if judgment_count is not None else len(rows)},
+        "judgments": rows,
+    }
+
+
 def write_jsonl(path, rows):
     path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
 
@@ -59,9 +72,36 @@ class HermesJudgmentEventStoreTests(unittest.TestCase):
         self.assertEqual(payload["event_count"], 2)
         self.assertEqual(payload["event_summary"]["by_decision"], {"approve": 1, "hold": 1})
         self.assertEqual(payload["event_summary"]["by_audit_status"], {"PASS": 1, "missing": 1})
+        self.assertEqual(payload["audit_coverage"]["audit_pass_event_count"], 1)
+        self.assertEqual(payload["audit_coverage"]["audit_missing_event_count"], 1)
+        self.assertEqual(payload["audit_coverage"]["audit_missing_examples"][0]["signal_id"], "sig-2")
+        self.assertIn("judgment_events_missing_audit_rows:1", payload["warnings"])
         self.assertTrue(payload["schema_hash"])
         self.assertTrue(payload["safety"]["does_not_submit_orders"])
         self.assertTrue(payload["safety"]["does_not_change_intake_state"])
+        self.assertTrue(payload["safety"]["preserves_audit_status"])
+        self.assertTrue(payload["safety"]["reports_missing_audit_rows"])
+
+    def test_audit_coverage_reports_failures_and_truncated_audit_payload(self):
+        with tempfile.TemporaryDirectory() as td:
+            judgments = Path(td) / "judgments.jsonl"
+            audit = Path(td) / "audit.json"
+            write_jsonl(judgments, [judgment(), judgment("sig-2", "hold")])
+            fail_row = audit_payload(status="FAIL")["judgments"][0]
+            audit.write_text(json.dumps(audit_report([fail_row], judgment_count=2)), encoding="utf-8")
+
+            payload = store.build_report(str(judgments), str(audit))
+
+        coverage = payload["audit_coverage"]
+
+        self.assertTrue(coverage["audit_report_truncated"])
+        self.assertEqual(coverage["audit_report_judgment_count"], 2)
+        self.assertEqual(coverage["audit_report_row_count"], 1)
+        self.assertEqual(coverage["audit_fail_event_count"], 1)
+        self.assertEqual(coverage["audit_missing_event_count"], 1)
+        self.assertEqual(coverage["audit_fail_examples"][0]["audit_reasons"], ["approval_for_ineligible_review_item"])
+        self.assertIn("judgment_events_include_audit_failures:1", payload["warnings"])
+        self.assertIn("audit_report_truncated_unmatched_judgments:1", payload["warnings"])
 
     def test_apply_requires_schema_hash(self):
         with tempfile.TemporaryDirectory() as td:

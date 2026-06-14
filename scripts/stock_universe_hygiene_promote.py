@@ -19,6 +19,7 @@ SAFE_AUTO_ACTIONS = {
 }
 MANUAL_REVIEW_ACTIONS = {
     "candidate_deactivate_or_symbol_mapping",
+    "candidate_refetch_or_deactivate",
 }
 _COLUMN_CACHE = {}
 
@@ -191,7 +192,7 @@ def selected_candidates(candidates, symbols, allow_actions):
     return selected, rejected
 
 
-def manual_review_required_candidates(candidates, symbols=None, allow_actions=None):
+def manual_review_required_candidates(candidates, symbols, allow_actions):
     requested = {str(symbol).upper() for symbol in symbols or []}
     allow_actions = set(allow_actions or SAFE_AUTO_ACTIONS)
     rows = []
@@ -510,8 +511,6 @@ def build_text_report(payload):
             f"  deactivate {item.get('symbol')} {item.get('exchange')} "
             f"action={item.get('recommended_action')} issues={item.get('issues')}"
         )
-    if payload.get("rejected_symbols"):
-        lines.append("Rejected: " + json.dumps(payload["rejected_symbols"], ensure_ascii=False))
     review_plan = payload.get("operator_review_plan") or {}
     if review_plan.get("review_required_count"):
         lines.append(
@@ -521,6 +520,9 @@ def build_text_report(payload):
                 for item in (review_plan.get("items") or [])[:30]
             )
         )
+        lines.append("Checklist: " + ", ".join(review_plan.get("pre_apply_checklist") or []))
+    if payload.get("rejected_symbols"):
+        lines.append("Rejected: " + json.dumps(payload["rejected_symbols"], ensure_ascii=False))
     if payload.get("apply_result"):
         lines.append("apply_result=" + json.dumps(payload["apply_result"], ensure_ascii=False))
     return "\n".join(lines)

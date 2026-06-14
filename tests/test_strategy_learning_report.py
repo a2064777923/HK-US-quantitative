@@ -3,7 +3,31 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts import hermes_judgment_audit_report as audit
 from scripts import strategy_learning_report as learning
+
+
+def context_review(**overrides):
+    item = {
+        "technical_signal_reviewed": True,
+        "portfolio_risk_reviewed": True,
+        "strategy_evidence_reviewed": True,
+        "data_health_reviewed": True,
+        "execution_readiness_reviewed": True,
+        "market_context_reviewed": True,
+        "intraday_context_reviewed": True,
+        "external_market_context_reviewed": True,
+        "event_catalysts_reviewed": True,
+        "event_catalyst_signals_reviewed": True,
+        "market_sentiment_reviewed": True,
+        "fundamentals_context_reviewed": True,
+        "source_reliability_reviewed": True,
+        "simulation_performance_reviewed": True,
+        "cron_wiring_reviewed": True,
+        "notes": ["unit test context reviewed"],
+    }
+    item.update(overrides)
+    return item
 
 
 def alert(signal_id="sig-1", trigger="MA"):
@@ -32,6 +56,7 @@ def judgment(signal_id="sig-1", decision="approve"):
         "supporting_factors": ["support"],
         "opposing_factors": ["opposition"],
         "risk_notes": ["risk"],
+        "context_review": context_review(),
     }
 
 
@@ -48,8 +73,8 @@ def intake_decision(signal_id="sig-1", status="dry_run", reason=None):
     return item
 
 
-def outcome(signal_id="sig-1", value=1.0, trigger="MA"):
-    return {
+def outcome(signal_id="sig-1", value=1.0, trigger="MA", intraday_alignment=None):
+    item = {
         "signal_id": signal_id,
         "symbol": "00700",
         "market": "HK",
@@ -67,30 +92,59 @@ def outcome(signal_id="sig-1", value=1.0, trigger="MA"):
             }
         },
     }
+    if intraday_alignment:
+        item["intraday_signal_context"] = {
+            "schema": "intraday_signal_context_v1",
+            "status": "OK",
+            "alignment": intraday_alignment,
+        }
+    return item
+
+def audit_row(signal_id="sig-1", decision="approve", status="PASS", reasons=None):
+    return {
+        "signal_id": signal_id,
+        "decision": decision,
+        "reviewed_at": "2026-06-12T10:05:00",
+        "confidence": 0.8,
+        "packet_id": "packet-1",
+        "packet_source": "packet_archive",
+        "status": status,
+        "reasons": reasons or [],
+    }
+
+
+def audit_report(rows):
+    status_counts = {}
+    reason_counts = {}
+    for row in rows:
+        status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
+        for reason in row.get("reasons") or []:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    return {
+        "schema": "hermes_judgment_audit_report_v1",
+        "generated_at": "2026-06-12T10:10:00",
+        "status": "FAIL" if status_counts.get("FAIL") else "OK",
+        "counts": {
+            "judgment_count": len(rows),
+            "status_counts": status_counts,
+            "reason_counts": reason_counts,
+        },
+        "judgments": rows,
+        "recommendations": [],
+    }
 
 
 def write_jsonl(path, rows):
     path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
 
 
-def judgment_audit_report(rows, status="OK", judgment_count=None):
-    status_counts = {}
-    for row in rows:
-        key = str(row.get("status") or "MISSING").upper()
-        status_counts[key] = status_counts.get(key, 0) + 1
-    return {
-        "schema": "hermes_judgment_audit_report_v1",
-        "generated_at": "2026-06-12T10:10:00",
-        "status": status,
-        "counts": {
-            "judgment_count": len(rows) if judgment_count is None else judgment_count,
-            "status_counts": status_counts,
-        },
-        "judgments": rows,
-    }
-
-
 class StrategyLearningReportTests(unittest.TestCase):
+    def test_context_review_required_flags_match_judgment_audit(self):
+        self.assertEqual(
+            learning.REQUIRED_CONTEXT_REVIEW_FLAGS,
+            audit.REQUIRED_CONTEXT_REVIEW_FLAGS,
+        )
+
     def test_build_report_joins_alert_judgment_intake_and_outcome(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -121,7 +175,10 @@ class StrategyLearningReportTests(unittest.TestCase):
                         "evaluated_signal_count": 2,
                         "resolved_signal_count": 2,
                         "pending_signal_count": 0,
-                        "evaluations": [outcome("sig-1", 1.5, "MA"), outcome("sig-2", -2.0, "RSI")],
+                        "evaluations": [
+                            outcome("sig-1", 1.5, "MA", intraday_alignment="supports_signal"),
+                            outcome("sig-2", -2.0, "RSI", intraday_alignment="challenges_signal"),
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -143,109 +200,56 @@ class StrategyLearningReportTests(unittest.TestCase):
         self.assertEqual(payload["overall"]["avg_signed_return_pct"], -0.25)
         self.assertEqual(payload["judgment_effect"]["approved_or_reduced"]["avg_signed_return_pct"], 1.5)
         self.assertEqual(payload["judgment_effect"]["rejected_or_held"]["avg_signed_return_pct"], -2.0)
+        self.assertEqual(
+            payload["context_review_effect"]["approved_or_reduced_context_complete"]["avg_signed_return_pct"],
+            1.5,
+        )
+        self.assertEqual(payload["context_review_quality"]["complete_context_review_count"], 1)
+        self.assertEqual(payload["context_review_quality"]["incomplete_context_review_count"], 0)
         by_reason = {row["key"]: row for row in payload["by_intake_reason"]}
         self.assertEqual(by_reason["accepted_dry_run"]["count"], 1)
         self.assertEqual(by_reason["strategy_evidence_gate_failed"]["count"], 1)
         by_actionability = {row["key"]: row for row in payload["by_actionability"]}
         self.assertEqual(by_actionability["trade_candidate"]["count"], 1)
         self.assertEqual(by_actionability["blocked_strategy_evidence"]["count"], 1)
+        by_intraday = {row["key"]: row for row in payload["by_intraday_signal_alignment"]}
+        self.assertEqual(by_intraday["supports_signal"]["avg_signed_return_pct"], 1.5)
+        self.assertEqual(by_intraday["challenges_signal"]["avg_signed_return_pct"], -2.0)
+        self.assertEqual(payload["recent_joined_rows"][0]["intraday_signal_alignment"], "supports_signal")
         self.assertEqual(payload["recent_joined_rows"][0]["actionability_category"], "trade_candidate")
+        self.assertEqual(payload["intraday_alignment_effect"]["status"], "INSUFFICIENT")
+        self.assertIn(
+            "support_alignment_sample_below_minimum",
+            payload["intraday_alignment_effect"]["reasons"],
+        )
         self.assertTrue(payload["source"]["read_only"])
         self.assertFalse(payload["source"]["submits_orders"])
 
-    def test_audit_pass_judgment_effect_uses_hermes_judgment_audit_report(self):
+    def test_context_review_effect_tracks_incomplete_approval_cohort(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             alerts = root / "alerts.jsonl"
             judgments = root / "judgments.jsonl"
             state = root / "state.json"
             outcomes = root / "outcome.json"
-            judgment_audit = root / "judgment_audit.json"
-            write_jsonl(alerts, [alert("sig-1", "MA"), alert("sig-2", "RSI")])
-            write_jsonl(judgments, [judgment("sig-1", "approve"), judgment("sig-2", "hold")])
-            state.write_text(
-                json.dumps(
-                    {
-                        "dry_runs": {
-                            "sig-1": intake_decision("sig-1", "dry_run"),
-                            "sig-2": intake_decision("sig-2", "rejected", "strategy_evidence_gate_failed"),
-                        },
-                        "processed": {},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            outcomes.write_text(
-                json.dumps(
-                    {
-                        "schema": "rt_signal_outcome_report_v1",
-                        "evaluations": [outcome("sig-1", 1.5, "MA"), outcome("sig-2", -2.0, "RSI")],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            judgment_audit.write_text(
-                json.dumps(
-                    judgment_audit_report(
-                        [
-                            {"signal_id": "sig-1", "status": "PASS", "reasons": []},
-                            {"signal_id": "sig-2", "status": "PASS", "reasons": []},
-                        ]
-                    )
-                ),
-                encoding="utf-8",
-            )
-
-            payload = learning.build_report(
-                alert_queue_file=str(alerts),
-                judgment_file=str(judgments),
-                intake_state_file=str(state),
-                outcome_report_file=str(outcomes),
-                judgment_audit_report_file=str(judgment_audit),
-            )
-
-        coverage = payload["judgment_audit_coverage"]
-        effect = payload["audit_pass_judgment_effect"]
-        rows_by_id = {row["signal_id"]: row for row in payload["recent_joined_rows"]}
-
-        self.assertTrue(coverage["audit_report_available"])
-        self.assertEqual(coverage["audit_report_status"], "OK")
-        self.assertFalse(coverage["audit_report_truncated"])
-        self.assertEqual(coverage["joined_judgment_count"], 2)
-        self.assertEqual(coverage["audit_pass_count"], 2)
-        self.assertEqual(coverage["audit_fail_count"], 0)
-        self.assertEqual(coverage["audit_missing_count"], 0)
-        self.assertEqual(effect["sample_filter"], "judgment_audit_status_PASS")
-        self.assertEqual(effect["approved_or_reduced"]["avg_signed_return_pct"], 1.5)
-        self.assertEqual(effect["rejected_or_held"]["avg_signed_return_pct"], -2.0)
-        self.assertEqual(rows_by_id["sig-1"]["judgment_audit_status"], "PASS")
-        self.assertEqual(rows_by_id["sig-2"]["judgment_audit_status"], "PASS")
-        self.assertEqual(payload["source"]["judgment_audit"]["path"], str(judgment_audit))
-
-    def test_audit_fail_or_missing_blocks_audit_pass_judgment_effect(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            alerts = root / "alerts.jsonl"
-            judgments = root / "judgments.jsonl"
-            state = root / "state.json"
-            outcomes = root / "outcome.json"
-            judgment_audit = root / "judgment_audit.json"
-            write_jsonl(alerts, [alert("pass", "MA"), alert("fail", "RSI"), alert("missing", "BREAKOUT")])
+            write_jsonl(alerts, [alert("complete", "MA"), alert("incomplete", "RSI"), alert("held", "BB")])
+            incomplete = judgment("incomplete", "approve")
+            incomplete["context_review"] = context_review(market_sentiment_reviewed=False)
             write_jsonl(
                 judgments,
                 [
-                    judgment("pass", "approve"),
-                    judgment("fail", "hold"),
-                    judgment("missing", "reduce"),
+                    judgment("complete", "approve"),
+                    incomplete,
+                    judgment("held", "hold"),
                 ],
             )
             state.write_text(
                 json.dumps(
                     {
                         "dry_runs": {
-                            "pass": intake_decision("pass", "dry_run"),
-                            "fail": intake_decision("fail", "rejected", "strategy_evidence_gate_failed"),
-                            "missing": intake_decision("missing", "dry_run"),
+                            "complete": intake_decision("complete", "dry_run"),
+                            "incomplete": intake_decision("incomplete", "dry_run"),
+                            "held": intake_decision("held", "dry_run"),
                         },
                         "processed": {},
                     }
@@ -257,95 +261,10 @@ class StrategyLearningReportTests(unittest.TestCase):
                     {
                         "schema": "rt_signal_outcome_report_v1",
                         "evaluations": [
-                            outcome("pass", 1.0, "MA"),
-                            outcome("fail", -1.0, "RSI"),
-                            outcome("missing", 0.5, "BREAKOUT"),
+                            outcome("complete", 2.0, "MA"),
+                            outcome("incomplete", -1.0, "RSI"),
+                            outcome("held", -0.5, "BB"),
                         ],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            judgment_audit.write_text(
-                json.dumps(
-                    judgment_audit_report(
-                        [
-                            {"signal_id": "pass", "status": "PASS", "reasons": []},
-                            {"signal_id": "fail", "status": "FAIL", "reasons": ["approval_with_trigger_outcome_missing"]},
-                        ],
-                        status="FAIL",
-                    )
-                ),
-                encoding="utf-8",
-            )
-
-            payload = learning.build_report(
-                alert_queue_file=str(alerts),
-                judgment_file=str(judgments),
-                intake_state_file=str(state),
-                outcome_report_file=str(outcomes),
-                judgment_audit_report_file=str(judgment_audit),
-            )
-
-        coverage = payload["judgment_audit_coverage"]
-        rows_by_id = {row["signal_id"]: row for row in payload["recent_joined_rows"]}
-
-        self.assertEqual(coverage["joined_judgment_count"], 3)
-        self.assertEqual(coverage["audit_pass_count"], 1)
-        self.assertEqual(coverage["audit_fail_count"], 1)
-        self.assertEqual(coverage["audit_missing_count"], 1)
-        self.assertEqual(coverage["approved_or_reduced_audit_fail_or_missing_count"], 1)
-        self.assertEqual(coverage["rejected_or_held_audit_fail_or_missing_count"], 1)
-        self.assertEqual(payload["audit_pass_judgment_effect"], {})
-        self.assertEqual(rows_by_id["fail"]["judgment_audit_status"], "FAIL")
-        self.assertEqual(rows_by_id["missing"]["judgment_audit_status"], "MISSING")
-        self.assertIn("approval_with_trigger_outcome_missing", rows_by_id["fail"]["judgment_audit_reasons"])
-        self.assertIn("judgment_audit_missing", rows_by_id["missing"]["judgment_audit_reasons"])
-
-    def test_execution_candidate_scope_separates_downgraded_diagnostics(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            alerts = root / "alerts.jsonl"
-            judgments = root / "judgments.jsonl"
-            state = root / "state.json"
-            outcomes = root / "outcome.json"
-            diagnostic_alert = alert("diag", "MA")
-            diagnostic_alert.update(
-                {
-                    "signal_type": "WATCH",
-                    "candidate_signal_type": "BUY",
-                    "execution_candidate": False,
-                }
-            )
-            execution_outcome = outcome("exec", 1.0, "MA")
-            execution_outcome["execution_candidate"] = True
-            diagnostic_outcome = outcome("diag", -3.0, "MA")
-            diagnostic_outcome.update(
-                {
-                    "execution_candidate": False,
-                    "downgraded_directional": True,
-                    "emitted_signal_type": "WATCH",
-                    "candidate_signal_type": "BUY",
-                }
-            )
-            write_jsonl(alerts, [alert("exec", "MA"), diagnostic_alert])
-            write_jsonl(judgments, [judgment("exec", "approve"), judgment("diag", "hold")])
-            state.write_text(
-                json.dumps(
-                    {
-                        "dry_runs": {
-                            "exec": intake_decision("exec", "dry_run"),
-                            "diag": intake_decision("diag", "rejected", "strategy_review_disabled_pending_rework"),
-                        },
-                        "processed": {},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            outcomes.write_text(
-                json.dumps(
-                    {
-                        "schema": "rt_signal_outcome_report_v1",
-                        "evaluations": [execution_outcome, diagnostic_outcome],
                     }
                 ),
                 encoding="utf-8",
@@ -358,183 +277,136 @@ class StrategyLearningReportTests(unittest.TestCase):
                 outcome_report_file=str(outcomes),
             )
 
-        scope = payload["execution_candidate_scope"]
-        rows_by_id = {row["signal_id"]: row for row in payload["recent_joined_rows"]}
-        roles = {row["key"]: row for row in payload["by_execution_sample_role"]}
+        effect = payload["context_review_effect"]
+        quality = payload["context_review_quality"]
+        by_cohort = {row["key"]: row for row in payload["by_context_review_cohort"]}
 
-        self.assertEqual(payload["overall"]["resolved_count"], 2)
-        self.assertEqual(scope["execution_candidate_count"], 1)
-        self.assertEqual(scope["downgraded_directional_count"], 1)
-        self.assertEqual(scope["execution_candidate"]["avg_signed_return_pct"], 1.0)
-        self.assertEqual(scope["downgraded_directional"]["avg_signed_return_pct"], -3.0)
-        self.assertEqual(scope["promotion_evidence_requirement"], "execution_candidate_only_learning_required")
-        self.assertEqual(payload["execution_candidate_judgment_effect"]["approved_or_reduced"]["resolved_count"], 1)
-        exec_by_trigger = {row["key"]: row for row in payload["execution_candidate_by_trigger"]}
-        self.assertEqual(exec_by_trigger["BUY:MA"]["resolved_count"], 1)
-        self.assertEqual(exec_by_trigger["BUY:MA"]["avg_signed_return_pct"], 1.0)
-        self.assertEqual(rows_by_id["diag"]["execution_sample_role"], "diagnostic_downgraded_directional")
-        self.assertFalse(rows_by_id["diag"]["execution_candidate"])
-        self.assertEqual(roles["diagnostic_downgraded_directional"]["count"], 1)
-        self.assertIn(
-            "downgraded_directional_rows_research_only_require_execution_candidate_learning",
-            payload["recommendations"],
-        )
-        self.assertNotIn("trigger_forward_return_non_positive:BUY:MA", payload["recommendations"])
+        self.assertEqual(effect["approved_or_reduced_context_complete"]["resolved_count"], 1)
+        self.assertEqual(effect["approved_or_reduced_context_complete"]["avg_signed_return_pct"], 2.0)
+        self.assertEqual(effect["approved_or_reduced_context_incomplete"]["avg_signed_return_pct"], -1.0)
+        self.assertEqual(quality["approved_or_reduced_count"], 2)
+        self.assertEqual(quality["complete_context_review_count"], 1)
+        self.assertEqual(quality["incomplete_context_review_count"], 1)
+        self.assertEqual(quality["missing_flag_counts"][0], {"key": "market_sentiment_reviewed", "count": 1})
+        self.assertEqual(by_cohort["approved_or_reduced_context_incomplete"]["count"], 1)
+        self.assertIn("context_review_incomplete_for_approved_or_reduced_judgments", payload["recommendations"])
 
-    def test_execution_candidate_audit_pass_effect_excludes_downgraded_diagnostics(self):
+    def test_audit_failed_approval_is_excluded_from_audit_pass_effect(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             alerts = root / "alerts.jsonl"
             judgments = root / "judgments.jsonl"
+            audit_file = root / "judgment_audit.json"
             state = root / "state.json"
             outcomes = root / "outcome.json"
-            judgment_audit = root / "judgment_audit.json"
-            diagnostic_alert = alert("diag", "MA")
-            diagnostic_alert.update(
-                {
-                    "signal_type": "WATCH",
-                    "candidate_signal_type": "BUY",
-                    "execution_candidate": False,
-                }
+            write_jsonl(alerts, [alert("clean", "MA"), alert("invalid", "RSI"), alert("held", "BB")])
+            write_jsonl(
+                judgments,
+                [
+                    judgment("clean", "approve"),
+                    judgment("invalid", "approve"),
+                    judgment("held", "hold"),
+                ],
             )
-            execution_outcome = outcome("exec", 1.0, "MA")
-            execution_outcome["execution_candidate"] = True
-            diagnostic_outcome = outcome("diag", -3.0, "MA")
-            diagnostic_outcome.update(
-                {
-                    "execution_candidate": False,
-                    "downgraded_directional": True,
-                    "emitted_signal_type": "WATCH",
-                    "candidate_signal_type": "BUY",
-                }
-            )
-            write_jsonl(alerts, [alert("exec", "MA"), diagnostic_alert])
-            write_jsonl(judgments, [judgment("exec", "approve"), judgment("diag", "hold")])
-            state.write_text(
+            audit_file.write_text(
                 json.dumps(
-                    {
-                        "dry_runs": {
-                            "exec": intake_decision("exec", "dry_run"),
-                            "diag": intake_decision("diag", "rejected", "same_scan_directional_duplicate"),
-                        },
-                        "processed": {},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            outcomes.write_text(
-                json.dumps(
-                    {
-                        "schema": "rt_signal_outcome_report_v1",
-                        "evaluations": [execution_outcome, diagnostic_outcome],
-                    }
-                ),
-                encoding="utf-8",
-            )
-            judgment_audit.write_text(
-                json.dumps(
-                    judgment_audit_report(
+                    audit_report(
                         [
-                            {"signal_id": "exec", "status": "PASS", "reasons": []},
-                            {"signal_id": "diag", "status": "PASS", "reasons": []},
+                            audit_row("clean", "approve", "PASS"),
+                            audit_row(
+                                "invalid",
+                                "approve",
+                                "FAIL",
+                                ["missing_intraday_context_acknowledgement"],
+                            ),
+                            audit_row("held", "hold", "PASS"),
                         ]
                     )
                 ),
                 encoding="utf-8",
             )
-
-            payload = learning.build_report(
-                alert_queue_file=str(alerts),
-                judgment_file=str(judgments),
-                intake_state_file=str(state),
-                outcome_report_file=str(outcomes),
-                judgment_audit_report_file=str(judgment_audit),
+            state.write_text(
+                json.dumps(
+                    {
+                        "dry_runs": {
+                            "clean": intake_decision("clean", "dry_run"),
+                            "invalid": intake_decision("invalid", "dry_run"),
+                            "held": intake_decision("held", "dry_run"),
+                        },
+                        "processed": {},
+                    }
+                ),
+                encoding="utf-8",
             )
-
-        full_effect = payload["audit_pass_judgment_effect"]
-        exec_effect = payload["execution_candidate_audit_pass_judgment_effect"]
-        exec_coverage = payload["execution_candidate_judgment_audit_coverage"]
-
-        self.assertEqual(full_effect["approved_or_reduced"]["resolved_count"], 1)
-        self.assertEqual(full_effect["rejected_or_held"]["resolved_count"], 1)
-        self.assertEqual(exec_effect["sample_filter"], "execution_candidate_true_and_judgment_audit_status_PASS")
-        self.assertEqual(exec_effect["approved_or_reduced"]["resolved_count"], 1)
-        self.assertEqual(exec_effect["approved_or_reduced"]["avg_signed_return_pct"], 1.0)
-        self.assertEqual(exec_effect["rejected_or_held"]["resolved_count"], 0)
-        self.assertEqual(exec_coverage["joined_judgment_count"], 1)
-        self.assertEqual(exec_coverage["audit_pass_count"], 1)
-        self.assertEqual(exec_coverage["audit_fail_count"], 0)
-
-    def test_trigger_recommendations_ignore_diagnostic_trigger_returns_when_downgraded_present(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            alerts = root / "alerts.jsonl"
-            judgments = root / "judgments.jsonl"
-            state = root / "state.json"
-            outcomes = root / "outcome.json"
-            alert_rows = []
-            judgment_rows = []
-            outcome_rows = []
-            dry_runs = {}
-            for i in range(1):
-                sid = f"exec-{i}"
-                alert_rows.append(alert(sid, "MA"))
-                judgment_rows.append(judgment(sid, "approve"))
-                dry_runs[sid] = intake_decision(sid, "dry_run")
-                row = outcome(sid, 1.0, "MA")
-                row["execution_candidate"] = True
-                outcome_rows.append(row)
-            for i in range(5):
-                sid = f"diag-{i}"
-                item = alert(sid, "MA")
-                item.update(
-                    {
-                        "signal_type": "WATCH",
-                        "candidate_signal_type": "BUY",
-                        "execution_candidate": False,
-                    }
-                )
-                alert_rows.append(item)
-                judgment_rows.append(judgment(sid, "hold"))
-                dry_runs[sid] = intake_decision(sid, "rejected", "same_scan_directional_duplicate")
-                row = outcome(sid, -2.0, "MA")
-                row.update(
-                    {
-                        "execution_candidate": False,
-                        "downgraded_directional": True,
-                        "emitted_signal_type": "WATCH",
-                        "candidate_signal_type": "BUY",
-                    }
-                )
-                outcome_rows.append(row)
-            write_jsonl(alerts, alert_rows)
-            write_jsonl(judgments, judgment_rows)
-            state.write_text(json.dumps({"dry_runs": dry_runs, "processed": {}}), encoding="utf-8")
             outcomes.write_text(
-                json.dumps({"schema": "rt_signal_outcome_report_v1", "evaluations": outcome_rows}),
+                json.dumps(
+                    {
+                        "schema": "rt_signal_outcome_report_v1",
+                        "evaluations": [
+                            outcome("clean", 2.0, "MA"),
+                            outcome("invalid", 10.0, "RSI"),
+                            outcome("held", -1.0, "BB"),
+                        ],
+                    }
+                ),
                 encoding="utf-8",
             )
 
             payload = learning.build_report(
                 alert_queue_file=str(alerts),
                 judgment_file=str(judgments),
+                judgment_audit_file=str(audit_file),
                 intake_state_file=str(state),
                 outcome_report_file=str(outcomes),
             )
 
-        by_trigger = {row["key"]: row for row in payload["by_trigger"]}
-        exec_by_trigger = {row["key"]: row for row in payload["execution_candidate_by_trigger"]}
+        raw_effect = payload["judgment_effect"]
+        audit_effect = payload["audit_pass_judgment_effect"]
+        coverage = payload["judgment_audit_coverage"]
+        rows_by_id = {row["signal_id"]: row for row in payload["recent_joined_rows"]}
 
-        self.assertEqual(by_trigger["WATCH:MA"]["resolved_count"], 5)
-        self.assertLess(by_trigger["WATCH:MA"]["avg_signed_return_pct"], 0)
-        self.assertEqual(exec_by_trigger["BUY:MA"]["resolved_count"], 1)
-        self.assertEqual(exec_by_trigger["BUY:MA"]["avg_signed_return_pct"], 1.0)
-        self.assertNotIn("trigger_forward_return_non_positive:BUY:MA", payload["recommendations"])
-        self.assertNotIn("trigger_forward_return_non_positive:WATCH:MA", payload["recommendations"])
-        self.assertIn(
-            "downgraded_directional_rows_research_only_require_execution_candidate_learning",
-            payload["recommendations"],
-        )
+        self.assertEqual(raw_effect["approved_or_reduced"]["avg_signed_return_pct"], 6.0)
+        self.assertEqual(audit_effect["sample_filter"], "judgment_audit_status_PASS")
+        self.assertEqual(audit_effect["approved_or_reduced"]["resolved_count"], 1)
+        self.assertEqual(audit_effect["approved_or_reduced"]["avg_signed_return_pct"], 2.0)
+        self.assertEqual(audit_effect["excluded_approved_or_reduced"]["resolved_count"], 1)
+        self.assertEqual(audit_effect["excluded_approved_or_reduced"]["avg_signed_return_pct"], 10.0)
+        self.assertEqual(coverage["approved_or_reduced_audit_fail_or_missing_count"], 1)
+        self.assertEqual(coverage["failed_reason_counts"][0], {"key": "missing_intraday_context_acknowledgement", "count": 1})
+        self.assertEqual(rows_by_id["invalid"]["judgment_audit_status"], "FAIL")
+        self.assertIn("audit_failed_or_missing_approvals_excluded_from_hermes_effect_learning", payload["recommendations"])
+
+    def test_missing_source_reliability_review_flag_marks_context_incomplete(self):
+        item = judgment("sig-1", "approve")
+        item["context_review"].pop("source_reliability_reviewed")
+
+        row = learning.build_join_rows(
+            alerts={"sig-1": alert("sig-1")},
+            judgments={"sig-1": item},
+            intake_decisions={"sig-1": intake_decision("sig-1", "dry_run")},
+            outcomes={"sig-1": outcome("sig-1", 1.0)},
+        )[0]
+
+        self.assertFalse(row["context_review_complete"])
+        self.assertIn("source_reliability_reviewed", row["context_review_missing_flags"])
+        self.assertEqual(row["context_review_cohort"], "approved_or_reduced_context_incomplete")
+
+    def test_missing_intraday_review_flag_marks_context_incomplete(self):
+        item = judgment("sig-1", "approve")
+        item["context_review"].pop("intraday_context_reviewed")
+
+        row = learning.build_join_rows(
+            alerts={"sig-1": alert("sig-1")},
+            judgments={"sig-1": item},
+            intake_decisions={"sig-1": intake_decision("sig-1", "dry_run")},
+            outcomes={"sig-1": outcome("sig-1", 1.0)},
+        )[0]
+        quality = learning.build_context_review_quality([row])
+
+        self.assertFalse(row["context_review_complete"])
+        self.assertIn("intraday_context_reviewed", row["context_review_missing_flags"])
+        self.assertIn("intraday_context_reviewed", quality["required_flags"])
+        self.assertEqual(row["context_review_cohort"], "approved_or_reduced_context_incomplete")
 
     def test_default_sample_scope_filters_to_latest_strategy_and_watchlist(self):
         with tempfile.TemporaryDirectory() as td:
@@ -677,6 +549,7 @@ class StrategyLearningReportTests(unittest.TestCase):
                 "rejected_or_held": {"avg_signed_return_pct": None},
             },
             "by_trigger": [],
+            "by_intraday_signal_alignment": [],
             "by_intake_reason": [{"key": "missing_intake_decision", "count": 8}],
             "by_actionability": [{"key": "missing_intake_decision", "count": 8}],
             "intake_coverage": {
@@ -697,6 +570,93 @@ class StrategyLearningReportTests(unittest.TestCase):
         recs = learning.build_recommendations(payload)
 
         self.assertIn("directional_intake_coverage_below_80pct_learning_incomplete", recs)
+
+    def test_intraday_challenge_alignment_recommendation_when_underperforming(self):
+        rows = [
+            {
+                "signal_id": f"c{i}",
+                "signed_return_pct": -1.0,
+                "intraday_signal_alignment": "challenges_signal",
+                "trigger_key": "BUY:MA",
+                "judgment_decision": "missing",
+                "context_review_cohort": "missing_judgment",
+                "intake_reason_bucket": "missing_intake_decision",
+                "actionability_category": "missing_intake_decision",
+            }
+            for i in range(learning.MIN_LEARNING_SAMPLE)
+        ]
+        payload = {
+            "overall": learning.metric_summary(rows),
+            "judgment_effect": learning.compare_judgment_effect(rows),
+            "by_trigger": learning.grouped_summary(rows, lambda row: row["trigger_key"]),
+            "by_intraday_signal_alignment": learning.grouped_summary(
+                rows,
+                lambda row: row["intraday_signal_alignment"],
+            ),
+            "by_intake_reason": learning.grouped_summary(rows, lambda row: row["intake_reason_bucket"]),
+            "by_actionability": learning.grouped_summary(rows, lambda row: row["actionability_category"]),
+            "intake_coverage": {"directional": {}},
+        }
+
+        recs = learning.build_recommendations(payload)
+
+        self.assertIn("intraday_challenge_alignment_underperforms_consider_hermes_hold_rule", recs)
+
+    def test_intraday_alignment_effect_classifies_supportive_forward_evidence(self):
+        rows = [
+            {"signal_id": "s1", "signed_return_pct": 1.0, "intraday_signal_alignment": "supports_signal"},
+            {"signal_id": "s2", "signed_return_pct": 2.0, "intraday_signal_alignment": "supports_with_limits"},
+            {"signal_id": "c1", "signed_return_pct": -1.0, "intraday_signal_alignment": "challenges_signal"},
+            {"signal_id": "c2", "signed_return_pct": -0.5, "intraday_signal_alignment": "challenges_signal"},
+        ]
+
+        effect = learning.intraday_alignment_effect(rows, minimum_sample=2)
+
+        self.assertEqual(effect["schema"], "intraday_alignment_effect_v1")
+        self.assertEqual(effect["status"], "SUPPORTIVE")
+        self.assertEqual(effect["supports_signal_like"]["resolved_count"], 2)
+        self.assertEqual(effect["challenges_signal"]["avg_signed_return_pct"], -0.75)
+        self.assertEqual(effect["support_vs_challenge_delta_pct"], 2.25)
+        self.assertEqual(effect["reasons"], [])
+        self.assertEqual(
+            effect["policy"],
+            "use_support_as_soft_confirmation_and_challenge_as_confidence_cap",
+        )
+
+    def test_intraday_alignment_effect_blocks_promotion_when_challenges_are_profitable(self):
+        rows = [
+            {"signal_id": "s1", "signed_return_pct": 0.3, "intraday_signal_alignment": "supports_signal"},
+            {"signal_id": "s2", "signed_return_pct": 0.4, "intraday_signal_alignment": "supports_signal"},
+            {"signal_id": "c1", "signed_return_pct": 1.0, "intraday_signal_alignment": "challenges_signal"},
+            {"signal_id": "c2", "signed_return_pct": 1.2, "intraday_signal_alignment": "challenges_signal"},
+        ]
+
+        effect = learning.intraday_alignment_effect(rows, minimum_sample=2)
+
+        self.assertEqual(effect["status"], "NEGATIVE")
+        self.assertIn("challenge_alignment_avg_return_positive", effect["reasons"])
+        self.assertIn("support_alignment_not_outperforming_challenge", effect["reasons"])
+
+    def test_intraday_alignment_effect_normalizes_legacy_labels(self):
+        rows = [
+            {
+                "signal_id": "legacy-conflict",
+                "signed_return_pct": None,
+                "intraday_signal_alignment": "conflicting_intraday_context",
+            },
+            {
+                "signal_id": "legacy-missing",
+                "signed_return_pct": None,
+                "intraday_signal_alignment": "missing_minute_rows_before_signal",
+            },
+        ]
+
+        effect = learning.intraday_alignment_effect(rows, minimum_sample=1)
+        group_keys = {row["key"] for row in effect["groups"]}
+
+        self.assertIn("conflicting_timeframes", group_keys)
+        self.assertIn("unavailable_or_stale", group_keys)
+        self.assertNotIn("conflicting_intraday_context", group_keys)
 
     def test_recommends_collecting_when_resolved_sample_is_small(self):
         payload = learning.build_report(

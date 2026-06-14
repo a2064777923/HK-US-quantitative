@@ -17,6 +17,25 @@ class SystemHealthAlertContractTests(unittest.TestCase):
 
         self.assertEqual(loaded["status"], "OK")
 
+    def test_latest_kline_check_reads_canonical_daily_bars(self):
+        captured = {}
+
+        def fake_psql(sql, timeout=20):
+            captured["sql"] = sql
+            return type("Result", (), {"returncode": 0, "stdout": "NASDAQ|1|2026-06-12\n", "stderr": ""})()
+
+        checks = []
+        with patch.object(health, "psql", side_effect=fake_psql):
+            latest = health.latest_kline_check(checks)
+
+        sql = captured["sql"]
+        normalized = " ".join(sql.split())
+        self.assertEqual(latest, "2026-06-12")
+        self.assertEqual(checks[0]["status"], "OK")
+        self.assertIn("WITH daily_bar AS", sql)
+        self.assertIn("SELECT DISTINCT ON (k.symbol, k.timestamp::date)", sql)
+        self.assertIn("ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC", normalized)
+
     def test_old_directional_alert_missing_v5_fields_fails_contract(self):
         checks = []
         alert = {
@@ -95,6 +114,10 @@ class SystemHealthAlertContractTests(unittest.TestCase):
                     "current_session_before_daily_signal_ready_time",
                     "latest_daily_signal_run_generated_before_full_day_cutoff",
                 ],
+                "remediation": {
+                    "required_action": "wait_until_daily_signal_ready_time_then_run_signal_engine_v4_preflight",
+                    "submits_orders": False,
+                },
             },
             "recommendations": ["block_execution_until_signal_v4_full_day_run_ready"],
         }
@@ -106,6 +129,8 @@ class SystemHealthAlertContractTests(unittest.TestCase):
         self.assertEqual(checks[0]["status"], "FAIL")
         self.assertIn("feature_run=FAIL", checks[0]["detail"])
         self.assertIn("current_session_before_daily_signal_ready_time", checks[0]["detail"])
+        self.assertIn("wait_until_daily_signal_ready_time_then_run_signal_engine_v4_preflight", checks[0]["detail"])
+        self.assertFalse(checks[0]["data"]["feature_run"]["remediation"]["submits_orders"])
 
     def test_data_health_unavailable_warns(self):
         checks = []

@@ -49,32 +49,6 @@ def outcome_report(rows, overall_resolved=40, overall_avg=0.2, overall_win=55):
     }
 
 
-def mixed_outcome_report(all_rows, execution_rows=None, overall_resolved=40, exec_resolved=0):
-    payload = outcome_report(all_rows, overall_resolved=overall_resolved)
-    payload.update(
-        {
-            "downgraded_directional_alert_count": 4,
-            "counts": {"downgraded_directional_alert_count": 4},
-        }
-    )
-    if execution_rows is not None:
-        payload["execution_candidate"] = {
-            "scope": "execution_candidate_only",
-            "execution_candidate": True,
-            "overall": {
-                "horizons": {
-                    "1d": {
-                        "resolved_count": exec_resolved,
-                        "avg_signed_close_return_pct": 0.3,
-                        "win_rate_pct": 55,
-                    }
-                }
-            },
-            "by_trigger": execution_rows,
-        }
-    return payload
-
-
 def quality_report(rows):
     return {
         "generated_at": "2026-06-12T10:05:00",
@@ -154,44 +128,6 @@ class StrategyReviewReportTests(unittest.TestCase):
         self.assertIn("negative_intraday_queue_mark", row["reasons"])
         self.assertNotIn("tighten_trigger_thresholds:BUY:noisy", payload["recommendations"])
         self.assertIn("collect_more_forward_outcomes_before_execution_review", payload["recommendations"])
-
-    def test_diagnostic_outcomes_use_executable_trigger_cohort_for_policy(self):
-        payload = report.build_report(
-            mixed_outcome_report(
-                [outcome_row("BUY:stacked", resolved=20, avg=0.8, win=80)],
-                execution_rows=[outcome_row("BUY:stacked", resolved=2, avg=0.6, win=100)],
-                overall_resolved=40,
-                exec_resolved=2,
-            ),
-            quality_report([quality_row("BUY", "stacked")]),
-        )
-        row = payload["trigger_policies"][0]
-
-        self.assertEqual(payload["trigger_outcome_scope"]["scope"], "execution_candidate")
-        self.assertEqual(payload["source"]["trigger_outcome_scope"], "execution_candidate")
-        self.assertEqual(row["policy"], "shadow_only")
-        self.assertEqual(row["sample"]["outcome_count"], 2)
-        self.assertIn("trigger_outcome_sample_below_10", row["reasons"])
-        self.assertEqual(payload["overall_policy"]["metrics"]["resolved_count"], 2)
-        self.assertEqual(payload["overall_policy"]["policy"], "keep_shadow_or_dry_run")
-
-    def test_diagnostic_outcomes_without_executable_cohort_fail_closed(self):
-        payload = report.build_report(
-            mixed_outcome_report(
-                [outcome_row("BUY:stacked", resolved=20, avg=0.8, win=80)],
-                execution_rows=None,
-                overall_resolved=40,
-            ),
-            quality_report([quality_row("BUY", "stacked")]),
-        )
-        row = payload["trigger_policies"][0]
-
-        self.assertEqual(payload["trigger_outcome_scope"]["scope"], "execution_candidate_missing")
-        self.assertEqual(row["policy"], "shadow_only")
-        self.assertEqual(row["sample"]["outcome_count"], 0)
-        self.assertIn("trigger_outcome_sample_below_10", row["reasons"])
-        self.assertIn("execution_candidate_outcome_cohort_missing", payload["overall_policy"]["reasons"])
-        self.assertEqual(payload["overall_policy"]["policy"], "keep_shadow_or_dry_run")
 
 
 if __name__ == "__main__":

@@ -90,34 +90,48 @@ class StockUniverseHygienePromoteTests(unittest.TestCase):
         self.assertEqual(payload["selected_count"], 0)
         self.assertIn("one_or_more_symbols_rejected", payload["validation_reasons"])
         self.assertEqual(payload["rejected_symbols"][0]["reason"], "recommended_action_not_allowed")
+        self.assertEqual(payload["operator_review_plan"]["status"], "operator_review_required")
+        self.assertEqual(payload["operator_review_plan"]["review_required_count"], 1)
+        self.assertEqual(payload["operator_review_plan"]["items"][0]["symbol"], "00011")
+        self.assertIn("try_refetch_or_provider_symbol_mapping_before_deactivation", payload["operator_review_plan"]["pre_apply_checklist"])
+        self.assertTrue(payload["operator_review_plan"]["safety"]["apply_requires_explicit_allow_action"])
+        text = promote.build_text_report(payload)
+        self.assertIn("Operator review required: 00011:candidate_deactivate_or_symbol_mapping", text)
 
-    def test_payload_plan_surfaces_manual_operator_review_without_db_access(self):
-        payload = promote.build_plan_from_report_payload(hygiene_report())
+    def test_allows_stale_symbol_only_with_explicit_extra_allow_action(self):
+        with tempfile.TemporaryDirectory() as td:
+            report_file = Path(td) / "hygiene.json"
+            write_report(report_file)
+
+            payload = promote.build_report(
+                str(report_file),
+                symbols=["00011"],
+                allow_action=["candidate_deactivate_or_symbol_mapping"],
+            )
+
+        self.assertEqual(payload["status"], "dry_run")
+        self.assertEqual(payload["selected_count"], 1)
+        self.assertEqual(payload["selected_candidates"][0]["symbol"], "00011")
+        self.assertEqual(payload["operator_review_plan"]["status"], "not_required")
+        self.assertIn("candidate_deactivate_or_symbol_mapping", payload["safety"]["allowed_actions"])
+
+    def test_build_plan_from_report_payload_is_read_only_and_surfaces_manual_review(self):
+        with patch.object(promote, "fetch_open_position_symbols") as fetch_mock, patch.object(
+            promote,
+            "apply_deactivations",
+        ) as apply_mock:
+            payload = promote.build_plan_from_report_payload(hygiene_report())
 
         self.assertEqual(payload["status"], "dry_run")
         self.assertFalse(payload["applied"])
         self.assertEqual(payload["selected_count"], 0)
         self.assertEqual(payload["operator_review_plan"]["status"], "operator_review_required")
-        self.assertEqual(payload["operator_review_plan"]["review_required_count"], 1)
         self.assertEqual(payload["operator_review_plan"]["items"][0]["symbol"], "00011")
-        self.assertIn(
-            "try_refetch_or_provider_symbol_mapping_before_deactivation",
-            payload["operator_review_plan"]["pre_apply_checklist"],
-        )
-        self.assertTrue(payload["operator_review_plan"]["safety"]["apply_requires_explicit_allow_action"])
         self.assertTrue(payload["safety"]["read_only_payload_build"])
         self.assertFalse(payload["safety"]["queries_database"])
         self.assertTrue(payload["safety"]["does_not_change_stock_universe"])
-
-    def test_payload_plan_has_no_operator_review_when_manual_action_is_allowed(self):
-        payload = promote.build_plan_from_report_payload(
-            hygiene_report(),
-            allow_action=["candidate_remove_from_stock_universe", "candidate_deactivate_or_symbol_mapping"],
-        )
-
-        self.assertEqual(payload["status"], "dry_run")
-        self.assertEqual(payload["operator_review_plan"]["status"], "not_required")
-        self.assertEqual(payload["operator_review_plan"]["review_required_count"], 0)
+        fetch_mock.assert_not_called()
+        apply_mock.assert_not_called()
 
     def test_apply_deactivates_selected_symbol_when_hash_matches(self):
         with tempfile.TemporaryDirectory() as td:
