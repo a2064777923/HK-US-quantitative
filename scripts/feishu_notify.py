@@ -4,16 +4,56 @@ Feishu Notification Helper
 Send trading signals and order notifications to Feishu
 """
 import json
-import urllib.request
 import os
+import urllib.request
 from datetime import datetime
 
-# Feishu config - read from environment or use defaults
-FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "cli_aa9dc590df389cdb")
-FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "0mSI7VevDJ00zmMZz0NZkcGuku3DsFJI")
-FEISHU_CHAT_ID = os.environ.get("FEISHU_CHAT_ID", "oc_5558f127a10b24c1322c85c2b236678f")
+FEISHU_ENV_FILE = os.environ.get("FEISHU_ENV_FILE", "/root/.quantmind_env")
+FEISHU_REQUIRED_KEYS = ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID")
 
 _token_cache = {"token": None, "expires": 0}
+
+
+def strip_env_value(value):
+    text = str(value or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        return text[1:-1].strip()
+    return text
+
+
+def env_values_from_file(path):
+    values = {}
+    if not path or not os.path.exists(path):
+        return values
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+    except Exception:
+        return values
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key in FEISHU_REQUIRED_KEYS:
+            parsed = strip_env_value(value)
+            if parsed:
+                values[key] = parsed
+    return values
+
+
+def feishu_config():
+    file_values = env_values_from_file(os.environ.get("FEISHU_ENV_FILE") or FEISHU_ENV_FILE)
+    return {
+        key: os.environ.get(key) or file_values.get(key) or ""
+        for key in FEISHU_REQUIRED_KEYS
+    }
+
 
 def get_tenant_token():
     """Get Feishu tenant access token"""
@@ -21,9 +61,14 @@ def get_tenant_token():
     now = time.time()
     if _token_cache["token"] and now < _token_cache["expires"]:
         return _token_cache["token"]
-    
+
+    config = feishu_config()
+    if not config["FEISHU_APP_ID"] or not config["FEISHU_APP_SECRET"]:
+        print("[FEISHU] Missing FEISHU_APP_ID or FEISHU_APP_SECRET")
+        return None
+
     url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-    data = json.dumps({"app_id": FEISHU_APP_ID, "app_secret": FEISHU_APP_SECRET}).encode()
+    data = json.dumps({"app_id": config["FEISHU_APP_ID"], "app_secret": config["FEISHU_APP_SECRET"]}).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -39,12 +84,16 @@ def get_tenant_token():
 
 def send_feishu_message(text, chat_id=None):
     """Send text message to Feishu chat"""
+    config = feishu_config()
     token = get_tenant_token()
     if not token:
         print("[FEISHU] No token, skipping")
         return False
-    
-    chat_id = chat_id or FEISHU_CHAT_ID
+
+    chat_id = chat_id or config["FEISHU_CHAT_ID"]
+    if not chat_id:
+        print("[FEISHU] Missing FEISHU_CHAT_ID")
+        return False
     url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id"
     body = json.dumps({
         "receive_id": chat_id,

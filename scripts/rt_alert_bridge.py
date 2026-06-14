@@ -5,14 +5,26 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 
 
 REMOTE_HOST = os.environ.get("RT_ALERT_REMOTE", "root@38.76.164.106")
 ALERT_FILE = os.environ.get("RT_ALERT_FILE", "/tmp/rt_signal_alert.json")
 ALERT_QUEUE_FILE = os.environ.get("RT_ALERT_QUEUE_FILE", "/tmp/rt_signal_alerts.jsonl")
 SENT_FILE = os.environ.get("RT_ALERT_SENT_FILE", "/tmp/rt_signal_sent.json")
+POSITION_REVIEW_SENT_FILE = os.environ.get("RT_POSITION_REVIEW_SENT_FILE", "/tmp/rt_position_review_sent.json")
+HERMES_REVIEW_PACKET_FILE = os.environ.get("HERMES_REVIEW_PACKET_FILE", "/tmp/hermes_signal_review_packet.json")
 EXECUTION_MODE = os.environ.get("RT_ALERT_EXECUTION_MODE", "notify").lower()
 REQUIRE_CONFIRMED = os.environ.get("RT_ALERT_REQUIRE_CONFIRMED", "1") != "0"
+SEND_FEISHU = os.environ.get("RT_ALERT_SEND_FEISHU", "0") == "1"
+INCLUDE_POSITION_REVIEW = os.environ.get("RT_ALERT_INCLUDE_POSITION_REVIEW", "1") != "0"
+POSITION_REVIEW_URGENCY = {
+    item.strip().lower()
+    for item in os.environ.get("RT_POSITION_REVIEW_URGENCY", "high").split(",")
+    if item.strip()
+}
+POSITION_REVIEW_LIMIT = int(os.environ.get("RT_POSITION_REVIEW_LIMIT", "3"))
+POSITION_REVIEW_REMINDER_HOURS = float(os.environ.get("RT_POSITION_REVIEW_REMINDER_HOURS", "6"))
 
 PASSTHROUGH_ENV_KEYS = (
     "RT_ORDER_EXECUTE_PILOT_ENABLED",
@@ -60,6 +72,17 @@ def read_text_file(path):
         except Exception:
             return ""
     return run_cmd(f"cat {shlex.quote(path)} 2>/dev/null")
+
+
+def load_json_file(path, default):
+    raw = read_text_file(path)
+    if not raw:
+        return default
+    try:
+        loaded = json.loads(raw)
+        return loaded if loaded is not None else default
+    except Exception:
+        return default
 
 
 def write_text_file(path, text):
@@ -119,6 +142,20 @@ def write_sent(alerts):
     write_text_file(SENT_FILE, payload)
 
 
+def write_position_review_sent(rows):
+    payload = json.dumps(rows[-1000:], ensure_ascii=False)
+    write_text_file(POSITION_REVIEW_SENT_FILE, payload)
+
+
+def sent_record_time(record):
+    if not isinstance(record, dict):
+        return 0.0
+    try:
+        return float(record.get("sent_at_epoch") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def fmt_number(value):
     try:
         return f"{float(value):.0f}"
@@ -151,6 +188,16 @@ def summarize_intake(raw):
         else:
             lines.append(f"{status}: {sid} hermes={hermes.get('status','?')}{backend_text}")
     return "\n".join(lines)
+
+
+def send_feishu_text(text):
+    try:
+        from feishu_notify import send_feishu_message
+
+        return bool(send_feishu_message(text))
+    except Exception as exc:
+        print(f"[FEISHU] bridge delivery failed: {exc}", file=sys.stderr)
+        return False
 
 
 def env_assignments(keys):
@@ -188,6 +235,96 @@ def actionable_alerts(alerts):
     return rows
 
 
+def position_review_items(packet):
+    if not INCLUDE_POSITION_REVIEW:
+        return []
+    review = packet.get("position_review") if isinstance(packet, dict) else {}
+    if not isinstance(review, dict):
+        return []
+    items = review.get("items")
+    if not isinstance(items, list):
+        return []
+    rows = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        review_id = item.get("review_id")
+        if not review_id:
+            continue
+        urgency = str(item.get("urgency") or "").lower()
+        if POSITION_REVIEW_URGENCY and urgency not in POSITION_REVIEW_URGENCY:
+            continue
+        rows.append(item)
+    rows.sort(key=lambda row: {"high": 0, "medium": 1, "low": 2}.get(str(row.get("urgency") or "").lower(), 9))
+    return rows[: max(POSITION_REVIEW_LIMIT, 0)]
+
+
+def pending_position_reviews(packet, sent_rows, now_epoch=None):
+    now_epoch = time.time() if now_epoch is None else now_epoch
+    sent_by_id = {
+        row.get("review_id"): sent_record_time(row)
+        for row in sent_rows
+        if isinstance(row, dict) and row.get("review_id")
+    }
+    reminder_seconds = POSITION_REVIEW_REMINDER_HOURS * 3600
+    pending = []
+    for item in position_review_items(packet):
+        review_id = item.get("review_id")
+        last_sent = sent_by_id.get(review_id)
+        if last_sent is None or (reminder_seconds > 0 and now_epoch - last_sent >= reminder_seconds):
+            pending.append(item)
+    return pending
+
+
+def fmt_pct(value):
+    try:
+        return f"{float(value):+.1f}%"
+    except Exception:
+        return "?"
+
+
+def build_position_review_output(items, packet):
+    audit = packet.get("position_judgment_audit") if isinstance(packet.get("position_judgment_audit"), dict) else {}
+    coverage = audit.get("coverage") if isinstance(audit.get("coverage"), dict) else {}
+    lines = ["🧭 **Hermes持倉風險審核**"]
+    unjudged = coverage.get("unjudged_high_urgency_review_count")
+    if unjudged is not None:
+        lines.append(f"未審核高優先級持倉：{unjudged}")
+    for item in items:
+        position = item.get("position") if isinstance(item.get("position"), dict) else {}
+        latest_signal = item.get("latest_signal") if isinstance(item.get("latest_signal"), dict) else {}
+        digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+        attention = digest.get("position_attention") if isinstance(digest.get("position_attention"), list) else []
+        lines.append("")
+        lines.append(
+            f"⚠️ **{item.get('symbol','?')}** {item.get('role','?')} "
+            f"urgency={item.get('urgency','?')} action={item.get('recommended_action','?')}"
+        )
+        lines.append(
+            "├─ 持倉：qty={qty} pnl={pnl} stop_distance={stop}".format(
+                qty=position.get("quantity", "?"),
+                pnl=fmt_pct(position.get("unrealized_pnl_pct")),
+                stop=fmt_pct(position.get("stop_distance_pct")),
+            )
+        )
+        if latest_signal:
+            lines.append(
+                "├─ 最新信號：{side} score={score}".format(
+                    side=latest_signal.get("side", "?"),
+                    score=latest_signal.get("score", "?"),
+                )
+            )
+        if attention:
+            lines.append(f"├─ 必須回應風險：{','.join(str(code) for code in attention[:6])}")
+        lines.append(
+            "├─ 審核ID：review_id={review_id} judgment_file=/tmp/hermes_position_judgments.jsonl".format(
+                review_id=item.get("review_id")
+            )
+        )
+        lines.append("└─ 審核要求：context_review五項=true；position_attention_acknowledged=true；allowed=hold|watch|reduce|exit|trail_stop")
+    return "\n".join(lines)
+
+
 def build_output(actionable, execution_mode):
     lines = ["🎯 **實時操作信號**\n"]
     for alert in actionable:
@@ -222,10 +359,36 @@ def build_output(actionable, execution_mode):
     return "\n".join(lines)
 
 
+def mark_alerts_sent(sent, new_alerts):
+    sent.extend(new_alerts)
+    write_sent(sent)
+
+
+def mark_position_reviews_sent(sent, items):
+    now_epoch = time.time()
+    existing = [row for row in sent if isinstance(row, dict)]
+    existing_keys = {row.get("review_id") for row in existing if row.get("review_id")}
+    for item in items:
+        review_id = item.get("review_id")
+        if not review_id:
+            continue
+        row = {
+            "review_id": review_id,
+            "symbol": item.get("symbol"),
+            "urgency": item.get("urgency"),
+            "recommended_action": item.get("recommended_action"),
+            "sent_at_epoch": now_epoch,
+        }
+        if review_id in existing_keys:
+            existing = [old for old in existing if old.get("review_id") != review_id]
+        existing.append(row)
+        existing_keys.add(review_id)
+    write_position_review_sent(existing)
+
+
 def main():
     alerts = load_alerts()
-    if not alerts:
-        return 0
+    packet = load_json_file(HERMES_REVIEW_PACKET_FILE, {})
 
     sent_raw = read_text_file(SENT_FILE)
     try:
@@ -237,18 +400,38 @@ def main():
 
     sent_keys = {alert_key(alert) for alert in sent if isinstance(alert, dict)}
     new_alerts = [alert for alert in alerts if alert_key(alert) not in sent_keys]
-    if not new_alerts:
-        return 0
 
     actionable = actionable_alerts(new_alerts)
-    if not actionable:
-        sent.extend(new_alerts)
-        write_sent(sent)
+    position_sent_raw = read_text_file(POSITION_REVIEW_SENT_FILE)
+    try:
+        position_sent = json.loads(position_sent_raw) if position_sent_raw else []
+    except Exception:
+        position_sent = []
+    if not isinstance(position_sent, list):
+        position_sent = []
+    pending_reviews = pending_position_reviews(packet, position_sent)
+
+    if not new_alerts and not pending_reviews:
         return 0
 
-    print(build_output(actionable, EXECUTION_MODE))
-    sent.extend(new_alerts)
-    write_sent(sent)
+    outputs = []
+    if actionable:
+        outputs.append(build_output(actionable, EXECUTION_MODE))
+    if pending_reviews:
+        outputs.append(build_position_review_output(pending_reviews, packet))
+
+    text = "\n\n".join(outputs)
+    if text:
+        print(text)
+        if SEND_FEISHU and not send_feishu_text(text):
+            return 2
+
+    if actionable:
+        mark_alerts_sent(sent, new_alerts)
+    elif new_alerts:
+        mark_alerts_sent(sent, new_alerts)
+    if pending_reviews:
+        mark_position_reviews_sent(position_sent, pending_reviews)
     return 0
 
 
