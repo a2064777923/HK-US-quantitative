@@ -2829,6 +2829,7 @@ def v5_local_replay_brief(v5_local_replay_payload):
             "downgraded_directional_count": alert_summary.get("downgraded_directional_count"),
             "by_signal_type": alert_summary.get("by_signal_type") or {},
             "by_candidate_signal_type": alert_summary.get("by_candidate_signal_type") or {},
+            "by_factor_category": alert_summary.get("by_factor_category") or {},
             "top_triggers": dict(list((alert_summary.get("by_trigger") or {}).items())[:8]),
             "execution_blocked_reason_counts": dict(
                 list((alert_summary.get("execution_blocked_reason_counts") or {}).items())[:8]
@@ -2853,6 +2854,32 @@ def v5_local_replay_brief(v5_local_replay_payload):
             "schema": replay_breakdown.get("schema") or "v5_local_replay_breakdown_v1",
             "summary": replay_breakdown.get("summary") or {},
             "market_quality": (replay_breakdown.get("market_quality") or [])[:4],
+            "factor_groups": (replay_breakdown.get("factor_groups") or [])[:4],
+            "top_noisy_factor_groups": [
+                {
+                    "key": item.get("key"),
+                    "market": item.get("market"),
+                    "candidate_signal_type": item.get("candidate_signal_type"),
+                    "factor_category": item.get("factor_category"),
+                    "status": item.get("status"),
+                    "reasons": item.get("reasons") or [],
+                    "metrics": {
+                        "alert_count": (item.get("metrics") or {}).get("alert_count"),
+                        "alert_rate_per_100_bars": (item.get("metrics") or {}).get("alert_rate_per_100_bars"),
+                        "execution_candidate_rate_per_100_bars": (item.get("metrics") or {}).get(
+                            "execution_candidate_rate_per_100_bars"
+                        ),
+                        "directional_confirmation_ratio_pct": (item.get("metrics") or {}).get(
+                            "directional_confirmation_ratio_pct"
+                        ),
+                        "directional_downgrade_ratio_pct": (item.get("metrics") or {}).get(
+                            "directional_downgrade_ratio_pct"
+                        ),
+                    },
+                }
+                for item in (replay_breakdown.get("top_noisy_factor_groups") or [])[:8]
+                if isinstance(item, dict)
+            ],
             "top_noisy_triggers": [
                 {
                     "key": item.get("key"),

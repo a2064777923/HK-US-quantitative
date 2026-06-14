@@ -251,6 +251,19 @@ def alert_sample(alert, replay_date):
     }
 
 
+def alert_factor_categories(alert):
+    candidate_signal_type = str(alert.get("candidate_signal_type") or "").upper()
+    if candidate_signal_type not in ("BUY", "SELL"):
+        return []
+    categories = set()
+    for contribution in v5.normalize_score_contributions(alert.get("factor_contributions")):
+        direction = str(contribution.get("direction") or "").upper()
+        category = str(contribution.get("category") or "").strip().lower()
+        if direction == candidate_signal_type and category:
+            categories.add(category)
+    return sorted(categories)
+
+
 def replay_symbol(symbol, rows, args, strategy_config, strategy_context):
     indicators = v5.IncrementalIndicators(symbol)
     trigger = v5.TriggerEngine(strategy_config=strategy_config, strategy_context=strategy_context)
@@ -312,6 +325,7 @@ def summarize_alerts(symbol_reports, alert_sample_limit=DEFAULT_ALERT_SAMPLE_LIM
     by_candidate_signal_type = Counter()
     by_trigger = Counter()
     by_market = Counter()
+    by_factor_category = Counter()
     execution_blocked_reasons = Counter()
     risk_geometry_reasons = Counter()
     suppressed_reasons = Counter()
@@ -330,6 +344,7 @@ def summarize_alerts(symbol_reports, alert_sample_limit=DEFAULT_ALERT_SAMPLE_LIM
             by_candidate_signal_type[candidate_signal_type] += 1
             by_trigger[str(alert.get("trigger") or "UNKNOWN")] += 1
             by_market[str(alert.get("market") or report.get("market") or "UNKNOWN")] += 1
+            by_factor_category.update(f"{candidate_signal_type}:{category}" for category in alert_factor_categories(alert))
             symbol_day_key = (
                 str(alert.get("market") or report.get("market") or "UNKNOWN"),
                 str(alert.get("symbol") or report.get("symbol") or "UNKNOWN"),
@@ -360,6 +375,7 @@ def summarize_alerts(symbol_reports, alert_sample_limit=DEFAULT_ALERT_SAMPLE_LIM
         "by_candidate_signal_type": dict(by_candidate_signal_type),
         "by_trigger": dict(by_trigger.most_common()),
         "by_market": dict(by_market),
+        "by_factor_category": dict(by_factor_category.most_common()),
         "execution_blocked_reason_counts": dict(execution_blocked_reasons.most_common()),
         "risk_geometry_reason_counts": dict(risk_geometry_reasons.most_common()),
         "suppressed_directional_reason_counts": dict(suppressed_reasons.most_common()),
@@ -561,6 +577,18 @@ def trigger_group_quality_row(group, counts, denominator_bars, total_alerts):
     }
 
 
+def factor_group_quality_row(group, counts, denominator_bars, total_alerts):
+    row = trigger_group_quality_row(group, counts, denominator_bars, total_alerts)
+    row.pop("trigger", None)
+    row["factor_category"] = group[2]
+    row["key"] = f"{group[0]}:{group[1]}:{group[2]}"
+    row["reasons"] = [
+        reason.replace("trigger_", "factor_")
+        for reason in row.get("reasons") or []
+    ]
+    return row
+
+
 def market_quality_row(market, counts, denominator_bars):
     candidate_counts = counts.get("candidate_counts") or Counter()
     directional_candidate_count = (candidate_counts.get("BUY") or 0) + (candidate_counts.get("SELL") or 0)
@@ -605,6 +633,7 @@ def replay_breakdown(symbol_reports, total_evaluated_bars, alert_summary):
     market_bars = Counter()
     market_counts = defaultdict(lambda: {"candidate_counts": Counter()})
     trigger_counts = defaultdict(Counter)
+    factor_counts = defaultdict(Counter)
     total_alerts = (alert_summary or {}).get("alert_count") or 0
     for report in symbol_reports:
         market = str(report.get("market") or "UNKNOWN")
@@ -618,21 +647,31 @@ def replay_breakdown(symbol_reports, total_evaluated_bars, alert_summary):
             trigger_counts[group]["alert_count"] += 1
             market_counts[alert_market]["alert_count"] = market_counts[alert_market].get("alert_count", 0) + 1
             market_counts[alert_market]["candidate_counts"][candidate_signal_type] += 1
+            factor_categories = alert_factor_categories(alert)
+            for factor_category in factor_categories:
+                factor_group = (alert_market, candidate_signal_type, factor_category)
+                factor_counts[factor_group]["alert_count"] += 1
             if alert.get("execution_candidate") is True:
                 trigger_counts[group]["execution_candidate_count"] += 1
                 market_counts[alert_market]["execution_candidate_count"] = (
                     market_counts[alert_market].get("execution_candidate_count", 0) + 1
                 )
+                for factor_category in factor_categories:
+                    factor_counts[(alert_market, candidate_signal_type, factor_category)]["execution_candidate_count"] += 1
             if candidate_signal_type in ("BUY", "SELL") and alert.get("confirmed") is True:
                 trigger_counts[group]["confirmed_directional_count"] += 1
                 market_counts[alert_market]["confirmed_directional_count"] = (
                     market_counts[alert_market].get("confirmed_directional_count", 0) + 1
                 )
+                for factor_category in factor_categories:
+                    factor_counts[(alert_market, candidate_signal_type, factor_category)]["confirmed_directional_count"] += 1
             if candidate_signal_type in ("BUY", "SELL") and str(alert.get("signal_type") or "").upper() != candidate_signal_type:
                 trigger_counts[group]["downgraded_directional_count"] += 1
                 market_counts[alert_market]["downgraded_directional_count"] = (
                     market_counts[alert_market].get("downgraded_directional_count", 0) + 1
                 )
+                for factor_category in factor_categories:
+                    factor_counts[(alert_market, candidate_signal_type, factor_category)]["downgraded_directional_count"] += 1
 
     trigger_groups = [
         trigger_group_quality_row(
@@ -656,19 +695,41 @@ def replay_breakdown(symbol_reports, total_evaluated_bars, alert_summary):
         for market, counts in market_counts.items()
     ]
     market_quality = sorted(market_quality, key=lambda row: row["market"])
+    factor_groups = [
+        factor_group_quality_row(
+            group,
+            counts,
+            market_bars.get(group[0]) or total_evaluated_bars,
+            total_alerts,
+        )
+        for group, counts in factor_counts.items()
+    ]
+    factor_groups = sorted(
+        factor_groups,
+        key=lambda row: (
+            0 if row["status"] == "WARN" else 1,
+            -(row["metrics"].get("alert_count") or 0),
+            row["key"],
+        ),
+    )
     return {
         "schema": "v5_local_replay_breakdown_v1",
         "market_quality": market_quality,
         "trigger_groups": trigger_groups,
+        "factor_groups": factor_groups,
         "top_noisy_triggers": [row for row in trigger_groups if row["status"] == "WARN"][:12],
+        "top_noisy_factor_groups": [row for row in factor_groups if row["status"] == "WARN"][:12],
         "summary": {
             "trigger_group_count": len(trigger_groups),
             "warn_trigger_group_count": sum(1 for row in trigger_groups if row["status"] == "WARN"),
+            "factor_group_count": len(factor_groups),
+            "warn_factor_group_count": sum(1 for row in factor_groups if row["status"] == "WARN"),
             "market_count": len(market_quality),
             "warn_market_count": sum(1 for row in market_quality if row["status"] == "WARN"),
         },
         "hermes_use": [
             "Use trigger_groups to identify which v5 triggers are noisy in local replay before proposing threshold changes.",
+            "Use factor_groups to see which factor categories are overrepresented in replay alerts before changing multi-factor logic.",
             "Use market_quality to check whether HK and US behave differently before applying a global trigger policy.",
             "Do not treat repeated trigger groups as independent evidence without forward outcome and simulation validation.",
         ],
@@ -909,6 +970,13 @@ def text_report(payload):
             for row in noisy[:5]
         ]
         lines.append("Top noisy triggers: " + ", ".join(sample))
+    noisy_factors = breakdown.get("top_noisy_factor_groups") or []
+    if noisy_factors:
+        sample = [
+            f"{row.get('key')}:{(row.get('metrics') or {}).get('alert_rate_per_100_bars')}/100"
+            for row in noisy_factors[:5]
+        ]
+        lines.append("Top noisy factors: " + ", ".join(sample))
     warnings = [item.get("code") for item in payload.get("checks") or [] if item.get("status") in {"WARN", "FAIL"}]
     if warnings:
         lines.append("Warnings: " + ", ".join(warnings[:12]))

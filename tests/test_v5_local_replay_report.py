@@ -147,6 +147,10 @@ class V5LocalReplayReportTests(unittest.TestCase):
                             "candidate_signal_type": "BUY",
                             "confirmed": False,
                             "execution_candidate": False,
+                            "factor_contributions": [
+                                {"category": "trend", "direction": "BUY", "score_delta": 0.4, "reason": "短均線偏強"},
+                                {"category": "rsi", "direction": "SELL", "score_delta": -0.2, "reason": "RSI偏弱(40)"},
+                            ],
                         },
                     )
                     for _ in range(8)
@@ -162,6 +166,10 @@ class V5LocalReplayReportTests(unittest.TestCase):
                             "candidate_signal_type": "BUY",
                             "confirmed": True,
                             "execution_candidate": True,
+                            "factor_contributions": [
+                                {"category": "bollinger", "direction": "BUY", "score_delta": 0.3, "reason": "觸及布林下軌"},
+                                {"category": "macd", "direction": "BUY", "score_delta": 0.1, "reason": "MACD柱轉正"},
+                            ],
                         },
                     )
                     for _ in range(3)
@@ -174,12 +182,22 @@ class V5LocalReplayReportTests(unittest.TestCase):
 
         self.assertEqual(breakdown["schema"], "v5_local_replay_breakdown_v1")
         self.assertEqual(breakdown["summary"]["trigger_group_count"], 2)
+        self.assertEqual(alert_summary["by_factor_category"]["BUY:trend"], 8)
+        self.assertNotIn("BUY:rsi", alert_summary["by_factor_category"])
+        self.assertEqual(alert_summary["by_factor_category"]["BUY:bollinger"], 3)
+        self.assertEqual(breakdown["summary"]["factor_group_count"], 3)
         noisy = breakdown["top_noisy_triggers"][0]
         self.assertEqual(noisy["key"], "HK:BUY:站上MA5")
         self.assertIn("trigger_replay_alert_density_high", noisy["reasons"])
         self.assertIn("trigger_directional_confirmation_ratio_low", noisy["reasons"])
         self.assertIn("trigger_directional_downgrade_ratio_high", noisy["reasons"])
         self.assertEqual(noisy["metrics"]["alert_rate_per_100_bars"], 8.0)
+        noisy_factor = breakdown["top_noisy_factor_groups"][0]
+        self.assertEqual(noisy_factor["key"], "HK:BUY:trend")
+        self.assertEqual(noisy_factor["factor_category"], "trend")
+        self.assertNotIn("trigger", noisy_factor)
+        self.assertIn("factor_replay_alert_density_high", noisy_factor["reasons"])
+        self.assertEqual(noisy_factor["metrics"]["alert_rate_per_100_bars"], 8.0)
         self.assertEqual(breakdown["market_quality"][0]["market"], "HK")
 
     def test_main_writes_report_and_text_mode(self):

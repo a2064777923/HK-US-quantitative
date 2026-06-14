@@ -194,6 +194,7 @@ def v5_local_replay(status="V5_REPLAY_RESEARCH_ONLY", promotion_ready=False):
             "downgraded_directional_count": 120,
             "by_signal_type": {"WATCH": 463, "BUY": 37},
             "by_candidate_signal_type": {"BUY": 260, "SELL": 160, "WATCH": 80},
+            "by_factor_category": {"BUY:trend": 180, "BUY:macd": 90},
             "by_trigger": {"RSI超賣": 180, "布林下軌突破": 110},
             "execution_blocked_reason_counts": {"not_confirmed": 90},
             "risk_geometry_reason_counts": {"missing_or_invalid_atr": 12},
@@ -215,6 +216,8 @@ def v5_local_replay(status="V5_REPLAY_RESEARCH_ONLY", promotion_ready=False):
             "summary": {
                 "trigger_group_count": 12,
                 "warn_trigger_group_count": 9,
+                "factor_group_count": 6,
+                "warn_factor_group_count": 4,
                 "market_count": 2,
                 "warn_market_count": 2,
             },
@@ -240,6 +243,40 @@ def v5_local_replay(status="V5_REPLAY_RESEARCH_ONLY", promotion_ready=False):
                     "trigger": "站上MA5",
                     "status": "WARN",
                     "reasons": ["trigger_replay_alert_density_high"],
+                    "metrics": {
+                        "alert_count": 100,
+                        "alert_rate_per_100_bars": 10.0,
+                        "execution_candidate_rate_per_100_bars": 4.0,
+                        "directional_confirmation_ratio_pct": 25.4,
+                        "directional_downgrade_ratio_pct": 74.6,
+                    },
+                }
+            ],
+            "factor_groups": [
+                {
+                    "key": "HK:BUY:trend",
+                    "market": "HK",
+                    "candidate_signal_type": "BUY",
+                    "factor_category": "trend",
+                    "status": "WARN",
+                    "reasons": ["factor_replay_alert_density_high"],
+                    "metrics": {
+                        "alert_count": 100,
+                        "alert_rate_per_100_bars": 10.0,
+                        "execution_candidate_rate_per_100_bars": 4.0,
+                        "directional_confirmation_ratio_pct": 25.4,
+                        "directional_downgrade_ratio_pct": 74.6,
+                    },
+                }
+            ],
+            "top_noisy_factor_groups": [
+                {
+                    "key": "HK:BUY:trend",
+                    "market": "HK",
+                    "candidate_signal_type": "BUY",
+                    "factor_category": "trend",
+                    "status": "WARN",
+                    "reasons": ["factor_replay_alert_density_high"],
                     "metrics": {
                         "alert_count": 100,
                         "alert_rate_per_100_bars": 10.0,
@@ -3069,12 +3106,16 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(replay["hermes_use"], "v5_replay_research_context_only")
         self.assertEqual(replay["scope"]["symbol_count"], 95)
         self.assertEqual(replay["alerts"]["execution_candidate_count"], 37)
+        self.assertEqual(replay["alerts"]["by_factor_category"]["BUY:trend"], 180)
         self.assertEqual(replay["quality"]["status"], "WARN")
         self.assertEqual(replay["quality"]["alert_rate_per_100_bars"], 66.76)
         self.assertEqual(replay["quality"]["directional_confirmation_ratio_pct"], 25.4)
         self.assertEqual(replay["quality"]["directional_downgrade_ratio_pct"], 74.6)
         self.assertEqual(replay["breakdown"]["summary"]["warn_trigger_group_count"], 9)
+        self.assertEqual(replay["breakdown"]["summary"]["warn_factor_group_count"], 4)
         self.assertEqual(replay["breakdown"]["top_noisy_triggers"][0]["key"], "HK:BUY:站上MA5")
+        self.assertEqual(replay["breakdown"]["top_noisy_factor_groups"][0]["key"], "HK:BUY:trend")
+        self.assertEqual(replay["breakdown"]["top_noisy_factor_groups"][0]["factor_category"], "trend")
         self.assertFalse(replay["promotion_ready"])
         self.assertTrue(replay["storage_policy"]["raw_data_local_only"])
         replay_strategy = brief["v5_replay_strategy_review"]
