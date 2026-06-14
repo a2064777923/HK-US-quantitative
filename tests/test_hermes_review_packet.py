@@ -112,6 +112,47 @@ def local_backtest_reliability(status="RESEARCH_USEFUL_WITH_LIMITATIONS", promot
     }
 
 
+def factor_contract_alignment(status="PARTIAL_ALIGNMENT_REQUIRES_CAUTION", promotion_ready=False):
+    return {
+        "schema": "factor_contract_alignment_report_v1",
+        "generated_at": "2026-06-14T12:40:00",
+        "summary": {
+            "overall_status": status,
+            "promotion_ready": promotion_ready,
+            "hermes_use": "research_alignment_context_only",
+            "check_status_counts": {"WARN": 8},
+            "message": "local backtests are not direct v5 replay proof",
+        },
+        "contracts": {
+            "v5": {
+                "name": "rt_signal_engine_v5",
+                "scoring_method": "IncrementalIndicator.get_score",
+                "thresholds": {"buy_confirmation_min_score": 0.45, "sell_confirmation_max_score": -0.45},
+                "trigger_model": {"event_triggered": True, "score_confirmation": True},
+                "risk_model": {"execution_candidate": True, "min_rr_ratio": True},
+                "data_basis": {"completed_daily_with_realtime_quote": True},
+            },
+            "backtests": [
+                {
+                    "name": "portfolio_backtest_realistic",
+                    "scoring_method": "local score()",
+                    "thresholds": {"buy_score": 0.65, "sell_score": 0.35},
+                    "trigger_model": {"periodic_score_scan": True},
+                    "risk_model": {"trailing_chandelier_stop": True, "execution_candidate": False},
+                    "data_basis": {"daily_only": True},
+                }
+            ],
+        },
+        "checks": [
+            {
+                "status": "WARN",
+                "code": "portfolio_backtest_realistic:score_thresholds_drift",
+                "detail": "Backtest score thresholds differ from v5 full-score confirmation thresholds.",
+            }
+        ],
+    }
+
+
 def watch_alert(signal_id="watch-1"):
     item = alert(signal_id)
     item["signal_type"] = "WATCH"
@@ -807,6 +848,7 @@ class HermesReviewPacketTests(unittest.TestCase):
                 "counts": {"judgment_count": 0},
             },
             local_backtest_reliability_payload=local_backtest_reliability(),
+            factor_contract_alignment_payload=factor_contract_alignment(),
         )
 
         self.assertEqual(payload["schema"], "hermes_signal_review_packet_v1")
@@ -972,8 +1014,21 @@ class HermesReviewPacketTests(unittest.TestCase):
         )
         self.assertFalse(payload["strategy_learning_brief"]["local_backtest_reliability"]["promotion_ready"])
         self.assertEqual(
+            payload["strategy_learning_brief"]["factor_contract_alignment"]["schema"],
+            "factor_contract_alignment_report_v1",
+        )
+        self.assertEqual(
+            payload["strategy_learning_brief"]["factor_contract_alignment"]["status"],
+            "PARTIAL_ALIGNMENT_REQUIRES_CAUTION",
+        )
+        self.assertFalse(payload["strategy_learning_brief"]["factor_contract_alignment"]["promotion_ready"])
+        self.assertEqual(
             payload["local_backtest_reliability"]["summary"]["best_backtest_by_sharpe"],
             "portfolio_backtest_realistic",
+        )
+        self.assertEqual(
+            payload["factor_contract_alignment"]["summary"]["overall_status"],
+            "PARTIAL_ALIGNMENT_REQUIRES_CAUTION",
         )
         self.assertEqual(payload["strategy_learning_brief"]["sample_scope"]["strategy_config_id"], "cfg-1")
         self.assertEqual(payload["strategy_learning_brief"]["intake_coverage"]["directional_pct"], 100.0)
@@ -1098,6 +1153,7 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(payload["intraday_kline_batch"]["plan_hash"], "intraday-plan")
         self.assertTrue(any("Intraday K-line batch" in note for note in payload["operator_notes"]))
         self.assertTrue(any("Local backtest reliability is read-only research evidence" in note for note in payload["operator_notes"]))
+        self.assertTrue(any("Factor contract alignment is read-only research evidence" in note for note in payload["operator_notes"]))
         producer_digest = payload["review_items"][0]["context_digest"]["intraday_minute_producer"]
         self.assertEqual(producer_digest["schema"], "hermes_review_item_intraday_minute_producer_digest_v1")
         self.assertEqual(producer_digest["status"], "ACTIONABLE")
@@ -1120,6 +1176,14 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(
             payload["strategy_learning_brief"]["local_backtest_reliability"]["dataset"]["us_feed"],
             "iex",
+        )
+        self.assertEqual(
+            payload["strategy_learning_brief"]["factor_contract_alignment"]["v5_contract"]["thresholds"]["buy_confirmation_min_score"],
+            0.45,
+        )
+        self.assertEqual(
+            payload["strategy_learning_brief"]["factor_contract_alignment"]["warn_or_fail_checks"][0]["code"],
+            "portfolio_backtest_realistic:score_thresholds_drift",
         )
         timeframe_policy = payload["review_items"][0]["context_digest"]["intraday_timeframe_policy"]
         self.assertEqual(
@@ -2630,7 +2694,11 @@ class HermesReviewPacketTests(unittest.TestCase):
         )
 
     def test_strategy_learning_brief_local_backtest_reliability_is_read_only_optional_context(self):
-        brief = packet.strategy_learning_brief({}, local_backtest_reliability_payload=local_backtest_reliability())
+        brief = packet.strategy_learning_brief(
+            {},
+            local_backtest_reliability_payload=local_backtest_reliability(),
+            factor_contract_alignment_payload=factor_contract_alignment(),
+        )
 
         local = brief["local_backtest_reliability"]
         self.assertTrue(local["read_only"])
@@ -2640,11 +2708,21 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(local["dataset"]["symbol_count"], 95)
         self.assertEqual(local["backtests"][0]["sharpe"], 1.17)
         self.assertFalse(local["promotion_ready"])
+        alignment = brief["factor_contract_alignment"]
+        self.assertTrue(alignment["read_only"])
+        self.assertFalse(alignment["submits_orders"])
+        self.assertEqual(alignment["status"], "PARTIAL_ALIGNMENT_REQUIRES_CAUTION")
+        self.assertEqual(alignment["hermes_use"], "research_alignment_context_only")
+        self.assertFalse(alignment["promotion_ready"])
 
         missing = packet.strategy_learning_brief({})["local_backtest_reliability"]
         self.assertEqual(missing["status"], "MISSING")
         self.assertTrue(missing["read_only"])
         self.assertFalse(missing["submits_orders"])
+        missing_alignment = packet.strategy_learning_brief({})["factor_contract_alignment"]
+        self.assertEqual(missing_alignment["status"], "MISSING")
+        self.assertTrue(missing_alignment["read_only"])
+        self.assertFalse(missing_alignment["submits_orders"])
 
     def test_health_fail_forces_reject_or_hold_even_when_intake_has_plan(self):
         health = {"status": "FAIL", "checked_at": "2026-06-12T10:01:00", "checks": []}

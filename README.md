@@ -124,6 +124,15 @@ python3 scripts/local_backtest_reliability_report.py \
 
 這份報告只用來支撐研究判斷，不會改 v5、Hermes、模擬倉或任何 cron。
 
+檢查本地回測與 v5 實時引擎的因子契約是否對齊：
+
+```bash
+python3 scripts/factor_contract_alignment_report.py \
+  --output /tmp/factor_contract_alignment_report.json --text
+```
+
+若報告顯示 `PARTIAL_ALIGNMENT_REQUIRES_CAUTION`，代表本地回測仍可作研究基線，但不能直接當成 v5 replay 證據。
+
 ## 🚀 部署
 
 ### 依賴

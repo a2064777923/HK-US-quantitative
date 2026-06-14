@@ -89,6 +89,10 @@ LOCAL_BACKTEST_RELIABILITY_REPORT_FILE = os.environ.get(
     "LOCAL_BACKTEST_RELIABILITY_REPORT_FILE",
     "/tmp/local_backtest_reliability_report.json",
 )
+FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE = os.environ.get(
+    "FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE",
+    "/tmp/factor_contract_alignment_report.json",
+)
 OPERATOR_ACTION_QUEUE_REPORT_FILE = os.environ.get(
     "OPERATOR_ACTION_QUEUE_REPORT_FILE",
     "/tmp/operator_action_queue_report.json",
@@ -2692,6 +2696,49 @@ def local_backtest_reliability_brief(local_backtest_reliability_payload):
     }
 
 
+def factor_contract_alignment_brief(factor_contract_alignment_payload):
+    payload = factor_contract_alignment_payload if isinstance(factor_contract_alignment_payload, dict) else {}
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    contracts = payload.get("contracts") if isinstance(payload.get("contracts"), dict) else {}
+    checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
+    v5 = contracts.get("v5") if isinstance(contracts.get("v5"), dict) else {}
+    backtests = contracts.get("backtests") if isinstance(contracts.get("backtests"), list) else []
+    warn_or_fail = [item for item in checks if isinstance(item, dict) and item.get("status") in ("WARN", "FAIL")]
+    return {
+        "read_only": True,
+        "submits_orders": False,
+        "schema": payload.get("schema") or "factor_contract_alignment_report_v1",
+        "status": summary.get("overall_status") or "MISSING",
+        "promotion_ready": summary.get("promotion_ready"),
+        "hermes_use": summary.get("hermes_use") or "research_alignment_context_only",
+        "v5_contract": {
+            "scoring_method": v5.get("scoring_method"),
+            "thresholds": v5.get("thresholds") or {},
+            "trigger_model": v5.get("trigger_model") or {},
+            "risk_model": v5.get("risk_model") or {},
+            "data_basis": v5.get("data_basis") or {},
+        },
+        "backtests": [
+            {
+                "name": item.get("name"),
+                "scoring_method": item.get("scoring_method"),
+                "thresholds": item.get("thresholds") or {},
+                "trigger_model": item.get("trigger_model") or {},
+                "risk_model": item.get("risk_model") or {},
+                "data_basis": item.get("data_basis") or {},
+            }
+            for item in backtests
+            if isinstance(item, dict)
+        ],
+        "check_status_counts": summary.get("check_status_counts") or {},
+        "warn_or_fail_checks": [
+            {"code": item.get("code"), "status": item.get("status"), "detail": item.get("detail")}
+            for item in warn_or_fail[:8]
+        ],
+        "hermes_note": summary.get("message") or "factor_contract_alignment_is_research_context_only",
+    }
+
+
 def number_or_none(value):
     try:
         if value in (None, ""):
@@ -2776,6 +2823,7 @@ def strategy_learning_brief(
     watchlist_diff_payload=None,
     outcome_report_payload=None,
     local_backtest_reliability_payload=None,
+    factor_contract_alignment_payload=None,
 ):
     payload = strategy_learning_payload if isinstance(strategy_learning_payload, dict) else {}
     watchlist_diff_payload = watchlist_diff_payload if isinstance(watchlist_diff_payload, dict) else {}
@@ -3021,6 +3069,7 @@ def strategy_learning_brief(
         },
         "hermes_alpha_evidence": alpha_summary,
         "local_backtest_reliability": local_backtest_reliability_brief(local_backtest_reliability_payload),
+        "factor_contract_alignment": factor_contract_alignment_brief(factor_contract_alignment_payload),
         "context_review_effect": {
             "quality": {
                 "approved_or_reduced_count": context_review_quality.get("approved_or_reduced_count"),
@@ -3191,6 +3240,7 @@ def build_packet(
     strategy_review_payload=None,
     strategy_learning_payload=None,
     local_backtest_reliability_payload=None,
+    factor_contract_alignment_payload=None,
     execution_readiness_payload=None,
     simulation_performance_payload=None,
     external_market_context_payload=None,
@@ -3271,6 +3321,8 @@ def build_packet(
         strategy_learning_payload = load_json_file(STRATEGY_LEARNING_REPORT_FILE)
     if local_backtest_reliability_payload is None:
         local_backtest_reliability_payload = load_json_file(LOCAL_BACKTEST_RELIABILITY_REPORT_FILE)
+    if factor_contract_alignment_payload is None:
+        factor_contract_alignment_payload = load_json_file(FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE)
     if execution_readiness_payload is None:
         execution_readiness_payload = load_json_file(EXECUTION_READINESS_REPORT_FILE)
     if simulation_performance_payload is None:
@@ -3413,8 +3465,10 @@ def build_packet(
             watchlist_diff_payload,
             strategy_evidence_payload,
             local_backtest_reliability_payload,
+            factor_contract_alignment_payload,
         ),
         "local_backtest_reliability": local_backtest_reliability_payload,
+        "factor_contract_alignment": factor_contract_alignment_payload,
         "simulation_trade_review_brief": simulation_trade_review_brief(portfolio_payload),
         "execution_readiness": execution_readiness_payload,
         "simulation_performance": simulation_performance_payload,
@@ -3461,6 +3515,7 @@ def build_packet(
             "Strategy learning is read-only cohort evidence for improving prompts, triggers, and review discipline; it does not approve execution.",
             "Strategy learning brief is a top-level summary for Hermes attention only; the full strategy_learning object remains authoritative.",
             "Local backtest reliability is read-only research evidence; it helps Hermes compare local HK/US data breadth and baseline backtest behavior, but it does not approve execution, change thresholds, or replace live readiness and source-reliability gates.",
+            "Factor contract alignment is read-only research evidence; it helps Hermes see whether local backtests share the v5 factor contract closely enough to be comparable, but it does not approve execution or replace replay validation.",
             "Simulation trade review brief is realized simulation portfolio context; it does not approve execution by itself.",
             "Execution readiness is read-only dashboard context; READY is necessary but not sufficient for execute mode.",
             "rt_order_intake.py execute mode also enforces execution_readiness.status=READY before submitting orders.",
@@ -3524,6 +3579,7 @@ def parse_args():
     parser.add_argument("--strategy-review-file", default=STRATEGY_REVIEW_REPORT_FILE)
     parser.add_argument("--strategy-learning-file", default=STRATEGY_LEARNING_REPORT_FILE)
     parser.add_argument("--local-backtest-reliability-file", default=LOCAL_BACKTEST_RELIABILITY_REPORT_FILE)
+    parser.add_argument("--factor-contract-alignment-file", default=FACTOR_CONTRACT_ALIGNMENT_REPORT_FILE)
     parser.add_argument("--simulation-performance-file", default=SIMULATION_PERFORMANCE_REPORT_FILE)
     parser.add_argument("--external-market-context-file", default=EXTERNAL_MARKET_CONTEXT_FILE)
     parser.add_argument("--event-catalyst-file", default=EVENT_CATALYST_REPORT_FILE)
@@ -3616,6 +3672,7 @@ def main():
         strategy_review_payload=load_json_file(args.strategy_review_file),
         strategy_learning_payload=load_json_file(args.strategy_learning_file),
         local_backtest_reliability_payload=load_json_file(args.local_backtest_reliability_file),
+        factor_contract_alignment_payload=load_json_file(args.factor_contract_alignment_file),
         execution_readiness_payload=load_json_file(args.execution_readiness_file),
         simulation_performance_payload=load_json_file(args.simulation_performance_file),
         external_market_context_payload=load_json_file(args.external_market_context_file),
