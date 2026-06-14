@@ -443,6 +443,14 @@ class HermesReviewPacketTests(unittest.TestCase):
                 "factor_confluence_categories": ["trend"],
                 "factor_confluence_supporting_count": 1,
                 "factor_confluence_min_count": 2,
+                "factor_contributions": [
+                    {
+                        "category": "trend",
+                        "direction": "BUY",
+                        "score_delta": 0.8,
+                        "reason": "多頭排列",
+                    }
+                ],
             }
         )
 
@@ -472,6 +480,17 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(summary["factor_confluence_categories"], ["trend"])
         self.assertEqual(summary["factor_confluence_supporting_count"], 1)
         self.assertEqual(summary["factor_confluence_min_count"], 2)
+        self.assertEqual(
+            summary["factor_contributions"],
+            [
+                {
+                    "category": "trend",
+                    "direction": "BUY",
+                    "score_delta": 0.8,
+                    "reason": "多頭排列",
+                }
+            ],
+        )
 
     def test_packet_marks_valid_dry_run_as_eligible_for_review_approval(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}

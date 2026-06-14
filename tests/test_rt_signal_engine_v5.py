@@ -9,8 +9,27 @@ from unittest.mock import patch
 from scripts import rt_signal_engine_v5 as rt
 
 
+def default_factor_contributions(score, reasons, default_reasons):
+    if not default_reasons or len(reasons) < 2:
+        return []
+    if score >= rt.BUY_CONFIRMATION_MIN_SCORE:
+        direction = "BUY"
+        score_delta = 0.1
+    elif score <= rt.SELL_CONFIRMATION_MAX_SCORE:
+        direction = "SELL"
+        score_delta = -0.1
+    else:
+        return []
+    return rt.normalize_score_contributions(
+        [
+            {"category": "trend", "direction": direction, "score_delta": score_delta, "reason": reasons[0]},
+            {"category": "macd", "direction": direction, "score_delta": score_delta, "reason": reasons[1]},
+        ]
+    )
+
+
 class FakeIndicators:
-    def __init__(self, avg_volume=1000, score=0.0, reasons=None):
+    def __init__(self, avg_volume=1000, score=0.0, reasons=None, factor_contributions=None):
         self.closes = [100] * 30
         self.highs = [101] * 30
         self.lows = [99] * 30
@@ -23,14 +42,23 @@ class FakeIndicators:
         self.ma20 = 100
         self.atr_14 = 1
         self.score = score
+        default_reasons = reasons is None
         if reasons is None and score >= rt.BUY_CONFIRMATION_MIN_SCORE:
             reasons = ["多頭排列", "MACD金叉+正值"]
         elif reasons is None and score <= rt.SELL_CONFIRMATION_MAX_SCORE:
             reasons = ["空頭排列", "MACD死叉+負值"]
         self.reasons = reasons or []
+        self.factor_contributions = (
+            rt.normalize_score_contributions(factor_contributions)
+            if factor_contributions is not None
+            else default_factor_contributions(score, self.reasons, default_reasons)
+        )
 
     def get_score(self, quote_context=None):
         return self.score, self.reasons
+
+    def get_score_evidence(self, quote_context=None):
+        return rt.score_result(self.score, self.reasons, self.factor_contributions)
 
 
 class RtSignalEngineV5Tests(unittest.TestCase):
@@ -403,6 +431,35 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIn("RSI偏強(60)", reasons)
         self.assertIn("MACD柱轉正", reasons)
         self.assertTrue(any(reason.startswith("溫和放量上漲") for reason in reasons))
+
+    def test_score_evidence_exposes_structured_factor_contributions(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        ind.closes = [100] * 29 + [103]
+        ind.highs = [104] * 30
+        ind.lows = [99] * 30
+        ind.volumes = [1000] * 29 + [1700]
+        ind.ma5 = 101
+        ind.ma10 = 100
+        ind.ma20 = 100
+        ind.rsi_14 = 60
+        ind.macd_hist = 0.1
+        ind.macd_dif = -0.1
+
+        evidence = ind.get_score_evidence()
+
+        self.assertAlmostEqual(evidence["score"], 0.9)
+        self.assertEqual(
+            [
+                (item["category"], item["direction"], item["score_delta"], item["reason"])
+                for item in evidence["factor_contributions"]
+            ],
+            [
+                ("trend", "BUY", 0.4, "短均線偏強"),
+                ("rsi", "BUY", 0.3, "RSI偏強(60)"),
+                ("macd", "BUY", 0.1, "MACD柱轉正"),
+                ("volume", "BUY", 0.1, "溫和放量上漲1.6倍"),
+            ],
+        )
 
     def test_full_score_reasons_cover_moderate_negative_contributions(self):
         ind = rt.IncrementalIndicators("AAPL")
@@ -2143,6 +2200,43 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertTrue(alert["factor_confluence_valid"])
         self.assertEqual(alert["factor_confluence_categories"], ["macd", "trend"])
         self.assertEqual(alert["factor_confluence_supporting_count"], 2)
+
+    def test_factor_confluence_prefers_structured_contributions_over_reasons(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+            }
+        )
+        indicators = FakeIndicators(
+            score=0.8,
+            reasons=["多頭排列"],
+            factor_contributions=[
+                {"category": "trend", "direction": "BUY", "score_delta": 0.8, "reason": "多頭排列"},
+                {"category": "macd", "direction": "BUY", "score_delta": 0.3, "reason": "MACD金叉+正值"},
+            ],
+        )
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertTrue(alert["factor_confluence_valid"])
+        self.assertEqual(alert["factor_confluence_categories"], ["macd", "trend"])
+        self.assertEqual(alert["factor_contributions"][0]["category"], "trend")
+        self.assertEqual(alert["factor_contributions"][1]["category"], "macd")
 
     def test_low_rr_directional_is_downgraded_to_watch(self):
         engine = rt.TriggerEngine(

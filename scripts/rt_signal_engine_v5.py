@@ -121,6 +121,63 @@ def as_bool(value, default=False):
         return False
     return default
 
+def score_contribution(category, direction, score_delta, reason):
+    direction = str(direction or "").upper()
+    score_delta = as_float(score_delta)
+    if direction not in ("BUY", "SELL") or score_delta is None or score_delta == 0:
+        return None
+    if direction == "BUY" and score_delta < 0:
+        return None
+    if direction == "SELL" and score_delta > 0:
+        return None
+    return {
+        "category": str(category or "").strip().lower(),
+        "direction": direction,
+        "score_delta": round(score_delta, 4),
+        "reason": str(reason or ""),
+    }
+
+def normalize_score_contributions(contributions):
+    normalized = []
+    for contribution in contributions or []:
+        if not isinstance(contribution, dict):
+            continue
+        raw_delta = contribution.get("score_delta")
+        if raw_delta is None and contribution.get("points") is not None:
+            raw_points = as_float(contribution.get("points"))
+            raw_direction = str(contribution.get("direction") or "").upper()
+            raw_delta = -raw_points if raw_direction == "SELL" and raw_points is not None else raw_points
+        item = score_contribution(
+            contribution.get("category"),
+            contribution.get("direction"),
+            raw_delta,
+            contribution.get("reason"),
+        )
+        if item and item["category"] and item["reason"]:
+            normalized.append(item)
+    return normalized
+
+def score_result(score, reasons, contributions):
+    return {
+        "score": score,
+        "reasons": reasons,
+        "factor_contributions": normalize_score_contributions(contributions),
+    }
+
+def unpack_score_result(raw_result):
+    if isinstance(raw_result, dict):
+        return (
+            raw_result.get("score"),
+            raw_result.get("reasons") if isinstance(raw_result.get("reasons"), list) else [],
+            normalize_score_contributions(raw_result.get("factor_contributions")),
+        )
+    if isinstance(raw_result, (list, tuple)):
+        score = raw_result[0] if len(raw_result) >= 1 else None
+        reasons = raw_result[1] if len(raw_result) >= 2 and isinstance(raw_result[1], list) else []
+        contributions = raw_result[2] if len(raw_result) >= 3 else None
+        return score, reasons, normalize_score_contributions(contributions)
+    return None, [], []
+
 def valid_watchlist_symbol(symbol, market=None):
     market = str(market or "").upper()
     if market == "HK":
@@ -1264,78 +1321,90 @@ class IncrementalIndicators:
             return None
         return volumes[-1] / avg_vol
 
-    def get_score(self, quote_context=None):
-        """計算多因子分數 (-1 to +1)"""
+    def get_score_evidence(self, quote_context=None):
+        """計算多因子分數和機器可用的因子貢獻。"""
         closes, highs, lows, volumes = self._series()
         if not closes or len(closes) < MIN_SIGNAL_HISTORY_BARS:
-            return None, []
+            return score_result(None, [], [])
 
         c = closes[-1]
         score = 0
         reasons = []
+        contributions = []
+
+        def add(delta, category, direction, reason):
+            nonlocal score
+            score += delta
+            reasons.append(reason)
+            contribution = score_contribution(category, direction, delta, reason)
+            if contribution:
+                contributions.append(contribution)
 
         # 趨勢
         ma5, ma10, ma20 = signal_moving_averages(self)
         if ma5 and ma10 and ma20:
             if c > ma5 > ma10 > ma20:
-                score += 0.8; reasons.append("多頭排列")
+                add(0.8, "trend", "BUY", "多頭排列")
             elif c > ma5 and c > ma10:
-                score += 0.4; reasons.append("短均線偏強")
+                add(0.4, "trend", "BUY", "短均線偏強")
             elif c < ma5 < ma10 < ma20:
-                score -= 0.8; reasons.append("空頭排列")
+                add(-0.8, "trend", "SELL", "空頭排列")
             elif c < ma5 and c < ma10:
-                score -= 0.4; reasons.append("短均線偏弱")
+                add(-0.4, "trend", "SELL", "短均線偏弱")
 
         # RSI
         if self.rsi_14 is not None:
             if self.rsi_14 > 70:
-                score -= 0.3; reasons.append(f"RSI偏高({self.rsi_14:.0f})")
+                add(-0.3, "rsi", "SELL", f"RSI偏高({self.rsi_14:.0f})")
             elif self.rsi_14 > 55:
-                score += 0.3; reasons.append(f"RSI偏強({self.rsi_14:.0f})")
+                add(0.3, "rsi", "BUY", f"RSI偏強({self.rsi_14:.0f})")
             elif self.rsi_14 < 30:
-                score += 0.3; reasons.append(f"RSI超賣({self.rsi_14:.0f})")
+                add(0.3, "rsi", "BUY", f"RSI超賣({self.rsi_14:.0f})")
             elif self.rsi_14 < 45:
-                score -= 0.2; reasons.append(f"RSI偏弱({self.rsi_14:.0f})")
+                add(-0.2, "rsi", "SELL", f"RSI偏弱({self.rsi_14:.0f})")
 
         # MACD
         if self.macd_hist is not None and self.macd_dif is not None:
             if self.macd_hist > 0 and self.macd_dif > 0:
-                score += 0.3; reasons.append("MACD金叉+正值")
+                add(0.3, "macd", "BUY", "MACD金叉+正值")
             elif self.macd_hist > 0:
-                score += 0.1; reasons.append("MACD柱轉正")
+                add(0.1, "macd", "BUY", "MACD柱轉正")
             elif self.macd_hist < 0 and self.macd_dif < 0:
-                score -= 0.3; reasons.append("MACD死叉+負值")
+                add(-0.3, "macd", "SELL", "MACD死叉+負值")
             elif self.macd_hist < 0:
-                score -= 0.1; reasons.append("MACD柱轉負")
+                add(-0.1, "macd", "SELL", "MACD柱轉負")
 
         # 布林帶
         bb_upper, bb_lower = signal_bollinger_bands(self)
         if bb_upper and bb_lower:
             if c <= bb_lower * 1.02:
-                score += 0.3; reasons.append("觸及布林下軌")
+                add(0.3, "bollinger", "BUY", "觸及布林下軌")
             elif c >= bb_upper * 0.98:
-                score -= 0.2; reasons.append("觸及布林上軌")
+                add(-0.2, "bollinger", "SELL", "觸及布林上軌")
 
         # 成交量
         vr = self.score_volume_ratio(volumes, quote_context=quote_context)
         if vr is not None:
             prior_close = closes[-2] if len(closes) >= 2 else None
             if vr > 2.0 and prior_close is not None and c > prior_close:
-                score += 0.2; reasons.append(f"放量上漲{vr:.1f}倍")
+                add(0.2, "volume", "BUY", f"放量上漲{vr:.1f}倍")
             elif vr > 2.0 and prior_close is not None and c < prior_close:
-                score -= 0.2; reasons.append(f"放量下跌{vr:.1f}倍")
+                add(-0.2, "volume", "SELL", f"放量下跌{vr:.1f}倍")
             elif vr > 1.5 and prior_close is not None and c > prior_close:
-                score += 0.1; reasons.append(f"溫和放量上漲{vr:.1f}倍")
+                add(0.1, "volume", "BUY", f"溫和放量上漲{vr:.1f}倍")
 
         # 動量
         base_close = lookback_close(closes, 5)
         if base_close is not None and base_close > 0:
             mom = (c / base_close - 1) * 100
             if abs(mom) > MOMENTUM_THRESHOLD_PCT + 1e-9:
-                score += 0.2 if mom > 0 else -0.2
-                reasons.append(f"5日動量{mom:+.1f}%")
+                add(0.2 if mom > 0 else -0.2, "momentum", "BUY" if mom > 0 else "SELL", f"5日動量{mom:+.1f}%")
 
-        return max(-1, min(1, score)), reasons
+        return score_result(max(-1, min(1, score)), reasons, contributions)
+
+    def get_score(self, quote_context=None):
+        evidence = self.get_score_evidence(quote_context)
+        return evidence["score"], evidence["reasons"]
 
 
 def indicator_history_lengths(indicators):
@@ -1373,7 +1442,17 @@ def average_daily_turnover(closes, volumes, lookback=20):
         notional += close * volume
     return notional / lookback
 
-def supporting_factor_categories(signal_type, reasons):
+def contribution_categories(signal_type, contributions):
+    signal_type = str(signal_type or "").upper()
+    categories = set()
+    for contribution in normalize_score_contributions(contributions):
+        if contribution.get("direction") == signal_type:
+            category = str(contribution.get("category") or "").strip().lower()
+            if category:
+                categories.add(category)
+    return sorted(categories)
+
+def legacy_reason_factor_categories(signal_type, reasons):
     signal_type = str(signal_type or "").upper()
     categories = set()
     for reason in reasons or []:
@@ -1405,6 +1484,12 @@ def supporting_factor_categories(signal_type, reasons):
             elif text.startswith("5日動量-"):
                 categories.add("momentum")
     return sorted(categories)
+
+def supporting_factor_categories(signal_type, contributions=None, reasons=None):
+    categories = contribution_categories(signal_type, contributions)
+    if categories:
+        return categories
+    return legacy_reason_factor_categories(signal_type, reasons)
 
 def alert_signal_date(quote_time=None, generated_at=None, market=None):
     parsed_quote_time = parse_quote_datetime(quote_time, market=market)
@@ -1609,7 +1694,9 @@ class TriggerEngine:
 
         now = time.time()
         triggered = []
-        full_score, full_reasons = indicators.get_score(quote)
+        score_getter = getattr(indicators, "get_score_evidence", None)
+        raw_score_result = score_getter(quote) if callable(score_getter) else indicators.get_score(quote)
+        full_score, full_reasons, factor_contributions = unpack_score_result(raw_score_result)
         full_score = as_float(full_score)
         full_reasons = full_reasons if isinstance(full_reasons, list) else []
 
@@ -1687,7 +1774,11 @@ class TriggerEngine:
                 if signal_type in ("BUY", "SELL")
                 else False
             )
-            factor_confluence_categories = supporting_factor_categories(signal_type, full_reasons)
+            factor_confluence_categories = supporting_factor_categories(
+                signal_type,
+                factor_contributions,
+                reasons=full_reasons,
+            )
             min_factor_count = self.min_supporting_factor_count(signal_type)
             if signal_type in ("BUY", "SELL"):
                 factor_confluence_valid = (
@@ -1867,6 +1958,7 @@ class TriggerEngine:
                 "factor_confluence_min_count": min_factor_count,
                 "full_score": round(full_score, 3) if full_score is not None else None,
                 "full_reasons": full_reasons,
+                "factor_contributions": factor_contributions,
                 "price": c,
                 "change_pct": quote.get("change_pct", 0),
                 "quote_time": quote.get("time", ""),
