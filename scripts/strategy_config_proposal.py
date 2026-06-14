@@ -343,6 +343,31 @@ def compact_strategy_learning_context(strategy_learning):
     coverage = payload.get("judgment_audit_coverage") if isinstance(payload.get("judgment_audit_coverage"), dict) else {}
     approved = audit_effect.get("approved_or_reduced") if isinstance(audit_effect.get("approved_or_reduced"), dict) else {}
     rejected = audit_effect.get("rejected_or_held") if isinstance(audit_effect.get("rejected_or_held"), dict) else {}
+    execution_scope = (
+        payload.get("execution_candidate_scope")
+        if isinstance(payload.get("execution_candidate_scope"), dict)
+        else {}
+    )
+    execution_candidate_summary = (
+        execution_scope.get("execution_candidate")
+        if isinstance(execution_scope.get("execution_candidate"), dict)
+        else {}
+    )
+    execution_audit_effect = (
+        payload.get("execution_candidate_audit_pass_judgment_effect")
+        if isinstance(payload.get("execution_candidate_audit_pass_judgment_effect"), dict)
+        else {}
+    )
+    execution_approved = (
+        execution_audit_effect.get("approved_or_reduced")
+        if isinstance(execution_audit_effect.get("approved_or_reduced"), dict)
+        else {}
+    )
+    execution_rejected = (
+        execution_audit_effect.get("rejected_or_held")
+        if isinstance(execution_audit_effect.get("rejected_or_held"), dict)
+        else {}
+    )
     return {
         "schema": "rt_signal_strategy_config_proposal_learning_context_v1",
         "present": bool(payload),
@@ -379,6 +404,30 @@ def compact_strategy_learning_context(strategy_learning):
                 "rejected_or_held_audit_fail_or_missing_count"
             ),
         },
+        "execution_candidate_scope": {
+            "present": bool(execution_scope),
+            "joined_signal_count": execution_scope.get("joined_signal_count"),
+            "execution_candidate_count": execution_scope.get("execution_candidate_count"),
+            "non_execution_candidate_count": execution_scope.get("non_execution_candidate_count"),
+            "downgraded_directional_count": execution_scope.get("downgraded_directional_count"),
+            "unknown_execution_candidate_count": execution_scope.get("unknown_execution_candidate_count"),
+            "execution_candidate_resolved_count": execution_candidate_summary.get("resolved_count"),
+            "promotion_evidence_requirement": execution_scope.get("promotion_evidence_requirement"),
+        },
+        "has_execution_candidate_audit_pass_judgment_effect": bool(execution_audit_effect),
+        "execution_candidate_audit_pass_judgment_effect": {
+            "sample_filter": execution_audit_effect.get("sample_filter"),
+            "approved_or_reduced": {
+                "resolved_count": execution_approved.get("resolved_count"),
+                "avg_signed_return_pct": execution_approved.get("avg_signed_return_pct"),
+                "win_rate_pct": execution_approved.get("win_rate_pct"),
+            },
+            "rejected_or_held": {
+                "resolved_count": execution_rejected.get("resolved_count"),
+                "avg_signed_return_pct": execution_rejected.get("avg_signed_return_pct"),
+                "win_rate_pct": execution_rejected.get("win_rate_pct"),
+            },
+        },
     }
 
 
@@ -394,6 +443,29 @@ def strategy_learning_promotion_guards(context, min_sample=5):
     rejected = effect.get("rejected_or_held") if isinstance(effect.get("rejected_or_held"), dict) else {}
     approved_count = as_int(approved.get("resolved_count"))
     rejected_count = as_int(rejected.get("resolved_count"))
+    execution_scope = (
+        context.get("execution_candidate_scope")
+        if isinstance(context.get("execution_candidate_scope"), dict)
+        else {}
+    )
+    execution_effect = (
+        context.get("execution_candidate_audit_pass_judgment_effect")
+        if isinstance(context.get("execution_candidate_audit_pass_judgment_effect"), dict)
+        else {}
+    )
+    execution_approved = (
+        execution_effect.get("approved_or_reduced")
+        if isinstance(execution_effect.get("approved_or_reduced"), dict)
+        else {}
+    )
+    execution_rejected = (
+        execution_effect.get("rejected_or_held")
+        if isinstance(execution_effect.get("rejected_or_held"), dict)
+        else {}
+    )
+    downgraded_directional_count = as_int(execution_scope.get("downgraded_directional_count"))
+    execution_approved_count = as_int(execution_approved.get("resolved_count"))
+    execution_rejected_count = as_int(execution_rejected.get("resolved_count"))
 
     if not context.get("present"):
         blockers.append(
@@ -445,6 +517,27 @@ def strategy_learning_promotion_guards(context, min_sample=5):
                 "rejected_resolved_count": rejected_count,
             }
         )
+    if downgraded_directional_count:
+        if not context.get("has_execution_candidate_audit_pass_judgment_effect"):
+            blockers.append(
+                {
+                    "code": "strategy_learning_execution_candidate_evidence_missing_blocks_strategy_promotion",
+                    "detail": "strategy learning includes downgraded diagnostic directional rows, but no executable-only audit-pass learning cohort",
+                    "downgraded_directional_count": downgraded_directional_count,
+                    "execution_candidate_count": execution_scope.get("execution_candidate_count"),
+                }
+            )
+        elif execution_approved_count < min_sample or execution_rejected_count < min_sample:
+            blockers.append(
+                {
+                    "code": "strategy_learning_execution_candidate_audit_pass_sample_too_small_blocks_strategy_promotion",
+                    "detail": "executable-only audit-pass Hermes judgment-effect sample is too small for strategy promotion review",
+                    "min_sample": min_sample,
+                    "downgraded_directional_count": downgraded_directional_count,
+                    "approved_resolved_count": execution_approved_count,
+                    "rejected_resolved_count": execution_rejected_count,
+                }
+            )
     return blockers
 
 

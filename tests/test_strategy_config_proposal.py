@@ -102,6 +102,10 @@ def strategy_learning(
     audit_missing_count=0,
     approved_resolved=5,
     rejected_resolved=5,
+    execution_candidate_scope=None,
+    execution_candidate_audit_pass=True,
+    execution_approved_resolved=5,
+    execution_rejected_resolved=5,
 ):
     payload = {
         "schema": "strategy_learning_report_v1",
@@ -148,7 +152,38 @@ def strategy_learning(
                 "win_rate_pct": 40.0,
             },
         }
+    if execution_candidate_scope is not None:
+        payload["execution_candidate_scope"] = execution_candidate_scope
+    if execution_candidate_scope is not None and execution_candidate_audit_pass:
+        payload["execution_candidate_audit_pass_judgment_effect"] = {
+            "sample_filter": "execution_candidate_true_and_judgment_audit_status_PASS",
+            "approved_or_reduced": {
+                "resolved_count": execution_approved_resolved,
+                "avg_signed_return_pct": 1.4,
+                "win_rate_pct": 60.0,
+            },
+            "rejected_or_held": {
+                "resolved_count": execution_rejected_resolved,
+                "avg_signed_return_pct": -0.2,
+                "win_rate_pct": 40.0,
+            },
+        }
     return payload
+
+
+def execution_candidate_scope(downgraded_directional_count=0, execution_candidate_count=10):
+    return {
+        "schema": "strategy_learning_execution_candidate_scope_v1",
+        "joined_signal_count": execution_candidate_count + downgraded_directional_count,
+        "execution_candidate_count": execution_candidate_count,
+        "non_execution_candidate_count": downgraded_directional_count,
+        "downgraded_directional_count": downgraded_directional_count,
+        "unknown_execution_candidate_count": 0,
+        "execution_candidate": {"resolved_count": execution_candidate_count},
+        "promotion_evidence_requirement": "execution_candidate_only_learning_required"
+        if downgraded_directional_count
+        else "standard_audit_pass_learning",
+    }
 
 
 def trigger_evidence_convergence(
@@ -431,6 +466,46 @@ class StrategyConfigProposalTests(unittest.TestCase):
         self.assertTrue(payload["promotion"]["blocked"])
         codes = [row["code"] for row in payload["promotion_blockers"]]
         self.assertIn("strategy_learning_audit_pass_sample_too_small_blocks_strategy_promotion", codes)
+
+    def test_diagnostic_learning_scope_requires_executable_only_evidence(self):
+        payload = proposal.build_report(
+            review_payload(),
+            {"schema": "rt_signal_strategy_config_v1"},
+            simulation_performance("OK"),
+            execution_readiness("READY"),
+            strategy_learning(
+                execution_candidate_scope=execution_candidate_scope(downgraded_directional_count=3),
+                execution_candidate_audit_pass=False,
+            ),
+            trigger_evidence_convergence(),
+            now=NOW,
+        )
+
+        self.assertTrue(payload["promotion"]["blocked"])
+        codes = [row["code"] for row in payload["promotion_blockers"]]
+        self.assertIn("strategy_learning_execution_candidate_evidence_missing_blocks_strategy_promotion", codes)
+        self.assertEqual(
+            payload["strategy_learning_context"]["execution_candidate_scope"]["downgraded_directional_count"],
+            3,
+        )
+
+    def test_diagnostic_learning_scope_allows_executable_only_audit_evidence(self):
+        payload = proposal.build_report(
+            review_payload(),
+            {"schema": "rt_signal_strategy_config_v1"},
+            simulation_performance("OK"),
+            execution_readiness("READY"),
+            strategy_learning(
+                execution_candidate_scope=execution_candidate_scope(downgraded_directional_count=3),
+                execution_candidate_audit_pass=True,
+            ),
+            trigger_evidence_convergence(),
+            now=NOW,
+        )
+
+        self.assertFalse(payload["promotion"]["blocked"])
+        self.assertEqual(payload["promotion_blockers"], [])
+        self.assertTrue(payload["strategy_learning_context"]["has_execution_candidate_audit_pass_judgment_effect"])
 
     def test_missing_trigger_convergence_blocks_promotion(self):
         payload = proposal.build_report(

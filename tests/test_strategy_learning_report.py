@@ -136,6 +136,82 @@ class StrategyLearningReportTests(unittest.TestCase):
         self.assertTrue(payload["source"]["read_only"])
         self.assertFalse(payload["source"]["submits_orders"])
 
+    def test_execution_candidate_scope_separates_downgraded_diagnostics(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            alerts = root / "alerts.jsonl"
+            judgments = root / "judgments.jsonl"
+            state = root / "state.json"
+            outcomes = root / "outcome.json"
+            diagnostic_alert = alert("diag", "MA")
+            diagnostic_alert.update(
+                {
+                    "signal_type": "WATCH",
+                    "candidate_signal_type": "BUY",
+                    "execution_candidate": False,
+                }
+            )
+            execution_outcome = outcome("exec", 1.0, "MA")
+            execution_outcome["execution_candidate"] = True
+            diagnostic_outcome = outcome("diag", -3.0, "MA")
+            diagnostic_outcome.update(
+                {
+                    "execution_candidate": False,
+                    "downgraded_directional": True,
+                    "emitted_signal_type": "WATCH",
+                    "candidate_signal_type": "BUY",
+                }
+            )
+            write_jsonl(alerts, [alert("exec", "MA"), diagnostic_alert])
+            write_jsonl(judgments, [judgment("exec", "approve"), judgment("diag", "hold")])
+            state.write_text(
+                json.dumps(
+                    {
+                        "dry_runs": {
+                            "exec": intake_decision("exec", "dry_run"),
+                            "diag": intake_decision("diag", "rejected", "strategy_review_disabled_pending_rework"),
+                        },
+                        "processed": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            outcomes.write_text(
+                json.dumps(
+                    {
+                        "schema": "rt_signal_outcome_report_v1",
+                        "evaluations": [execution_outcome, diagnostic_outcome],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = learning.build_report(
+                alert_queue_file=str(alerts),
+                judgment_file=str(judgments),
+                intake_state_file=str(state),
+                outcome_report_file=str(outcomes),
+            )
+
+        scope = payload["execution_candidate_scope"]
+        rows_by_id = {row["signal_id"]: row for row in payload["recent_joined_rows"]}
+        roles = {row["key"]: row for row in payload["by_execution_sample_role"]}
+
+        self.assertEqual(payload["overall"]["resolved_count"], 2)
+        self.assertEqual(scope["execution_candidate_count"], 1)
+        self.assertEqual(scope["downgraded_directional_count"], 1)
+        self.assertEqual(scope["execution_candidate"]["avg_signed_return_pct"], 1.0)
+        self.assertEqual(scope["downgraded_directional"]["avg_signed_return_pct"], -3.0)
+        self.assertEqual(scope["promotion_evidence_requirement"], "execution_candidate_only_learning_required")
+        self.assertEqual(payload["execution_candidate_judgment_effect"]["approved_or_reduced"]["resolved_count"], 1)
+        self.assertEqual(rows_by_id["diag"]["execution_sample_role"], "diagnostic_downgraded_directional")
+        self.assertFalse(rows_by_id["diag"]["execution_candidate"])
+        self.assertEqual(roles["diagnostic_downgraded_directional"]["count"], 1)
+        self.assertIn(
+            "downgraded_directional_rows_research_only_require_execution_candidate_learning",
+            payload["recommendations"],
+        )
+
     def test_default_sample_scope_filters_to_latest_strategy_and_watchlist(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

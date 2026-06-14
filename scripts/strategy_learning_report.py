@@ -231,6 +231,36 @@ def outcome_status(outcome, horizon=DEFAULT_HORIZON):
     return row.get("status") or outcome.get("status") or "missing"
 
 
+def bool_or_none(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "y"):
+        return True
+    if text in ("0", "false", "no", "n"):
+        return False
+    return None
+
+
+def execution_candidate_value(alert, outcome):
+    for source in (outcome or {}, alert or {}):
+        if "execution_candidate" in source:
+            return bool_or_none(source.get("execution_candidate"))
+    return None
+
+
+def execution_sample_role(execution_candidate, downgraded_directional):
+    if execution_candidate is True:
+        return "execution_candidate"
+    if downgraded_directional:
+        return "diagnostic_downgraded_directional"
+    if execution_candidate is False:
+        return "non_execution_candidate"
+    return "unknown_execution_candidate"
+
+
 def judgment_decision(judgment):
     return str((judgment or {}).get("decision") or "missing").strip().lower() or "missing"
 
@@ -365,6 +395,10 @@ def build_join_rows(alerts, judgments, intake_decisions, outcomes, horizon=DEFAU
         decision = intake_decisions.get(sid) or {}
         outcome = outcomes.get(sid) or {}
         ret = signed_return(outcome, horizon=horizon)
+        execution_candidate = execution_candidate_value(alert, outcome)
+        downgraded_directional = bool_or_none(
+            outcome.get("downgraded_directional", alert.get("downgraded_directional"))
+        ) is True
         row = {
             "signal_id": sid,
             "symbol": alert.get("symbol") or outcome.get("symbol"),
@@ -373,8 +407,15 @@ def build_join_rows(alerts, judgments, intake_decisions, outcomes, horizon=DEFAU
             "watchlist_id": alert.get("watchlist_id") or outcome.get("watchlist_id"),
             "trigger_key": trigger_key(alert, outcome),
             "signal_type": str((alert or outcome).get("signal_type") or "").upper(),
+            "emitted_signal_type": str(outcome.get("emitted_signal_type") or alert.get("signal_type") or "").upper(),
+            "candidate_signal_type": str(
+                outcome.get("candidate_signal_type") or alert.get("candidate_signal_type") or ""
+            ).upper(),
             "confirmed": alert.get("confirmed", outcome.get("confirmed")),
             "full_score": alert.get("full_score", outcome.get("full_score")),
+            "execution_candidate": execution_candidate,
+            "downgraded_directional": downgraded_directional,
+            "execution_sample_role": execution_sample_role(execution_candidate, downgraded_directional),
             "judgment_decision": judgment_decision(judgment),
             "judgment_confidence": judgment.get("confidence"),
             "intake_status": intake_status(decision),
@@ -429,6 +470,31 @@ def compare_judgment_effect(rows):
         "approved_or_reduced": metric_summary(approved),
         "rejected_or_held": metric_summary(rejected),
         "missing_judgment": metric_summary(missing),
+    }
+
+
+def build_execution_candidate_scope(rows):
+    execution_rows = [row for row in rows if row.get("execution_candidate") is True]
+    non_execution_rows = [row for row in rows if row.get("execution_candidate") is False]
+    downgraded_rows = [row for row in rows if row.get("downgraded_directional")]
+    unknown_rows = [row for row in rows if row.get("execution_candidate") is None]
+    return {
+        "schema": "strategy_learning_execution_candidate_scope_v1",
+        "sample_filter": "joined_rows_with_execution_candidate_breakout",
+        "joined_signal_count": len(rows),
+        "execution_candidate_count": len(execution_rows),
+        "non_execution_candidate_count": len(non_execution_rows),
+        "downgraded_directional_count": len(downgraded_rows),
+        "unknown_execution_candidate_count": len(unknown_rows),
+        "execution_candidate": metric_summary(execution_rows),
+        "non_execution_candidate": metric_summary(non_execution_rows),
+        "downgraded_directional": metric_summary(downgraded_rows),
+        "unknown_execution_candidate": metric_summary(unknown_rows),
+        "promotion_evidence_requirement": (
+            "execution_candidate_only_learning_required"
+            if downgraded_rows
+            else "standard_audit_pass_learning"
+        ),
     }
 
 
@@ -624,6 +690,9 @@ def build_recommendations(payload):
             "review_watchlist_proposal_for_sizing_blockers:"
             + str(sizing_remediation.get("watchlist_proposal_hash") or "missing_hash")
         )
+    execution_scope = payload.get("execution_candidate_scope") or {}
+    if execution_scope.get("downgraded_directional_count", 0):
+        recs.append("downgraded_directional_rows_research_only_require_execution_candidate_learning")
     intake_coverage = payload.get("intake_coverage") or {}
     directional_coverage = intake_coverage.get("directional") or {}
     if (
@@ -658,6 +727,7 @@ def build_report(
         all_rows,
         infer_current_sample_scope(alerts, sample_scope_mode=sample_scope_mode),
     )
+    execution_candidate_rows = [row for row in rows if row.get("execution_candidate") is True]
     payload = {
         "schema": "strategy_learning_report_v1",
         "generated_at": now_iso(),
@@ -696,8 +766,11 @@ def build_report(
         },
         "overall": metric_summary(rows),
         "judgment_effect": compare_judgment_effect(rows),
+        "execution_candidate_scope": build_execution_candidate_scope(rows),
+        "execution_candidate_judgment_effect": compare_judgment_effect(execution_candidate_rows),
         "by_trigger": sorted(grouped_summary(rows, lambda row: row["trigger_key"]), key=lambda row: (-row["resolved_count"], row["key"])),
         "by_judgment_decision": grouped_summary(rows, lambda row: row["judgment_decision"]),
+        "by_execution_sample_role": grouped_summary(rows, lambda row: row["execution_sample_role"]),
         "by_intake_status": grouped_summary(rows, lambda row: row["intake_status"]),
         "by_intake_reason": sorted(grouped_summary(rows, lambda row: row["intake_reason_bucket"]), key=lambda row: (-row["count"], row["key"])),
         "by_actionability": sorted(grouped_summary(rows, lambda row: row["actionability_category"]), key=lambda row: (-row["count"], row["key"])),
@@ -729,6 +802,13 @@ def build_text_report(payload):
             + json.dumps(payload["judgment_effect"], ensure_ascii=False, sort_keys=True)
         ),
     ]
+    execution_scope = payload.get("execution_candidate_scope") or {}
+    lines.append(
+        "execution_scope="
+        f"exec={execution_scope.get('execution_candidate_count')} "
+        f"downgraded={execution_scope.get('downgraded_directional_count')} "
+        f"unknown={execution_scope.get('unknown_execution_candidate_count')}"
+    )
     for row in payload["by_trigger"][:10]:
         lines.append(
             f"  {row['key']}: count={row['count']} resolved={row['resolved_count']} "
