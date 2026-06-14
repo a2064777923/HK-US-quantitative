@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from scripts import rt_signal_engine_v5 as rt
@@ -11,6 +12,7 @@ def proposal_payload(config):
     normalized, _ = rt.normalize_strategy_config(config)
     return {
         "schema": "rt_signal_strategy_config_proposal_v1",
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
         "source": {
             "manual_review_required": True,
             "auto_applied": False,
@@ -111,8 +113,61 @@ class StrategyConfigPromoteTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "applied")
         self.assertTrue(payload["applied"])
+        self.assertEqual(payload["proposal_freshness"]["status"], "fresh")
+        self.assertTrue(payload["safety"]["requires_fresh_proposal"])
         self.assertTrue(Path(payload["backup_file"]).exists())
         self.assertEqual(stored["trigger_overrides"]["BUY:站上MA5"]["min_full_score"], 0.45)
+
+    def test_apply_is_blocked_when_proposal_is_stale(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "strategy.json"
+            proposal = Path(td) / "proposal.json"
+            target.write_text(json.dumps(rt.default_strategy_config()), encoding="utf-8")
+            proposed = rt.default_strategy_config()
+            proposed["confirmation_thresholds"]["BUY"]["min_full_score"] = 0.55
+            proposal_payload_obj = proposal_payload(proposed)
+            proposal_payload_obj["generated_at"] = (
+                datetime.now() - timedelta(minutes=120)
+            ).isoformat(timespec="seconds")
+            proposal.write_text(json.dumps(proposal_payload_obj), encoding="utf-8")
+
+            payload = promote.build_report(
+                str(proposal),
+                str(target),
+                apply=True,
+                confirm_proposal_hash=proposal_payload_obj["proposal_hash"],
+                max_proposal_age_minutes=90,
+            )
+            stored = json.loads(target.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["status"], "blocked")
+        self.assertFalse(payload["applied"])
+        self.assertEqual(payload["proposal_freshness"]["status"], "stale")
+        self.assertIn("proposal_stale", payload["validation_reasons"])
+        self.assertEqual(stored["confirmation_thresholds"]["BUY"]["min_full_score"], rt.BUY_CONFIRMATION_MIN_SCORE)
+
+    def test_apply_is_blocked_when_proposal_timestamp_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "strategy.json"
+            proposal = Path(td) / "proposal.json"
+            target.write_text(json.dumps(rt.default_strategy_config()), encoding="utf-8")
+            proposed = rt.default_strategy_config()
+            proposed["confirmation_thresholds"]["BUY"]["min_full_score"] = 0.55
+            proposal_payload_obj = proposal_payload(proposed)
+            proposal_payload_obj.pop("generated_at")
+            proposal.write_text(json.dumps(proposal_payload_obj), encoding="utf-8")
+
+            payload = promote.build_report(
+                str(proposal),
+                str(target),
+                apply=True,
+                confirm_proposal_hash=proposal_payload_obj["proposal_hash"],
+            )
+
+        self.assertEqual(payload["status"], "blocked")
+        self.assertFalse(payload["applied"])
+        self.assertEqual(payload["proposal_freshness"]["status"], "missing_timestamp")
+        self.assertIn("proposal_missing_timestamp", payload["validation_reasons"])
 
     def test_apply_is_blocked_when_proposal_has_promotion_blocker(self):
         with tempfile.TemporaryDirectory() as td:

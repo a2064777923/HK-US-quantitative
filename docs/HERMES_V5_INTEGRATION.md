@@ -3788,6 +3788,7 @@ Safety behavior:
 - validates proposal schema and `manual_review_required=true`;
 - recalculates the proposed config hash before apply;
 - refuses apply without `--confirm-proposal-hash`;
+- refuses apply when the proposal `generated_at` is missing, future-dated, or older than `RT_SIGNAL_STRATEGY_CONFIG_PROMOTE_MAX_PROPOSAL_AGE_MINUTES` / `--max-proposal-age-minutes` (default 90 minutes), because readiness, simulation performance, strategy learning, and convergence evidence may have changed since proposal generation;
 - refuses apply when proposal `promotion_blockers` are present, including `simulation_performance_fail_blocks_strategy_promotion`;
 - refuses apply when simulation-performance context is missing, stale, invalid-timestamp, or unknown via the corresponding `promotion_blockers`;
 - refuses apply when execution readiness is not `READY`, strategy learning is missing, audit-pass Hermes judgment-effect evidence is missing/too small, or judgment-audit coverage is failed/missing/truncated via the corresponding `promotion_blockers`;

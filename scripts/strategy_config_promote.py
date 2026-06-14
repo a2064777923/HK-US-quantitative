@@ -18,6 +18,7 @@ PROPOSAL_FILE = os.environ.get("RT_SIGNAL_STRATEGY_CONFIG_PROPOSAL_FILE", "/tmp/
 TARGET_CONFIG_FILE = os.environ.get("RT_SIGNAL_STRATEGY_CONFIG_FILE", "/root/rt_signal_strategy_config.json")
 BACKUP_DIR = os.environ.get("RT_SIGNAL_STRATEGY_CONFIG_BACKUP_DIR", "/tmp/rt_signal_strategy_config_backups")
 SERVICE_NAME = os.environ.get("RT_SIGNAL_ENGINE_SERVICE", "rt_signal_engine_v5.service")
+MAX_PROPOSAL_AGE_MINUTES = float(os.environ.get("RT_SIGNAL_STRATEGY_CONFIG_PROMOTE_MAX_PROPOSAL_AGE_MINUTES", "90"))
 
 
 def now_iso():
@@ -46,10 +47,50 @@ def proposal_hash_for_config(config):
     return normalized.get("config_id")
 
 
-def validate_proposal(proposal):
+def parse_timestamp(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).strip().replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def proposal_freshness(proposal, now=None, max_age_minutes=MAX_PROPOSAL_AGE_MINUTES):
+    now = now or datetime.now()
+    generated_at = (proposal or {}).get("generated_at")
+    timestamp = parse_timestamp(generated_at)
+    if timestamp is None:
+        return {
+            "status": "missing_timestamp",
+            "generated_at": generated_at,
+            "age_minutes": None,
+            "max_age_minutes": max_age_minutes,
+            "checked_at": now.isoformat(timespec="seconds"),
+        }
+    age = round((now - timestamp).total_seconds() / 60.0, 2)
+    if age < -5:
+        status = "future_timestamp"
+    elif age > max_age_minutes:
+        status = "stale"
+    else:
+        status = "fresh"
+    return {
+        "status": status,
+        "generated_at": generated_at,
+        "age_minutes": age,
+        "max_age_minutes": max_age_minutes,
+        "checked_at": now.isoformat(timespec="seconds"),
+    }
+
+
+def validate_proposal(proposal, now=None, max_age_minutes=MAX_PROPOSAL_AGE_MINUTES):
     reasons = []
     if proposal.get("schema") != "rt_signal_strategy_config_proposal_v1":
         reasons.append("proposal_schema_invalid")
+    freshness = proposal_freshness(proposal, now=now, max_age_minutes=max_age_minutes)
+    if freshness["status"] != "fresh":
+        reasons.append(f"proposal_{freshness['status']}")
     if (proposal.get("source") or {}).get("auto_applied") is not False:
         reasons.append("proposal_source_must_be_manual")
     if (proposal.get("source") or {}).get("manual_review_required") is not True:
@@ -66,7 +107,7 @@ def validate_proposal(proposal):
     proposed_config = proposal.get("proposed_config")
     if not isinstance(proposed_config, dict):
         reasons.append("proposed_config_missing")
-        return None, reasons
+        return None, reasons, freshness
     normalized, warnings = rt.normalize_strategy_config(proposed_config)
     reasons.extend(f"proposed_config_warning:{warning}" for warning in warnings)
     expected_hash = proposal.get("proposal_hash")
@@ -75,7 +116,7 @@ def validate_proposal(proposal):
         reasons.append("proposal_hash_missing")
     elif actual_hash != expected_hash:
         reasons.append("proposal_hash_mismatch")
-    return normalized, reasons
+    return normalized, reasons, freshness
 
 
 def diff_summary(current_config, proposed_config):
@@ -130,10 +171,16 @@ def build_report(
     apply=False,
     confirm_proposal_hash="",
     restart=False,
+    now=None,
+    max_proposal_age_minutes=MAX_PROPOSAL_AGE_MINUTES,
 ):
     proposal = load_json_file(proposal_file)
     current_config = load_json_file(target_config_file, rt.default_strategy_config())
-    proposed_config, validation_reasons = validate_proposal(proposal)
+    proposed_config, validation_reasons, freshness = validate_proposal(
+        proposal,
+        now=now,
+        max_age_minutes=max_proposal_age_minutes,
+    )
     expected_hash = proposal.get("proposal_hash")
     reasons = list(validation_reasons)
     if apply and not confirm_proposal_hash:
@@ -173,6 +220,7 @@ def build_report(
         "current_config_id": current_id,
         "proposal_hash": expected_hash,
         "confirm_proposal_hash": confirm_proposal_hash,
+        "proposal_freshness": freshness,
         "change_count": len(changes),
         "changes": changes,
         "promotion_blockers": proposal.get("promotion_blockers") or [],
@@ -185,6 +233,8 @@ def build_report(
         "safety": {
             "dry_run_by_default": True,
             "requires_confirm_proposal_hash": True,
+            "requires_fresh_proposal": True,
+            "max_proposal_age_minutes": max_proposal_age_minutes,
             "backs_up_target_before_apply": True,
             "restart_requires_explicit_flag": True,
         },
@@ -201,6 +251,14 @@ def build_text_report(payload):
     ]
     if payload.get("validation_reasons"):
         lines.append("Reasons: " + ", ".join(payload["validation_reasons"]))
+    freshness = payload.get("proposal_freshness") or {}
+    lines.append(
+        "Proposal freshness: status={status} age={age} max_age={max_age}".format(
+            status=freshness.get("status"),
+            age=freshness.get("age_minutes"),
+            max_age=freshness.get("max_age_minutes"),
+        )
+    )
     if payload.get("promotion_blockers"):
         lines.append(
             "Promotion blockers: "
@@ -227,6 +285,7 @@ def parse_args():
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm-proposal-hash", default="")
     parser.add_argument("--restart-service", action="store_true")
+    parser.add_argument("--max-proposal-age-minutes", type=float, default=MAX_PROPOSAL_AGE_MINUTES)
     parser.add_argument("--json", action="store_true", help="emit JSON only")
     parser.add_argument("--text", action="store_true", help="emit text only")
     return parser.parse_args()
@@ -240,6 +299,7 @@ def main():
         apply=args.apply,
         confirm_proposal_hash=args.confirm_proposal_hash,
         restart=args.restart_service,
+        max_proposal_age_minutes=args.max_proposal_age_minutes,
     )
     text = build_text_report(payload)
     if args.text:
