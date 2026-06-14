@@ -909,6 +909,17 @@ def simulation_actions(simulation_performance):
                 "Keep alert-sim disabled; complete symbol-level postmortem notes for worst closed symbols and high-risk holdings, "
                 "then wait for later simulation, outcome, readiness, and Hermes judgment-effect evidence before changing exposure."
             ),
+            operator_effect={
+                "simulation_recovery_review": True,
+                "writes_postmortem_notes": False,
+                "enables_alert_sim": False,
+                "changes_execution_mode": False,
+                "changes_strategy_config": False,
+                "submits_orders": False,
+                "changes_strategy": False,
+                "changes_portfolio": False,
+            },
+            blockers=["simulation_performance_fail"],
         )
     ]
 

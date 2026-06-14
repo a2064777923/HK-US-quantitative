@@ -760,8 +760,15 @@ class OperatorActionQueueReportTests(unittest.TestCase):
             item["evidence"]["failure_postmortem"]["required_learning_record"]["required_fields"],
         )
         self.assertEqual(item["evidence"]["remediation_proposal_hash"], "remediate12345678")
+        self.assertTrue(item["operator_effect"]["simulation_recovery_review"])
+        self.assertFalse(item["operator_effect"]["writes_postmortem_notes"])
+        self.assertFalse(item["operator_effect"]["enables_alert_sim"])
+        self.assertFalse(item["operator_effect"]["changes_execution_mode"])
+        self.assertFalse(item["operator_effect"]["changes_strategy_config"])
         self.assertFalse(item["operator_effect"]["submits_orders"])
         self.assertFalse(item["operator_effect"]["changes_strategy"])
+        self.assertFalse(item["operator_effect"]["changes_portfolio"])
+        self.assertIn("simulation_performance_fail", item["blockers"])
 
     def test_missing_replay_convergence_context_action_is_report_only(self):
         payloads = base_payloads()
