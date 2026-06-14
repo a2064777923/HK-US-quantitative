@@ -71,6 +71,11 @@ class StrategyReviewReportTests(unittest.TestCase):
         self.assertTrue(row["execution_allowed_by_report"])
         self.assertEqual(payload["overall_policy"]["policy"], "candidate_for_limited_paper_execution_review")
         self.assertFalse(payload["overall_policy"]["execution_allowed_by_report"])
+        self.assertTrue(payload["operator_contract"]["read_only"])
+        self.assertFalse(payload["operator_contract"]["submits_orders"])
+        self.assertFalse(payload["operator_contract"]["changes_strategy_config"])
+        self.assertTrue(payload["operator_contract"]["trigger_policies_are_strategy_config_proposal_input"])
+        self.assertTrue(payload["operator_contract"]["requires_strategy_config_proposal_gate_before_promotion"])
 
     def test_negative_trigger_is_disable_execution_review(self):
         payload = report.build_report(
@@ -107,6 +112,22 @@ class StrategyReviewReportTests(unittest.TestCase):
         self.assertIn("trigger_outcome_sample_below_10", row["reasons"])
         self.assertEqual(payload["overall_policy"]["policy"], "keep_shadow_or_dry_run")
         self.assertIn("keep_alert_sim_disabled_until_strategy_review_passes", payload["recommendations"])
+        self.assertTrue(payload["operator_contract"]["insufficient_trigger_samples_remain_shadow_only"])
+
+    def test_insufficient_outcome_sample_caps_low_quality_at_shadow_only(self):
+        payload = report.build_report(
+            outcome_report([outcome_row("BUY:noisy", resolved=0, avg=None, win=None)], overall_resolved=0),
+            quality_report([quality_row("BUY", "noisy", validation=0, review=10, eligible=0, move=-1.2)]),
+        )
+        row = payload["trigger_policies"][0]
+
+        self.assertEqual(row["policy"], "shadow_only")
+        self.assertIn("trigger_outcome_sample_below_10", row["reasons"])
+        self.assertIn("validation_pass_rate_below_50", row["reasons"])
+        self.assertIn("packet_eligible_rate_below_25", row["reasons"])
+        self.assertIn("negative_intraday_queue_mark", row["reasons"])
+        self.assertNotIn("tighten_trigger_thresholds:BUY:noisy", payload["recommendations"])
+        self.assertIn("collect_more_forward_outcomes_before_execution_review", payload["recommendations"])
 
 
 if __name__ == "__main__":

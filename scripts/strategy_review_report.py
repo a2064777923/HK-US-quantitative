@@ -96,8 +96,9 @@ def reasoned_policy(outcome_row, quality_row=None, horizon=DEFAULT_HORIZON):
     marked_move = as_float(quality_row.get("avg_signed_move_pct"))
     reasons = []
     policy_rank = 0
+    insufficient_sample = resolved < MIN_TRIGGER_SAMPLE
 
-    if resolved < MIN_TRIGGER_SAMPLE:
+    if insufficient_sample:
         reasons.append(f"trigger_outcome_sample_below_{MIN_TRIGGER_SAMPLE}")
         policy_rank = max(policy_rank, 1)
     else:
@@ -119,13 +120,16 @@ def reasoned_policy(outcome_row, quality_row=None, horizon=DEFAULT_HORIZON):
 
     if validation_rate is not None and validation_rate < MIN_VALIDATION_PASS_RATE_PCT:
         reasons.append(f"validation_pass_rate_below_{MIN_VALIDATION_PASS_RATE_PCT:g}")
-        policy_rank = max(policy_rank, 2)
+        if not insufficient_sample:
+            policy_rank = max(policy_rank, 2)
     if eligible_rate is not None and eligible_rate < MIN_ELIGIBLE_RATE_PCT:
         reasons.append(f"packet_eligible_rate_below_{MIN_ELIGIBLE_RATE_PCT:g}")
-        policy_rank = max(policy_rank, 2)
+        if not insufficient_sample:
+            policy_rank = max(policy_rank, 2)
     if marked_move is not None and marked_move < 0:
         reasons.append("negative_intraday_queue_mark")
-        policy_rank = max(policy_rank, 2)
+        if not insufficient_sample:
+            policy_rank = max(policy_rank, 2)
 
     if policy_rank >= 3:
         policy = "disable_execution_review"
@@ -264,6 +268,17 @@ def build_report(outcome_report=None, quality_report=None, horizon=DEFAULT_HORIZ
             "min_overall_sample": MIN_OVERALL_SAMPLE,
             "min_win_rate_pct": MIN_WIN_RATE_PCT,
             "min_avg_return_pct": MIN_AVG_RETURN_PCT,
+        },
+        "operator_contract": {
+            "read_only": True,
+            "submits_orders": False,
+            "writes_alert_queue": False,
+            "changes_strategy_config": False,
+            "changes_execution_mode": False,
+            "trigger_policies_are_strategy_config_proposal_input": True,
+            "requires_strategy_config_proposal_gate_before_promotion": True,
+            "requires_simulation_readiness_learning_and_convergence_gates": True,
+            "insufficient_trigger_samples_remain_shadow_only": True,
         },
         "overall_policy": overall_policy(outcome_report or {}, quality_report or {}, trigger_policies, horizon=horizon),
         "trigger_policies": trigger_policies,
