@@ -1095,8 +1095,8 @@ def indicator_signal_ready(indicators):
         and lengths["closes"] >= MIN_SIGNAL_HISTORY_BARS
     )
 
-def alert_signal_date(quote_time=None, generated_at=None):
-    parsed_quote_time = parse_quote_datetime(quote_time)
+def alert_signal_date(quote_time=None, generated_at=None, market=None):
+    parsed_quote_time = parse_quote_datetime(quote_time, market=market)
     if parsed_quote_time is not None:
         return parsed_quote_time.strftime("%Y%m%d")
     generated_at = generated_at or datetime.now()
@@ -1409,7 +1409,7 @@ class TriggerEngine:
             
             market = quote.get("market", "")
             generated_at = datetime.now()
-            signal_date = alert_signal_date(quote.get("time"), generated_at=generated_at)
+            signal_date = alert_signal_date(quote.get("time"), generated_at=generated_at, market=market)
             self.alerts.append({
                 "signal_id": self.alert_signal_id(
                     symbol,

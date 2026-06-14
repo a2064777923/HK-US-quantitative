@@ -741,6 +741,39 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             "20260612",
         )
 
+    def test_alert_signal_date_converts_timezone_aware_quote_to_market_date(self):
+        self.assertEqual(
+            rt.alert_signal_date(
+                "2026-06-11T16:30:00Z",
+                generated_at=datetime(2026, 6, 11, 23, 0, 0),
+                market="HK",
+            ),
+            "20260612",
+        )
+
+    def test_signal_id_date_uses_market_local_date_for_timezone_aware_quote(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "00700",
+            indicators,
+            {
+                "price": 300,
+                "volume": 0,
+                "market": "HK",
+                "time": "2026-06-11T16:30:00Z",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertTrue(alert["signal_id"].startswith("20260612:00700:RSI超賣:BUY:"))
+
     def test_market_open_flags_handle_us_overnight_hkt_weekday_rollover(self):
         hk_open, us_open = rt.market_open_flags_hkt(datetime(2026, 6, 13, 3, 59))
         self.assertFalse(hk_open)
