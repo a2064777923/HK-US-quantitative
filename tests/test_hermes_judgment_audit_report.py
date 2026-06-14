@@ -7,6 +7,13 @@ import json
 from scripts import hermes_judgment_audit_report as audit
 
 
+def context_review(**overrides):
+    review = {flag: True for flag in audit.REQUIRED_CONTEXT_REVIEW_FLAGS}
+    review["notes"] = ["unit test reviewed all required context"]
+    review.update(overrides)
+    return review
+
+
 def judgment(signal_id="sig-1", decision="approve", **extra):
     item = {
         "schema": "hermes_trade_judgment_v1",
@@ -19,6 +26,8 @@ def judgment(signal_id="sig-1", decision="approve", **extra):
         "opposing_factors": ["unit test opposition"],
         "risk_notes": ["unit test risk"],
     }
+    if decision in ("approve", "reduce"):
+        item["context_review"] = context_review()
     item.update(extra)
     return item
 
@@ -135,6 +144,48 @@ class HermesJudgmentAuditReportTests(unittest.TestCase):
         row = payload["judgments"][0]
         self.assertEqual(row["status"], "FAIL")
         self.assertIn("judgment_missing_packet_id", row["reasons"])
+
+    def test_approval_requires_structured_context_review(self):
+        item = judgment("sig-1")
+        item.pop("context_review")
+
+        payload = audit.build_report([item], packet(market_regime="risk_on", outcome_ok=True))
+        row = payload["judgments"][0]
+
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("context_review_missing", row["reasons"])
+        self.assertIn(
+            "approve_reduce_judgments_require_structured_context_review",
+            payload["recommendations"],
+        )
+
+    def test_partial_context_review_flags_missing_fields(self):
+        payload = audit.build_report(
+            [
+                judgment(
+                    "sig-1",
+                    context_review=context_review(
+                        external_market_context_reviewed=False,
+                        market_sentiment_reviewed=False,
+                    ),
+                )
+            ],
+            packet(market_regime="risk_on", outcome_ok=True),
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("context_review_missing_external_market_context_reviewed", row["reasons"])
+        self.assertIn("context_review_missing_market_sentiment_reviewed", row["reasons"])
+
+    def test_schema_required_context_review_flags_match_audit(self):
+        schema_path = Path(__file__).resolve().parents[1] / "config" / "hermes_trade_judgment.schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        required = schema["$defs"]["required_context_review"]
+
+        self.assertEqual(set(required["required"]), set(audit.REQUIRED_CONTEXT_REVIEW_FLAGS))
+        for flag in audit.REQUIRED_CONTEXT_REVIEW_FLAGS:
+            self.assertEqual(required["properties"][flag], {"const": True})
 
 
 if __name__ == "__main__":

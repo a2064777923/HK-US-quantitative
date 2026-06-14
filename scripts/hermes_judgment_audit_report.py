@@ -19,6 +19,23 @@ PACKET_FILE = os.environ.get("HERMES_REVIEW_PACKET_FILE", "/tmp/hermes_signal_re
 PACKET_ARCHIVE_DIR = os.environ.get("HERMES_REVIEW_PACKET_ARCHIVE_DIR", "/tmp/hermes_review_packet_archive")
 REPORT_FILE = os.environ.get("HERMES_JUDGMENT_AUDIT_FILE", "/tmp/hermes_judgment_audit_report.json")
 MAX_JUDGMENT_AGE_MINUTES = int(os.environ.get("RT_ORDER_MAX_JUDGMENT_AGE_MINUTES", "240"))
+REQUIRED_CONTEXT_REVIEW_FLAGS = (
+    "technical_signal_reviewed",
+    "portfolio_risk_reviewed",
+    "strategy_evidence_reviewed",
+    "data_health_reviewed",
+    "execution_readiness_reviewed",
+    "market_context_reviewed",
+    "intraday_context_reviewed",
+    "external_market_context_reviewed",
+    "event_catalysts_reviewed",
+    "event_catalyst_signals_reviewed",
+    "market_sentiment_reviewed",
+    "fundamentals_context_reviewed",
+    "source_reliability_reviewed",
+    "simulation_performance_reviewed",
+    "cron_wiring_reviewed",
+)
 
 
 def now_iso():
@@ -63,6 +80,20 @@ def as_float(value, default=None):
 
 def decision_is_approval(judgment):
     return str(judgment.get("decision", "")).strip().lower() in ("approve", "reduce")
+
+
+def context_review_reasons(judgment):
+    review = judgment.get("context_review")
+    if not isinstance(review, dict):
+        return ["context_review_missing"]
+    reasons = []
+    for flag in REQUIRED_CONTEXT_REVIEW_FLAGS:
+        if review.get(flag) is not True:
+            reasons.append(f"context_review_missing_{flag}")
+    notes = review.get("notes")
+    if notes is not None and not isinstance(notes, list):
+        reasons.append("context_review_notes_invalid")
+    return reasons
 
 
 def packet_review_maps(packet):
@@ -160,6 +191,8 @@ def validate_judgment_contract(judgment):
                 reasons.append("max_quantity_invalid")
         except (TypeError, ValueError):
             reasons.append("max_quantity_missing")
+    if decision in ("approve", "reduce"):
+        reasons.extend(context_review_reasons(judgment))
     if judgment.get("market_regime_exception") is True:
         ok, exception_reasons = intake.market_exception_from_judgment(judgment)
         if not ok:
@@ -312,6 +345,10 @@ def build_recommendations(rows, reason_counts):
         recs.append("include_packet_id_in_future_judgments")
     if reason_counts.get("packet_archive_missing_for_packet_id"):
         recs.append("retain_packet_archive_for_judgment_audit")
+    if reason_counts.get("context_review_missing") or any(
+        reason.startswith("context_review_missing_") for reason in reason_counts
+    ):
+        recs.append("approve_reduce_judgments_require_structured_context_review")
     if not recs:
         recs.append("judgment_audit_clean_continue_review_only_observation")
     return recs

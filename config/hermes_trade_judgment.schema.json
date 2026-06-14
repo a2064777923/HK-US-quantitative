@@ -4,6 +4,51 @@
   "title": "Hermes Trade Judgment",
   "type": "object",
   "additionalProperties": true,
+  "$defs": {
+    "required_context_review": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Approve/reduce must set every required context review flag to true. This mirrors hermes_judgment_audit_report.REQUIRED_CONTEXT_REVIEW_FLAGS.",
+      "required": [
+        "technical_signal_reviewed",
+        "portfolio_risk_reviewed",
+        "strategy_evidence_reviewed",
+        "data_health_reviewed",
+        "execution_readiness_reviewed",
+        "market_context_reviewed",
+        "intraday_context_reviewed",
+        "external_market_context_reviewed",
+        "event_catalysts_reviewed",
+        "event_catalyst_signals_reviewed",
+        "market_sentiment_reviewed",
+        "fundamentals_context_reviewed",
+        "source_reliability_reviewed",
+        "simulation_performance_reviewed",
+        "cron_wiring_reviewed"
+      ],
+      "properties": {
+        "technical_signal_reviewed": {"const": true},
+        "portfolio_risk_reviewed": {"const": true},
+        "strategy_evidence_reviewed": {"const": true},
+        "data_health_reviewed": {"const": true},
+        "execution_readiness_reviewed": {"const": true},
+        "market_context_reviewed": {"const": true},
+        "intraday_context_reviewed": {"const": true},
+        "external_market_context_reviewed": {"const": true},
+        "event_catalysts_reviewed": {"const": true},
+        "event_catalyst_signals_reviewed": {"const": true},
+        "market_sentiment_reviewed": {"const": true},
+        "fundamentals_context_reviewed": {"const": true},
+        "source_reliability_reviewed": {"const": true},
+        "simulation_performance_reviewed": {"const": true},
+        "cron_wiring_reviewed": {"const": true},
+        "notes": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  },
   "required": [
     "schema",
     "packet_id",
@@ -87,6 +132,10 @@
     "strategy_evidence": {
       "type": "object",
       "description": "Optional snapshot or summary of rt_signal_outcome_report used by Hermes during review."
+    },
+    "context_review": {
+      "type": "object",
+      "description": "Required for approve/reduce. Every required *_reviewed flag must be true."
     }
   },
   "allOf": [
@@ -95,7 +144,21 @@
         "properties": {"decision": {"const": "reduce"}}
       },
       "then": {
-        "required": ["max_quantity"]
+        "required": ["max_quantity", "context_review"],
+        "properties": {
+          "context_review": {"$ref": "#/$defs/required_context_review"}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"decision": {"const": "approve"}}
+      },
+      "then": {
+        "required": ["context_review"],
+        "properties": {
+          "context_review": {"$ref": "#/$defs/required_context_review"}
+        }
       }
     },
     {
