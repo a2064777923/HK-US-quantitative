@@ -3708,6 +3708,18 @@ Simulation-performance integration is additive and lossless for v5:
 - the default freshness window is 90 minutes, inherited from `EXECUTION_READINESS_MAX_REPORT_AGE_MINUTES` unless `STRATEGY_CONFIG_PROPOSAL_MAX_SIMULATION_PERFORMANCE_AGE_MINUTES` or `--max-simulation-performance-age-minutes` is set;
 - none of these fields change alert generation, Hermes eligibility, thresholds, watchlists, crontab, or execution mode.
 
+`strategy_learning_report.py` now consumes the Hermes judgment audit report directly. Default input is `/tmp/hermes_judgment_audit_report.json`, overridable with `HERMES_JUDGMENT_AUDIT_FILE` or `--judgment-audit-report-file`. The report joins audit rows by `signal_id`, writes `judgment_audit_status` and `judgment_audit_reasons` into recent joined rows, emits `judgment_audit_coverage`, and only builds `audit_pass_judgment_effect` from rows whose audit status is `PASS`. If the audit report is missing, truncated, non-OK, contains any `FAIL`, or misses any judged signal, the audit-pass effect is absent and promotion remains blocked. When diagnostic directional rows exist, `execution_candidate_audit_pass_judgment_effect` is also computed from `execution_candidate=true` rows only, so shadow/duplicate/research rows can inform Hermes critique without becoming threshold-promotion evidence.
+
+No-loss job order:
+
+```bash
+/usr/bin/python3 /root/hermes_judgment_audit_report.py --output /tmp/hermes_judgment_audit_report.json --text
+/usr/bin/python3 /root/strategy_learning_report.py --judgment-audit-report-file /tmp/hermes_judgment_audit_report.json --output /tmp/strategy_learning_report.json --text
+/usr/bin/python3 /root/strategy_config_proposal.py --output /tmp/rt_signal_strategy_config_proposal.json --text
+```
+
+This is an evidence-contract change only. It does not submit orders, change v5 thresholds, edit watchlists, mutate the simulation ledger, upload raw data, or require existing jobs to change paths if they already use the `/tmp/...` defaults.
+
 Hermes/operator interpretation:
 
 - do not review threshold changes in isolation from the 100k HKD simulation ledger;

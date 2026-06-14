@@ -18,6 +18,7 @@ JUDGMENT_FILE = os.environ.get("RT_ORDER_JUDGMENT_FILE", "/tmp/hermes_trade_judg
 INTAKE_STATE_FILE = os.environ.get("RT_ORDER_STATE_FILE", "/tmp/rt_order_intake_state.json")
 OUTCOME_REPORT_FILE = os.environ.get("RT_SIGNAL_OUTCOME_REPORT_FILE", "/tmp/rt_signal_outcome_report.json")
 WATCHLIST_DIFF_REPORT_FILE = os.environ.get("WATCHLIST_DIFF_REPORT_FILE", "/tmp/watchlist_diff_report.json")
+JUDGMENT_AUDIT_REPORT_FILE = os.environ.get("HERMES_JUDGMENT_AUDIT_FILE", "/tmp/hermes_judgment_audit_report.json")
 REPORT_FILE = os.environ.get("STRATEGY_LEARNING_REPORT_FILE", "/tmp/strategy_learning_report.json")
 DEFAULT_QUEUE_SCAN_LIMIT = int(os.environ.get("STRATEGY_LEARNING_QUEUE_SCAN_LIMIT", "2000"))
 DEFAULT_HORIZON = os.environ.get("STRATEGY_LEARNING_HORIZON", "1d")
@@ -315,6 +316,15 @@ def as_float(value):
         return None
 
 
+def as_int(value, default=0):
+    try:
+        if value in (None, ""):
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def sizing_diagnostics(alert, decision):
     reasons = set((decision or {}).get("reasons") or [])
     if "quantity_zero_after_risk_and_lot_rounding" not in reasons:
@@ -470,6 +480,141 @@ def compare_judgment_effect(rows):
         "approved_or_reduced": metric_summary(approved),
         "rejected_or_held": metric_summary(rejected),
         "missing_judgment": metric_summary(missing),
+    }
+
+
+def load_judgment_audit_report(path=JUDGMENT_AUDIT_REPORT_FILE):
+    report = load_json_file(path)
+    rows = report.get("judgments") if isinstance(report.get("judgments"), list) else []
+    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
+    judgment_count = as_int(counts.get("judgment_count"), len(rows))
+    truncated = bool(judgment_count and len(rows) < judgment_count)
+    return report, {
+        "path": path,
+        "schema": report.get("schema"),
+        "status": report.get("status"),
+        "generated_at": report.get("generated_at"),
+        "audit_row_count": len(rows),
+        "audit_judgment_count": judgment_count,
+        "truncated": truncated,
+    }
+
+
+def judgment_audit_by_signal_id(report):
+    rows = report.get("judgments") if isinstance(report, dict) else []
+    by_id = {}
+    if not isinstance(rows, list):
+        return by_id
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("signal_id") or "").strip()
+        if sid:
+            by_id[sid] = row
+    return by_id
+
+
+def is_judged_row(row):
+    return row.get("judgment_decision") in ("approve", "reduce", "reject", "hold")
+
+
+def normalize_audit_status(value):
+    status = str(value or "").strip().upper()
+    if status in ("PASS", "FAIL"):
+        return status
+    return "FAIL"
+
+
+def attach_judgment_audit(rows, audit_report):
+    available = (
+        isinstance(audit_report, dict)
+        and audit_report.get("schema") == "hermes_judgment_audit_report_v1"
+        and isinstance(audit_report.get("judgments"), list)
+    )
+    audit_by_id = judgment_audit_by_signal_id(audit_report) if available else {}
+    for row in rows:
+        if not is_judged_row(row):
+            row["judgment_audit_status"] = "NOT_JUDGED"
+            row["judgment_audit_reasons"] = []
+            continue
+        audit_row = audit_by_id.get(str(row.get("signal_id") or ""))
+        if not available or not audit_row:
+            row["judgment_audit_status"] = "MISSING"
+            row["judgment_audit_reasons"] = ["judgment_audit_missing"]
+            continue
+        status = normalize_audit_status(audit_row.get("status"))
+        reasons = audit_row.get("reasons") if isinstance(audit_row.get("reasons"), list) else []
+        if status == "FAIL" and not reasons:
+            reasons = ["judgment_audit_status_fail_without_reason"]
+        row["judgment_audit_status"] = status
+        row["judgment_audit_reasons"] = sorted({str(reason) for reason in reasons})
+    return rows
+
+
+def judgment_audit_coverage(rows, audit_report, audit_stats):
+    available = (
+        isinstance(audit_report, dict)
+        and audit_report.get("schema") == "hermes_judgment_audit_report_v1"
+        and isinstance(audit_report.get("judgments"), list)
+    )
+    judged = [row for row in rows if is_judged_row(row)]
+    pass_rows = [row for row in judged if row.get("judgment_audit_status") == "PASS"]
+    fail_rows = [row for row in judged if row.get("judgment_audit_status") == "FAIL"]
+    missing_rows = [row for row in judged if row.get("judgment_audit_status") == "MISSING"]
+    approved = [row for row in judged if row["judgment_decision"] in ("approve", "reduce")]
+    rejected = [row for row in judged if row["judgment_decision"] in ("reject", "hold")]
+    approved_fail_or_missing = [
+        row
+        for row in approved
+        if row.get("judgment_audit_status") in ("FAIL", "MISSING")
+    ]
+    rejected_fail_or_missing = [
+        row
+        for row in rejected
+        if row.get("judgment_audit_status") in ("FAIL", "MISSING")
+    ]
+    return {
+        "audit_report_available": available,
+        "audit_report_status": audit_report.get("status") if isinstance(audit_report, dict) else None,
+        "audit_report_truncated": bool((audit_stats or {}).get("truncated")),
+        "joined_judgment_count": len(judged),
+        "audit_pass_count": len(pass_rows),
+        "audit_fail_count": len(fail_rows),
+        "audit_missing_count": len(missing_rows),
+        "approved_or_reduced_count": len(approved),
+        "approved_or_reduced_audit_pass_count": len(
+            [row for row in approved if row.get("judgment_audit_status") == "PASS"]
+        ),
+        "approved_or_reduced_audit_fail_or_missing_count": len(approved_fail_or_missing),
+        "rejected_or_held_count": len(rejected),
+        "rejected_or_held_audit_pass_count": len(
+            [row for row in rejected if row.get("judgment_audit_status") == "PASS"]
+        ),
+        "rejected_or_held_audit_fail_or_missing_count": len(rejected_fail_or_missing),
+    }
+
+
+def audit_pass_judgment_effect(rows, judgment_audit_coverage, sample_filter="judgment_audit_status_PASS"):
+    coverage = judgment_audit_coverage if isinstance(judgment_audit_coverage, dict) else {}
+    if coverage.get("audit_report_available") is not True:
+        return {}
+    if coverage.get("audit_report_status") != "OK":
+        return {}
+    if coverage.get("audit_report_truncated"):
+        return {}
+    if as_int(coverage.get("audit_fail_count")) or as_int(coverage.get("audit_missing_count")):
+        return {}
+    if as_int(coverage.get("approved_or_reduced_audit_fail_or_missing_count")) or as_int(
+        coverage.get("rejected_or_held_audit_fail_or_missing_count")
+    ):
+        return {}
+    audit_pass_rows = [row for row in rows if row.get("judgment_audit_status") == "PASS"]
+    approved = [row for row in audit_pass_rows if row["judgment_decision"] in ("approve", "reduce")]
+    rejected = [row for row in audit_pass_rows if row["judgment_decision"] in ("reject", "hold")]
+    return {
+        "sample_filter": sample_filter,
+        "approved_or_reduced": metric_summary(approved),
+        "rejected_or_held": metric_summary(rejected),
     }
 
 
@@ -718,6 +863,7 @@ def build_report(
     intake_state_file=INTAKE_STATE_FILE,
     outcome_report_file=OUTCOME_REPORT_FILE,
     watchlist_diff_report_file=WATCHLIST_DIFF_REPORT_FILE,
+    judgment_audit_report_file=JUDGMENT_AUDIT_REPORT_FILE,
     horizon=DEFAULT_HORIZON,
     queue_scan_limit=DEFAULT_QUEUE_SCAN_LIMIT,
     sample_scope_mode=DEFAULT_SAMPLE_SCOPE_MODE,
@@ -727,12 +873,20 @@ def build_report(
     intake_decisions, intake_stats = load_intake_decisions(intake_state_file)
     outcomes, outcome_stats = load_outcomes(outcome_report_file)
     watchlist_diff_payload = load_json_file(watchlist_diff_report_file)
+    judgment_audit_report, judgment_audit_stats = load_judgment_audit_report(judgment_audit_report_file)
     all_rows = build_join_rows(alerts, judgments, intake_decisions, outcomes, horizon=horizon)
+    attach_judgment_audit(all_rows, judgment_audit_report)
     rows, sample_scope = apply_sample_scope(
         all_rows,
         infer_current_sample_scope(alerts, sample_scope_mode=sample_scope_mode),
     )
     execution_candidate_rows = [row for row in rows if row.get("execution_candidate") is True]
+    coverage = judgment_audit_coverage(rows, judgment_audit_report, judgment_audit_stats)
+    execution_candidate_coverage = judgment_audit_coverage(
+        execution_candidate_rows,
+        judgment_audit_report,
+        judgment_audit_stats,
+    )
     by_trigger = sorted(grouped_summary(rows, lambda row: row["trigger_key"]), key=lambda row: (-row["resolved_count"], row["key"]))
     execution_candidate_by_trigger = sorted(
         grouped_summary(execution_candidate_rows, lambda row: row["trigger_key"]),
@@ -749,6 +903,7 @@ def build_report(
             "judgments": judgment_stats,
             "intake_state": intake_stats,
             "outcomes": outcome_stats,
+            "judgment_audit": judgment_audit_stats,
             "watchlist_diff": {
                 "path": watchlist_diff_report_file,
                 "schema": watchlist_diff_payload.get("schema"),
@@ -776,8 +931,16 @@ def build_report(
         },
         "overall": metric_summary(rows),
         "judgment_effect": compare_judgment_effect(rows),
+        "judgment_audit_coverage": coverage,
+        "audit_pass_judgment_effect": audit_pass_judgment_effect(rows, coverage),
         "execution_candidate_scope": build_execution_candidate_scope(rows),
         "execution_candidate_judgment_effect": compare_judgment_effect(execution_candidate_rows),
+        "execution_candidate_audit_pass_judgment_effect": audit_pass_judgment_effect(
+            execution_candidate_rows,
+            execution_candidate_coverage,
+            sample_filter="execution_candidate_true_and_judgment_audit_status_PASS",
+        ),
+        "execution_candidate_judgment_audit_coverage": execution_candidate_coverage,
         "by_trigger": by_trigger,
         "execution_candidate_by_trigger": execution_candidate_by_trigger,
         "by_judgment_decision": grouped_summary(rows, lambda row: row["judgment_decision"]),
@@ -851,6 +1014,7 @@ def parse_args():
     parser.add_argument("--intake-state-file", default=INTAKE_STATE_FILE)
     parser.add_argument("--outcome-report-file", default=OUTCOME_REPORT_FILE)
     parser.add_argument("--watchlist-diff-report-file", default=WATCHLIST_DIFF_REPORT_FILE)
+    parser.add_argument("--judgment-audit-report-file", default=JUDGMENT_AUDIT_REPORT_FILE)
     parser.add_argument("--horizon", default=DEFAULT_HORIZON)
     parser.add_argument("--queue-scan-limit", type=int, default=DEFAULT_QUEUE_SCAN_LIMIT)
     parser.add_argument(
@@ -873,6 +1037,7 @@ def main():
         intake_state_file=args.intake_state_file,
         outcome_report_file=args.outcome_report_file,
         watchlist_diff_report_file=args.watchlist_diff_report_file,
+        judgment_audit_report_file=args.judgment_audit_report_file,
         horizon=args.horizon,
         queue_scan_limit=args.queue_scan_limit,
         sample_scope_mode=args.sample_scope,
