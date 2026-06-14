@@ -1075,6 +1075,8 @@ The cron producer line is still dry-run; it makes the current plan visible but d
 
 The timeframe-quality gate does not trust `coverage_status=OK` by itself. For each 5m/15m/30m/60m window, it checks `row_count` against `expected_minute_count` or the timeframe length; underfilled windows are downgraded to `LIMITED`, and empty windows are `MISSING`. This keeps sparse minute/hour evidence from being presented to Hermes as complete confirmation.
 
+Each symbol now also carries a compact `decision_use`: `soft_confirmation_eligible`, `cap_or_challenge_only`, or `diagnostic_only`, with matching `allowed_effects`. The top-level `summary` exposes the corresponding symbol counts. Hermes should use these fields as the first-pass intraday evidence contract instead of inferring permission from raw 5m/15m/30m/60m counters. Only symbols with complete, clean, full-fidelity timeframe evidence are `soft_confirmation_eligible`; limited, conflicting, stale, closed, low-fidelity, snapshot-like, or source-unverified evidence is capped to challenge/cap/diagnostic use and still cannot relax daily or execution gates.
+
 Hermes packet integration is lossless: `hermes_review_packet.py` embeds the report as top-level `intraday_timeframe_quality`. Existing jobs can ignore this section. Hermes should use it to cap confidence and explain why 5m/15m/30m/60m evidence is only advisory when coverage is partial or source fidelity is weak. It must not use a clean or degraded timeframe-quality report to relax daily data-health, source-reliability, simulation-performance, strategy-evidence, or execution-readiness gates.
 
 Readiness/source-quality integration is also additive:

@@ -21,6 +21,11 @@ TIMEFRAME_ROLES = {
     "30m": "session_structure_confirmation",
     "60m": "session_structure_context",
 }
+SYMBOL_DECISION_EFFECTS = {
+    "soft_confirmation_eligible": ["soft_confirm_signal", "cap_confidence", "challenge_signal"],
+    "cap_or_challenge_only": ["cap_confidence", "challenge_signal"],
+    "diagnostic_only": [],
+}
 
 
 def now_iso():
@@ -110,6 +115,14 @@ def coverage_pct(window, timeframe):
     return rate(rows, expected) if expected else None
 
 
+def symbol_decision_use(status, reasons):
+    if status == "OK" and not reasons:
+        return "soft_confirmation_eligible"
+    if status == "MISSING":
+        return "diagnostic_only"
+    return "cap_or_challenge_only"
+
+
 def summarize_symbol(symbol_row):
     quality = symbol_row.get("quality") if isinstance(symbol_row.get("quality"), dict) else {}
     mtf = (
@@ -155,10 +168,13 @@ def summarize_symbol(symbol_row):
     status = "OK" if not reasons else "DEGRADED"
     if missing and len(missing) == len(TIMEFRAMES):
         status = "MISSING"
+    decision_use = symbol_decision_use(status, reasons)
     return {
         "symbol": symbol_row.get("symbol"),
         "market": symbol_row.get("market"),
         "status": status,
+        "decision_use": decision_use,
+        "allowed_effects": SYMBOL_DECISION_EFFECTS[decision_use],
         "source_status": symbol_row.get("status"),
         "alignment": mtf.get("alignment"),
         "dominant_direction": mtf.get("dominant_direction"),
@@ -224,6 +240,7 @@ def aggregate_summary(markets):
     market_rows = list((markets or {}).values())
     symbols = [symbol for market in market_rows for symbol in market.get("symbols") or []]
     reasons = Counter(reason for symbol in symbols for reason in symbol.get("reasons") or [])
+    decision_uses = Counter(symbol.get("decision_use") or "diagnostic_only" for symbol in symbols)
     timeframe_totals = {}
     for timeframe in TIMEFRAMES:
         statuses = Counter()
@@ -254,6 +271,10 @@ def aggregate_summary(markets):
         "missing_source_granularity_symbol_count": reasons.get("source_granularity_missing", 0),
         "closed_symbol_count": reasons.get("symbol_status_closed", 0),
         "stale_symbol_count": reasons.get("symbol_status_stale", 0),
+        "decision_use_counts": dict(decision_uses),
+        "soft_confirmation_eligible_symbol_count": decision_uses.get("soft_confirmation_eligible", 0),
+        "cap_or_challenge_only_symbol_count": decision_uses.get("cap_or_challenge_only", 0),
+        "diagnostic_only_symbol_count": decision_uses.get("diagnostic_only", 0),
         "reason_counts": dict(reasons),
         "timeframes": timeframe_totals,
     }
@@ -407,6 +428,12 @@ def build_text_report(payload):
             f"symbols={summary.get('symbol_count')} degraded={summary.get('degraded_symbol_count')} "
             f"limited={summary.get('limited_timeframe_symbol_count')} "
             f"conflicts={summary.get('conflict_symbol_count')} low_fidelity={summary.get('low_fidelity_symbol_count')}"
+        ),
+        (
+            "decision_use="
+            f"soft={summary.get('soft_confirmation_eligible_symbol_count', 0)} "
+            f"cap_or_challenge={summary.get('cap_or_challenge_only_symbol_count', 0)} "
+            f"diagnostic={summary.get('diagnostic_only_symbol_count', 0)}"
         ),
     ]
     for timeframe, row in sorted((summary.get("timeframes") or {}).items()):

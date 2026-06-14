@@ -86,7 +86,14 @@ class IntradayTimeframeQualityReportTests(unittest.TestCase):
         self.assertFalse(payload["source"]["submits_orders"])
         self.assertEqual(payload["summary"]["symbol_count"], 1)
         self.assertEqual(payload["summary"]["timeframes"]["60m"]["ok_symbol_count"], 1)
+        self.assertEqual(payload["summary"]["soft_confirmation_eligible_symbol_count"], 1)
+        self.assertEqual(payload["summary"]["cap_or_challenge_only_symbol_count"], 0)
+        self.assertEqual(payload["summary"]["diagnostic_only_symbol_count"], 0)
         self.assertIn("intraday_timeframe_quality_clean", payload["recommendations"])
+        symbol = payload["markets"]["HK"]["symbols"][0]
+        self.assertEqual(symbol["decision_use"], "soft_confirmation_eligible")
+        self.assertEqual(symbol["allowed_effects"], ["soft_confirm_signal", "cap_confidence", "challenge_signal"])
+        self.assertIn("decision_use=soft=1", report.build_text_report(payload))
         policy = payload["decision_policy"]
         self.assertEqual(policy["schema"], "intraday_timeframe_decision_policy_v1")
         self.assertEqual(policy["confidence_use"], "soft_confirmation_eligible")
@@ -112,6 +119,9 @@ class IntradayTimeframeQualityReportTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["timeframes"]["60m"]["limited_symbol_count"], 1)
         symbol = payload["markets"]["HK"]["symbols"][0]
         self.assertEqual(symbol["limited_timeframes"], ["30m", "60m"])
+        self.assertEqual(symbol["decision_use"], "cap_or_challenge_only")
+        self.assertEqual(symbol["allowed_effects"], ["cap_confidence", "challenge_signal"])
+        self.assertEqual(payload["summary"]["cap_or_challenge_only_symbol_count"], 1)
         self.assertIn("timeframe_coverage_limited", symbol["reasons"])
         self.assertIn("do_not_raise_confidence_from_limited_30m_60m_coverage", payload["recommendations"])
         policy = payload["decision_policy"]
@@ -139,6 +149,7 @@ class IntradayTimeframeQualityReportTests(unittest.TestCase):
         self.assertEqual(symbol["timeframes"]["30m"]["status"], "LIMITED")
         self.assertEqual(symbol["timeframes"]["60m"]["status"], "LIMITED")
         self.assertEqual(symbol["timeframes"]["60m"]["coverage_pct"], 33.33)
+        self.assertEqual(symbol["decision_use"], "cap_or_challenge_only")
         self.assertIn("timeframe_coverage_limited", symbol["reasons"])
 
     def test_snapshot_low_fidelity_timeframes_are_advisory_only(self):
@@ -156,10 +167,37 @@ class IntradayTimeframeQualityReportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "DEGRADED")
         self.assertEqual(payload["summary"]["low_fidelity_symbol_count"], 1)
         self.assertEqual(payload["summary"]["snapshot_like_symbol_count"], 1)
+        self.assertEqual(payload["summary"]["cap_or_challenge_only_symbol_count"], 1)
+        self.assertEqual(payload["markets"]["HK"]["symbols"][0]["decision_use"], "cap_or_challenge_only")
         self.assertIn(
             "treat_snapshot_minute_timeframes_as_advisory_until_full_ohlcv",
             payload["recommendations"],
         )
+
+    def test_missing_all_timeframes_are_diagnostic_only_for_symbol(self):
+        windows = {
+            "5m": window(5, "MISSING", rows=0),
+            "15m": window(15, "MISSING", rows=0),
+            "30m": window(30, "MISSING", rows=0),
+            "60m": window(60, "MISSING", rows=0),
+        }
+        quality = {
+            "schema": "intraday_symbol_quality_v1",
+            "status": "MISSING",
+            "valid_point_count": 0,
+            "full_ohlc_row_count": 0,
+            "low_fidelity_point_count": 0,
+            "snapshot_like_row_count": 0,
+            "missing_source_granularity_count": 0,
+        }
+        payload = report.build_report(context([symbol_row(status="MISSING", windows=windows, quality=quality)]))
+
+        symbol = payload["markets"]["HK"]["symbols"][0]
+
+        self.assertEqual(symbol["status"], "MISSING")
+        self.assertEqual(symbol["decision_use"], "diagnostic_only")
+        self.assertEqual(symbol["allowed_effects"], [])
+        self.assertEqual(payload["summary"]["diagnostic_only_symbol_count"], 1)
 
     def test_conflicting_timeframes_require_hermes_disclosure(self):
         payload = report.build_report(
@@ -175,6 +213,7 @@ class IntradayTimeframeQualityReportTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "DEGRADED")
         self.assertEqual(payload["summary"]["conflict_symbol_count"], 1)
+        self.assertEqual(payload["markets"]["HK"]["symbols"][0]["decision_use"], "cap_or_challenge_only")
         self.assertIn("require_hermes_to_discuss_intraday_timeframe_conflicts", payload["recommendations"])
 
     def test_invalid_upstream_schema_fails(self):
