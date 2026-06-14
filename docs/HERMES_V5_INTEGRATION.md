@@ -2597,14 +2597,15 @@ Hermes packet integration:
 - `hermes_review_packet.py` reads `/tmp/cron_audit_report.json` into top-level `cron_audit`.
 - Hermes should treat missing read-only jobs as evidence-quality drift, not as trade approval.
 - Hermes may cite `cron_audit.installation_plan.proposal_hash` and `install_lines[]` in an operator message, but must not claim the jobs are installed until a later audit proves it.
-- Hermes must reject/hold if cron audit reports dangerous enabled execution jobs.
+- Hermes must reject/hold if cron audit reports `dangerous_enabled_jobs`. A capped paper/simulation pilot under `limited_pilot_execution_jobs` is visible context, not automatic approval; the per-alert `rt_order_intake.py` gates, readiness, matching Hermes judgment, and pilot caps still decide every order.
 
 Readiness integration:
 
 - `execution_readiness_report.py` reads `/tmp/cron_audit_report.json`.
-- The `cron_wiring` gate includes `installation_plan` so the remediation hash is visible in the aggregate dashboard.
+- The `cron_audit` gate includes an `installation_plan` summary so the remediation hash is visible in the aggregate dashboard without copying full cron lines into readiness.
+- `limited_pilot_execution_jobs` is surfaced with mode, broker, and cap contract. It does not block readiness by itself when `cron_audit.status=OK`, because bounded `alert-sim` paper/simulation still has to pass the intake and pilot gates before any order submission.
 - `WARN` prevents `READY` because report freshness may be unreliable.
-- `FAIL` hard-blocks readiness because execution could bypass the intended gated path.
+- `FAIL` hard-blocks readiness because unbounded execution could bypass the intended gated path.
 
 Default command:
 

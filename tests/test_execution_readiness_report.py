@@ -197,6 +197,27 @@ def healthy_inputs():
             "generated_at": FRESH_TIME,
             "counts": {"judgment_count": 3},
         },
+        "cron_audit": {
+            "schema": "cron_audit_report_v1",
+            "status": "OK",
+            "generated_at": FRESH_TIME,
+            "summary": {
+                "missing_required_job_count": 0,
+                "dangerous_enabled_count": 0,
+                "limited_pilot_execution_count": 0,
+            },
+            "dangerous_enabled_jobs": [],
+            "limited_pilot_execution_jobs": [],
+            "installation_plan": {
+                "schema": "read_only_cron_installation_plan_v1",
+                "status": "not_required",
+                "proposal_hash": "cron-ok-hash",
+                "manual_review_required": False,
+                "install_line_count": 0,
+                "rejected_line_count": 0,
+            },
+            "recommendations": ["cron_wiring_matches_required_read_only_contract"],
+        },
     }
 
 
@@ -732,6 +753,84 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "BLOCKED")
         gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "simulation_trade_review"][0]
         self.assertIn("blocking notes", gate["detail"])
+
+    def test_cron_audit_fail_blocks_readiness(self):
+        inputs = healthy_inputs()
+        inputs["cron_audit"].update(
+            {
+                "status": "FAIL",
+                "summary": {"missing_required_job_count": 0, "dangerous_enabled_count": 1},
+                "dangerous_enabled_jobs": [{"pattern": "RT_ALERT_EXECUTION_MODE=alert-sim"}],
+            }
+        )
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "BLOCKED")
+        gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "cron_audit"][0]
+        self.assertEqual(gate["data"]["dangerous_enabled_count"], 1)
+
+    def test_limited_pilot_cron_audit_is_visible_without_blocking_readiness(self):
+        inputs = healthy_inputs()
+        inputs["cron_audit"].update(
+            {
+                "summary": {
+                    "missing_required_job_count": 0,
+                    "dangerous_enabled_count": 0,
+                    "limited_pilot_execution_count": 1,
+                },
+                "limited_pilot_execution_jobs": [
+                    {
+                        "mode": "alert-sim",
+                        "broker": "alpaca-paper",
+                        "safety_contract": {
+                            "pilot_enabled": True,
+                            "notional_cap_present": True,
+                            "risk_cap_present": True,
+                            "daily_order_cap_present": True,
+                        },
+                    }
+                ],
+            }
+        )
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "READY")
+        gate = [gate for gate in payload["gates"] if gate["gate"] == "cron_audit"][0]
+        self.assertEqual(gate["status"], "PASS")
+        self.assertEqual(gate["data"]["limited_pilot_execution_count"], 1)
+        self.assertEqual(gate["data"]["limited_pilot_execution_jobs"][0]["broker"], "alpaca-paper")
+
+    def test_cron_audit_warn_exposes_installation_plan(self):
+        inputs = healthy_inputs()
+        inputs["cron_audit"].update(
+            {
+                "status": "WARN",
+                "summary": {
+                    "missing_required_job_count": "2",
+                    "dangerous_enabled_count": 0,
+                    "limited_pilot_execution_count": 0,
+                },
+                "installation_plan": {
+                    "schema": "read_only_cron_installation_plan_v1",
+                    "status": "operator_review_required",
+                    "proposal_hash": "install-hash",
+                    "manual_review_required": True,
+                    "install_line_count": "2",
+                    "rejected_line_count": 0,
+                },
+                "recommendations": ["install_missing_read_only_cron_jobs_from_config_hermes_v5_crontab"],
+            }
+        )
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "WARN")
+        gate = [gate for gate in payload["warning_gates"] if gate["gate"] == "cron_audit"][0]
+        self.assertEqual(gate["data"]["missing_required_job_count"], 2)
+        self.assertEqual(gate["data"]["installation_plan"]["proposal_hash"], "install-hash")
+        self.assertEqual(gate["data"]["installation_plan"]["install_line_count"], 2)
 
 
 if __name__ == "__main__":

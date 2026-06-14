@@ -23,6 +23,7 @@ POSITION_JUDGMENT_AUDIT_FILE = os.environ.get(
     "HERMES_POSITION_JUDGMENT_AUDIT_FILE",
     "/tmp/hermes_position_judgment_audit_report.json",
 )
+CRON_AUDIT_FILE = os.environ.get("CRON_AUDIT_REPORT_FILE", "/tmp/cron_audit_report.json")
 REPORT_FILE = os.environ.get("EXECUTION_READINESS_REPORT_FILE", "/tmp/execution_readiness_report.json")
 MIN_RESOLVED_OUTCOMES = int(os.environ.get("EXECUTION_READINESS_MIN_RESOLVED_OUTCOMES", "5"))
 MIN_DIRECTIONAL_INTAKE_COVERAGE_PCT = float(
@@ -65,6 +66,15 @@ def as_float(value, default=None):
         if value in (None, ""):
             return default
         return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def as_int(value, default=0):
+    try:
+        if value in (None, ""):
+            return default
+        return int(value)
     except (TypeError, ValueError):
         return default
 
@@ -379,6 +389,54 @@ def market_context_summary(market_context):
     }
 
 
+def cron_audit_gate_payload(cron_audit):
+    cron_audit = cron_audit if isinstance(cron_audit, dict) else {}
+    summary = cron_audit.get("summary") if isinstance(cron_audit.get("summary"), dict) else {}
+    installation_plan = (
+        cron_audit.get("installation_plan")
+        if isinstance(cron_audit.get("installation_plan"), dict)
+        else {}
+    )
+    limited_pilot = cron_audit.get("limited_pilot_execution_jobs")
+    if not isinstance(limited_pilot, list):
+        limited_pilot = []
+    dangerous = cron_audit.get("dangerous_enabled_jobs")
+    if not isinstance(dangerous, list):
+        dangerous = []
+    missing = cron_audit.get("missing_required_jobs")
+    if not isinstance(missing, list):
+        missing = []
+    return {
+        "schema": cron_audit.get("schema"),
+        "status": cron_audit.get("status"),
+        "generated_at": cron_audit.get("generated_at"),
+        "missing_required_job_count": as_int(summary.get("missing_required_job_count"), len(missing)),
+        "dangerous_enabled_count": as_int(summary.get("dangerous_enabled_count"), len(dangerous)),
+        "limited_pilot_execution_count": as_int(
+            summary.get("limited_pilot_execution_count"),
+            len(limited_pilot),
+        ),
+        "limited_pilot_execution_jobs": [
+            {
+                "mode": row.get("mode"),
+                "broker": row.get("broker"),
+                "safety_contract": row.get("safety_contract") if isinstance(row.get("safety_contract"), dict) else {},
+            }
+            for row in limited_pilot[:5]
+            if isinstance(row, dict)
+        ],
+        "installation_plan": {
+            "schema": installation_plan.get("schema"),
+            "status": installation_plan.get("status"),
+            "proposal_hash": installation_plan.get("proposal_hash"),
+            "manual_review_required": bool(installation_plan.get("manual_review_required")),
+            "install_line_count": as_int(installation_plan.get("install_line_count"), 0),
+            "rejected_line_count": as_int(installation_plan.get("rejected_line_count"), 0),
+        },
+        "recommendations": cron_audit.get("recommendations") or [],
+    }
+
+
 def build_report(
     system_health=None,
     data_health=None,
@@ -391,6 +449,7 @@ def build_report(
     judgment_audit=None,
     simulation_performance=None,
     position_judgment_audit=None,
+    cron_audit=None,
     min_resolved_outcomes=MIN_RESOLVED_OUTCOMES,
     min_directional_intake_coverage_pct=MIN_DIRECTIONAL_INTAKE_COVERAGE_PCT,
     min_win_rate_pct=MIN_WIN_RATE_PCT,
@@ -414,6 +473,7 @@ def build_report(
     judgment_audit = judgment_audit if isinstance(judgment_audit, dict) else {}
     simulation_performance = simulation_performance if isinstance(simulation_performance, dict) else {}
     position_judgment_audit = position_judgment_audit if isinstance(position_judgment_audit, dict) else {}
+    cron_audit = cron_audit if isinstance(cron_audit, dict) else {}
     gates = []
     now = now or datetime.now()
 
@@ -438,6 +498,7 @@ def build_report(
             ("judgment_audit", judgment_audit, ("generated_at",)),
             ("simulation_performance", simulation_performance, ("generated_at",)),
             ("position_judgment_audit", position_judgment_audit, ("generated_at",)),
+            ("cron_audit", cron_audit, ("generated_at",)),
         ],
         now=now,
         max_age_minutes=max_report_age_minutes,
@@ -472,6 +533,28 @@ def build_report(
         "PASS" if data_status == "OK" else "BLOCK",
         f"data_health status is {data_status}",
         {"status": data_status, "generated_at": data_health.get("generated_at")},
+    )
+
+    cron_payload = cron_audit_gate_payload(cron_audit)
+    cron_status = cron_payload.get("status") or "MISSING"
+    if cron_payload.get("schema") != "cron_audit_report_v1":
+        cron_gate_status = "WARN"
+        cron_detail = "cron audit schema is missing or invalid"
+    elif cron_status == "OK":
+        cron_gate_status = "PASS"
+        cron_detail = "cron audit status is OK"
+    elif cron_status == "FAIL":
+        cron_gate_status = "BLOCK"
+        cron_detail = "cron audit status is FAIL"
+    else:
+        cron_gate_status = "WARN"
+        cron_detail = f"cron audit status is {cron_status}"
+    add_gate(
+        gates,
+        "cron_audit",
+        cron_gate_status,
+        cron_detail,
+        cron_payload,
     )
 
     counts = latest_outcome_counts(outcome_report, strategy_learning)
@@ -950,6 +1033,7 @@ def build_report_from_files(args):
         judgment_audit=load_json_file(args.judgment_audit_file),
         simulation_performance=load_json_file(args.simulation_performance_file),
         position_judgment_audit=load_json_file(args.position_judgment_audit_file),
+        cron_audit=load_json_file(args.cron_audit_file),
         min_resolved_outcomes=args.min_resolved_outcomes,
         min_directional_intake_coverage_pct=args.min_directional_intake_coverage_pct,
         min_win_rate_pct=args.min_win_rate_pct,
@@ -986,6 +1070,7 @@ def parse_args():
     parser.add_argument("--judgment-audit-file", default=JUDGMENT_AUDIT_FILE)
     parser.add_argument("--simulation-performance-file", default=SIMULATION_PERFORMANCE_FILE)
     parser.add_argument("--position-judgment-audit-file", default=POSITION_JUDGMENT_AUDIT_FILE)
+    parser.add_argument("--cron-audit-file", default=CRON_AUDIT_FILE)
     parser.add_argument("--min-resolved-outcomes", type=int, default=MIN_RESOLVED_OUTCOMES)
     parser.add_argument(
         "--min-directional-intake-coverage-pct",
