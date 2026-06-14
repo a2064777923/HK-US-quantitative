@@ -302,6 +302,80 @@ def find_trigger_outcome(report, alert):
     return key, {}
 
 
+def horizon_metric(section, horizon):
+    if not isinstance(section, dict):
+        return {}
+    horizons = section.get("horizons")
+    if not isinstance(horizons, dict):
+        return {}
+    metric = horizons.get(horizon)
+    return metric if isinstance(metric, dict) else {}
+
+
+def report_has_diagnostic_candidate_outcomes(report):
+    return diagnostic_candidate_outcome_count(report) > 0
+
+
+def diagnostic_candidate_outcome_count(report):
+    if not isinstance(report, dict):
+        return 0
+    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
+    for value in (
+        report.get("downgraded_directional_alert_count"),
+        counts.get("downgraded_directional_alert_count"),
+    ):
+        try:
+            count = int(float(value or 0))
+            if count > 0:
+                return count
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def find_execution_candidate_overall_metric(report, horizon):
+    containers = [
+        ("execution_candidate_overall", report.get("execution_candidate_overall")),
+        ("overall_execution_candidate", report.get("overall_execution_candidate")),
+    ]
+    execution_candidate = report.get("execution_candidate")
+    if isinstance(execution_candidate, dict):
+        containers.append(("execution_candidate.overall", execution_candidate.get("overall")))
+    overall = report.get("overall")
+    if isinstance(overall, dict) and (
+        overall.get("execution_candidate") is True
+        or str(overall.get("scope") or "").strip().lower() in ("execution_candidate", "execution_candidate_only")
+    ):
+        containers.append(("overall.execution_candidate", overall))
+    for source, section in containers:
+        metric = horizon_metric(section, horizon)
+        if metric:
+            return source, metric
+    return "", {}
+
+
+def find_execution_candidate_trigger_outcome(report, alert):
+    key = f"{str(alert.get('signal_type', '')).upper()}:{alert.get('trigger') or 'UNKNOWN'}"
+    row_sources = [
+        ("execution_candidate_by_trigger", report.get("execution_candidate_by_trigger")),
+        ("by_trigger_execution_candidate", report.get("by_trigger_execution_candidate")),
+    ]
+    execution_candidate = report.get("execution_candidate")
+    if isinstance(execution_candidate, dict):
+        row_sources.append(("execution_candidate.by_trigger", execution_candidate.get("by_trigger")))
+    row_sources.append(("by_trigger.execution_candidate", report.get("by_trigger")))
+    for source, rows in row_sources:
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or row.get("key") != key:
+                continue
+            if source == "by_trigger.execution_candidate" and row.get("execution_candidate") is not True:
+                continue
+            return source, key, row
+    return "", key, {}
+
+
 def is_directional(alert):
     return str((alert or {}).get("signal_type", "")).strip().upper() in ("BUY", "SELL")
 
@@ -445,18 +519,41 @@ def strategy_evidence_gate(alert, mode, report_file=STRATEGY_EVIDENCE_FILE):
     horizon = STRATEGY_EVIDENCE_HORIZON
     overall_metric = {}
     trigger_metric = {}
+    all_candidate_overall_metric = {}
+    all_candidate_trigger_metric = {}
+    overall_metric_source = ""
+    trigger_metric_source = ""
+    diagnostic_candidate_outcomes = report_has_diagnostic_candidate_outcomes(report)
     trigger_key, trigger_row = find_trigger_outcome(report, alert) if report else ("", {})
     if report:
-        overall_metric = ((report.get("overall") or {}).get("horizons") or {}).get(horizon) or {}
+        all_candidate_overall_metric = horizon_metric(report.get("overall"), horizon)
+        all_candidate_trigger_metric = horizon_metric(trigger_row, horizon) if trigger_row else {}
+
+        if diagnostic_candidate_outcomes:
+            overall_metric_source, overall_metric = find_execution_candidate_overall_metric(report, horizon)
+            trigger_metric_source, trigger_key, trigger_row = find_execution_candidate_trigger_outcome(report, alert)
+            if not overall_metric:
+                reasons.append("strategy_evidence_includes_diagnostic_candidates_without_executable_cohort")
+            elif MIN_TRIGGER_OUTCOME_SAMPLE > 0 and not trigger_row:
+                reasons.append("strategy_evidence_includes_diagnostic_candidates_without_executable_cohort")
+        else:
+            overall_metric_source = "overall"
+            trigger_metric_source = "by_trigger" if trigger_row else ""
+            overall_metric = all_candidate_overall_metric
+
         if not overall_metric:
             reasons.append(f"strategy_evidence_horizon_missing_{horizon}")
         else:
             reasons.extend(metric_reasons(overall_metric, "resolved_count", MIN_OUTCOME_SAMPLE, "overall"))
 
-        trigger_metric = ((trigger_row.get("horizons") or {}).get(horizon) or {}) if trigger_row else {}
+        trigger_metric = horizon_metric(trigger_row, horizon) if trigger_row else {}
         if MIN_TRIGGER_OUTCOME_SAMPLE > 0:
             if not trigger_metric:
-                reasons.append("trigger_outcome_missing")
+                reasons.append(
+                    "execution_candidate_trigger_outcome_missing"
+                    if diagnostic_candidate_outcomes
+                    else "trigger_outcome_missing"
+                )
             else:
                 reasons.extend(
                     metric_reasons(
@@ -477,8 +574,15 @@ def strategy_evidence_gate(alert, mode, report_file=STRATEGY_EVIDENCE_FILE):
         "min_outcome_win_rate_pct": MIN_OUTCOME_WIN_RATE_PCT,
         "min_outcome_avg_return_pct": MIN_OUTCOME_AVG_RETURN_PCT,
         "trigger_key": trigger_key,
+        "evidence_metric_scope": "execution_candidate" if diagnostic_candidate_outcomes else "all_candidates",
+        "execution_candidate_evidence_required": diagnostic_candidate_outcomes,
+        "overall_metric_source": overall_metric_source,
+        "trigger_metric_source": trigger_metric_source,
         "overall_metric": overall_metric,
         "trigger_metric": trigger_metric,
+        "all_candidate_overall_metric": all_candidate_overall_metric,
+        "all_candidate_trigger_metric": all_candidate_trigger_metric,
+        "diagnostic_candidate_outcome_count": diagnostic_candidate_outcome_count(report),
         "recommendations": report.get("recommendations") if report else [],
         "reasons": reasons,
     }

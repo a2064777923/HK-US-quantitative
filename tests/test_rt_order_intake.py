@@ -356,6 +356,118 @@ class RtOrderIntakeTests(unittest.TestCase):
         self.assertEqual(payload["status"], "PASS")
         self.assertEqual(payload["reasons"], [])
 
+    def test_strategy_evidence_gate_blocks_mixed_diagnostic_outcomes_without_executable_cohort(self):
+        report = {
+            "schema": "rt_signal_outcome_report_v1",
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "downgraded_directional_alert_count": 4,
+            "counts": {"downgraded_directional_alert_count": 4},
+            "overall": {
+                "horizons": {
+                    "1d": {
+                        "resolved_count": 35,
+                        "avg_signed_close_return_pct": 0.42,
+                        "win_rate_pct": 54.3,
+                    }
+                }
+            },
+            "by_trigger": [
+                {
+                    "key": "BUY:unit-test",
+                    "horizons": {
+                        "1d": {
+                            "resolved_count": 6,
+                            "avg_signed_close_return_pct": 0.31,
+                            "win_rate_pct": 50.0,
+                        }
+                    },
+                }
+            ],
+            "recommendations": ["downgraded_candidate_outcomes_are_research_only"],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "outcome.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+
+            ok, payload = intake.strategy_evidence_gate(fresh_alert("sig-mixed"), "execute", str(path))
+
+        self.assertFalse(ok)
+        self.assertEqual(payload["status"], "REJECTED")
+        self.assertEqual(payload["evidence_metric_scope"], "execution_candidate")
+        self.assertTrue(payload["execution_candidate_evidence_required"])
+        self.assertEqual(payload["diagnostic_candidate_outcome_count"], 4)
+        self.assertIn(
+            "strategy_evidence_includes_diagnostic_candidates_without_executable_cohort",
+            payload["reasons"],
+        )
+        self.assertIn("strategy_evidence_horizon_missing_1d", payload["reasons"])
+        self.assertEqual(payload["all_candidate_overall_metric"]["resolved_count"], 35)
+
+    def test_strategy_evidence_gate_uses_executable_cohort_when_diagnostic_outcomes_exist(self):
+        report = {
+            "schema": "rt_signal_outcome_report_v1",
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "counts": {"downgraded_directional_alert_count": 2},
+            "overall": {
+                "horizons": {
+                    "1d": {
+                        "resolved_count": 80,
+                        "avg_signed_close_return_pct": 0.18,
+                        "win_rate_pct": 52.5,
+                    }
+                }
+            },
+            "execution_candidate": {
+                "overall": {
+                    "horizons": {
+                        "1d": {
+                            "resolved_count": 34,
+                            "avg_signed_close_return_pct": 0.39,
+                            "win_rate_pct": 55.9,
+                        }
+                    }
+                },
+                "by_trigger": [
+                    {
+                        "key": "BUY:unit-test",
+                        "horizons": {
+                            "1d": {
+                                "resolved_count": 7,
+                                "avg_signed_close_return_pct": 0.27,
+                                "win_rate_pct": 57.1,
+                            }
+                        },
+                    }
+                ],
+            },
+            "by_trigger": [
+                {
+                    "key": "BUY:unit-test",
+                    "horizons": {
+                        "1d": {
+                            "resolved_count": 14,
+                            "avg_signed_close_return_pct": 0.12,
+                            "win_rate_pct": 50.0,
+                        }
+                    },
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "outcome.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+
+            ok, payload = intake.strategy_evidence_gate(fresh_alert("sig-executable"), "execute", str(path))
+
+        self.assertTrue(ok)
+        self.assertEqual(payload["status"], "PASS")
+        self.assertEqual(payload["reasons"], [])
+        self.assertEqual(payload["evidence_metric_scope"], "execution_candidate")
+        self.assertEqual(payload["overall_metric_source"], "execution_candidate.overall")
+        self.assertEqual(payload["trigger_metric_source"], "execution_candidate.by_trigger")
+        self.assertEqual(payload["overall_metric"]["resolved_count"], 34)
+        self.assertEqual(payload["all_candidate_overall_metric"]["resolved_count"], 80)
+
     def test_market_context_gate_blocks_risk_off_buy_without_exception(self):
         report = {
             "schema": "market_context_report_v1",
