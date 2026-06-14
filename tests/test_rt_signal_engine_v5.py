@@ -233,12 +233,14 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         down.rt_volume = 500
 
         quote_context = {"market": "US", "time": "2026-06-11 10:00:00"}
+        up_baseline, _up_baseline_reasons = up.get_score()
+        down_baseline, _down_baseline_reasons = down.get_score()
         up_score, up_reasons = up.get_score(quote_context)
         down_score, down_reasons = down.get_score(quote_context)
 
-        self.assertEqual(up_score, 0.2)
+        self.assertAlmostEqual(up_score - up_baseline, 0.2)
         self.assertTrue(any(reason.startswith("放量上漲") for reason in up_reasons))
-        self.assertEqual(down_score, -0.2)
+        self.assertAlmostEqual(down_score - down_baseline, -0.2)
         self.assertTrue(any(reason.startswith("放量下跌") for reason in down_reasons))
 
     def test_momentum_reason_contributes_to_full_score_directionally(self):
@@ -353,6 +355,44 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIn("短均線偏弱", reasons)
         self.assertIn("RSI偏弱(40)", reasons)
         self.assertIn("MACD柱轉負", reasons)
+
+    def test_realtime_trend_score_uses_completed_daily_mas_for_bullish_alignment(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        closes = [90] * 10 + [95] * 5 + [80, 110, 110, 110, 110]
+        for close in [100] * 10 + closes:
+            ind._update(close, close + 1, close - 1, 1000)
+        completed_ma5 = rt.completed_moving_average(ind.closes, 5)
+        completed_ma10 = rt.completed_moving_average(ind.closes, 10)
+        completed_ma20 = rt.completed_moving_average(ind.closes, 20)
+        price = completed_ma5 + 1
+
+        ind.update_realtime(price, price + 1, price - 1, 0)
+
+        self.assertLess(price, ind.ma5)
+        self.assertGreater(price, completed_ma5)
+        self.assertGreater(completed_ma5, completed_ma10)
+        self.assertGreater(completed_ma10, completed_ma20)
+        _score, reasons = ind.get_score({"market": "US", "time": "2026-06-11 10:00:00"})
+        self.assertIn("多頭排列", reasons)
+
+    def test_realtime_trend_score_uses_completed_daily_mas_for_bearish_alignment(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        closes = [110] * 10 + [105] * 5 + [120, 90, 90, 90, 90]
+        for close in [100] * 10 + closes:
+            ind._update(close, close + 1, close - 1, 1000)
+        completed_ma5 = rt.completed_moving_average(ind.closes, 5)
+        completed_ma10 = rt.completed_moving_average(ind.closes, 10)
+        completed_ma20 = rt.completed_moving_average(ind.closes, 20)
+        price = completed_ma5 - 1
+
+        ind.update_realtime(price, price + 1, price - 1, 0)
+
+        self.assertGreater(price, ind.ma5)
+        self.assertLess(price, completed_ma5)
+        self.assertLess(completed_ma5, completed_ma10)
+        self.assertLess(completed_ma10, completed_ma20)
+        _score, reasons = ind.get_score({"market": "US", "time": "2026-06-11 10:00:00"})
+        self.assertIn("空頭排列", reasons)
 
     def test_realtime_bollinger_score_uses_completed_daily_band(self):
         ind = rt.IncrementalIndicators("AAPL")

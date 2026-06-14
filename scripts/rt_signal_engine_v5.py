@@ -826,6 +826,20 @@ def signal_bollinger_bands(indicators):
             return upper, lower
     return getattr(indicators, "bb_upper", None), getattr(indicators, "bb_lower", None)
 
+def signal_moving_averages(indicators):
+    if getattr(indicators, "rt_close", None) is not None:
+        closes = getattr(indicators, "closes", [])
+        ma5 = completed_moving_average(closes, 5)
+        ma10 = completed_moving_average(closes, 10)
+        ma20 = completed_moving_average(closes, 20)
+        if ma5 is not None and ma10 is not None and ma20 is not None:
+            return ma5, ma10, ma20
+    return (
+        getattr(indicators, "ma5", None),
+        getattr(indicators, "ma10", None),
+        getattr(indicators, "ma20", None),
+    )
+
 # ========== 增量指標計算 ==========
 class IncrementalIndicators:
     """每隻股票嘅增量指標 — 只更新最新數據點"""
@@ -1092,14 +1106,15 @@ class IncrementalIndicators:
         reasons = []
 
         # 趨勢
-        if self.ma5 and self.ma10 and self.ma20:
-            if c > self.ma5 > self.ma10 > self.ma20:
+        ma5, ma10, ma20 = signal_moving_averages(self)
+        if ma5 and ma10 and ma20:
+            if c > ma5 > ma10 > ma20:
                 score += 0.8; reasons.append("多頭排列")
-            elif c > self.ma5 and c > self.ma10:
+            elif c > ma5 and c > ma10:
                 score += 0.4; reasons.append("短均線偏強")
-            elif c < self.ma5 < self.ma10 < self.ma20:
+            elif c < ma5 < ma10 < ma20:
                 score -= 0.8; reasons.append("空頭排列")
-            elif c < self.ma5 and c < self.ma10:
+            elif c < ma5 and c < ma10:
                 score -= 0.4; reasons.append("短均線偏弱")
 
         # RSI
