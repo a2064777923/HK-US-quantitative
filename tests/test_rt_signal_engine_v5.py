@@ -995,6 +995,62 @@ class RtSignalEngineV5Tests(unittest.TestCase):
 
         self.assertNotIn("站上MA5", [item["trigger"] for item in engine.alerts])
 
+    def test_realtime_ma5_buy_trigger_uses_completed_daily_ma(self):
+        engine = rt.TriggerEngine()
+        indicators = rt.IncrementalIndicators("AAPL")
+        for close in [100] * 25 + [80, 100, 100, 100, 95]:
+            indicators._update(close, close + 1, close - 1, 1000)
+
+        completed_ma5 = rt.completed_moving_average(indicators.closes, 5)
+        price = completed_ma5 + 1
+        indicators.update_realtime(price, price + 1, price - 1, 0)
+
+        self.assertGreater(price, completed_ma5)
+        self.assertLessEqual(price, indicators.ma5)
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": price,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        ma5_alerts = [item for item in engine.alerts if item["trigger"] == "站上MA5"]
+        self.assertEqual(len(ma5_alerts), 1)
+        self.assertIn(f"MA5=${completed_ma5:.2f}", ma5_alerts[0]["detail"])
+
+    def test_realtime_ma5_sell_trigger_uses_completed_daily_ma(self):
+        engine = rt.TriggerEngine()
+        indicators = rt.IncrementalIndicators("AAPL")
+        for close in [100] * 25 + [120, 100, 100, 100, 105]:
+            indicators._update(close, close + 1, close - 1, 1000)
+
+        completed_ma5 = rt.completed_moving_average(indicators.closes, 5)
+        price = completed_ma5 - 1
+        indicators.update_realtime(price, price + 1, price - 1, 0)
+
+        self.assertLess(price, completed_ma5)
+        self.assertGreaterEqual(price, indicators.ma5)
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": price,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        ma5_alerts = [item for item in engine.alerts if item["trigger"] == "跌破MA5"]
+        self.assertEqual(len(ma5_alerts), 1)
+        self.assertIn(f"MA5=${completed_ma5:.2f}", ma5_alerts[0]["detail"])
+
     def test_ma_cross_trigger_uses_latest_historical_mas_as_previous_state(self):
         engine = rt.TriggerEngine()
         indicators = FakeIndicators(score=0.8)

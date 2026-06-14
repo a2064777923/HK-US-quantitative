@@ -808,6 +808,11 @@ def completed_bollinger_bands(closes):
     std = (sum((x - ma20)**2 for x in window) / 20) ** 0.5
     return ma20 + 2 * std, ma20 - 2 * std
 
+def completed_moving_average(closes, window):
+    if not isinstance(closes, list) or len(closes) < window:
+        return None
+    return sum(closes[-window:]) / window
+
 def signal_bollinger_bands(indicators):
     if getattr(indicators, "rt_close", None) is not None:
         upper, lower = completed_bollinger_bands(getattr(indicators, "closes", []))
@@ -1359,11 +1364,11 @@ class TriggerEngine:
         # 3. 均線金叉/死叉
         if indicators.ma5 and indicators.ma10 and len(indicators.closes) >= 5:
             prev_c = indicators.closes[-1]
-            prev_ma5 = sum(indicators.closes[-5:]) / 5
-            if c > indicators.ma5 and prev_c <= prev_ma5:
-                triggered.append(("站上MA5", f"${c} > MA5=${indicators.ma5:.2f}", "BUY"))
-            if c < indicators.ma5 and prev_c >= prev_ma5:
-                triggered.append(("跌破MA5", f"${c} < MA5=${indicators.ma5:.2f}", "SELL"))
+            prev_ma5 = completed_moving_average(indicators.closes, 5)
+            if prev_ma5 is not None and c > prev_ma5 and prev_c <= prev_ma5:
+                triggered.append(("站上MA5", f"${c} > MA5=${prev_ma5:.2f}", "BUY"))
+            if prev_ma5 is not None and c < prev_ma5 and prev_c >= prev_ma5:
+                triggered.append(("跌破MA5", f"${c} < MA5=${prev_ma5:.2f}", "SELL"))
 
         if indicators.ma10 and indicators.ma20:
             if len(indicators.closes) >= 20:
