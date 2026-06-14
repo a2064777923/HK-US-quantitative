@@ -33,6 +33,10 @@ MOMENTUM_THRESHOLD_PCT = 5.0
 VOLUME_ANOMALY_RATIO = 3.0
 BUY_CONFIRMATION_MIN_SCORE = 0.45
 SELL_CONFIRMATION_MAX_SCORE = -0.45
+MIN_SUPPORTING_FACTOR_COUNT = {
+    "BUY": 2,
+    "SELL": 2,
+}
 MIN_AVG_DAILY_TURNOVER = {
     "HK": 100_000.0,
     "US": 100_000.0,
@@ -66,6 +70,10 @@ def default_strategy_config():
         "confirmation_thresholds": {
             "BUY": {"min_full_score": BUY_CONFIRMATION_MIN_SCORE},
             "SELL": {"max_full_score": SELL_CONFIRMATION_MAX_SCORE}
+        },
+        "confirmation_requirements": {
+            "BUY": {"min_supporting_factor_count": MIN_SUPPORTING_FACTOR_COUNT["BUY"]},
+            "SELL": {"min_supporting_factor_count": MIN_SUPPORTING_FACTOR_COUNT["SELL"]}
         },
         "risk_model": {
             "atr_stop_multiple": 2.0,
@@ -211,6 +219,7 @@ def strategy_config_digest(config):
         "signal_cooldown_seconds": config.get("signal_cooldown_seconds"),
         "volume_anomaly_ratio": config.get("volume_anomaly_ratio"),
         "confirmation_thresholds": config.get("confirmation_thresholds"),
+        "confirmation_requirements": config.get("confirmation_requirements"),
         "risk_model": config.get("risk_model"),
         "liquidity_model": config.get("liquidity_model"),
         "emission": config.get("emission"),
@@ -228,7 +237,14 @@ def merge_strategy_config(base, override):
     for key in ("signal_cooldown_seconds", "volume_anomaly_ratio"):
         if key in override:
             merged[key] = override[key]
-    for key in ("confirmation_thresholds", "risk_model", "liquidity_model", "emission", "trigger_overrides"):
+    for key in (
+        "confirmation_thresholds",
+        "confirmation_requirements",
+        "risk_model",
+        "liquidity_model",
+        "emission",
+        "trigger_overrides",
+    ):
         if isinstance(override.get(key), dict):
             merged.setdefault(key, {})
             for sub_key, value in override[key].items():
@@ -297,6 +313,15 @@ def normalize_strategy_config(config):
         warnings,
         "SELL",
     )
+
+    requirements = config.setdefault("confirmation_requirements", {})
+    for side, default in MIN_SUPPORTING_FACTOR_COUNT.items():
+        side_req = requirements.setdefault(side, {})
+        count = as_int(side_req.get("min_supporting_factor_count"), default)
+        if count is None or count < default:
+            warnings.append(f"invalid_{side.lower()}_min_supporting_factor_count_using_default")
+            count = default
+        side_req["min_supporting_factor_count"] = count
 
     risk = config.setdefault("risk_model", {})
     risk["atr_stop_multiple"] = as_float(risk.get("atr_stop_multiple"), 2.0)
@@ -376,6 +401,8 @@ def load_strategy_config(env=None, file_path=None):
 
     env_buy = env.get("RT_SIGNAL_BUY_MIN_FULL_SCORE")
     env_sell = env.get("RT_SIGNAL_SELL_MAX_FULL_SCORE")
+    env_buy_factor_count = env.get("RT_SIGNAL_BUY_MIN_SUPPORTING_FACTOR_COUNT")
+    env_sell_factor_count = env.get("RT_SIGNAL_SELL_MIN_SUPPORTING_FACTOR_COUNT")
     env_volume = env.get("RT_SIGNAL_VOLUME_ANOMALY_RATIO")
     env_hk_turnover = env.get("RT_SIGNAL_HK_MIN_AVG_DAILY_TURNOVER")
     env_us_turnover = env.get("RT_SIGNAL_US_MIN_AVG_DAILY_TURNOVER")
@@ -386,6 +413,16 @@ def load_strategy_config(env=None, file_path=None):
         source = "env"
     if env_sell is not None:
         config.setdefault("confirmation_thresholds", {}).setdefault("SELL", {})["max_full_score"] = env_sell
+        source = "env"
+    if env_buy_factor_count is not None:
+        config.setdefault("confirmation_requirements", {}).setdefault("BUY", {})[
+            "min_supporting_factor_count"
+        ] = env_buy_factor_count
+        source = "env"
+    if env_sell_factor_count is not None:
+        config.setdefault("confirmation_requirements", {}).setdefault("SELL", {})[
+            "min_supporting_factor_count"
+        ] = env_sell_factor_count
         source = "env"
     if env_volume is not None:
         config["volume_anomaly_ratio"] = env_volume
@@ -1336,6 +1373,39 @@ def average_daily_turnover(closes, volumes, lookback=20):
         notional += close * volume
     return notional / lookback
 
+def supporting_factor_categories(signal_type, reasons):
+    signal_type = str(signal_type or "").upper()
+    categories = set()
+    for reason in reasons or []:
+        text = str(reason or "")
+        if signal_type == "BUY":
+            if text.startswith(("多頭排列", "短均線偏強")):
+                categories.add("trend")
+            elif text.startswith(("RSI偏強", "RSI超賣")):
+                categories.add("rsi")
+            elif text.startswith(("MACD金叉", "MACD柱轉正")):
+                categories.add("macd")
+            elif text.startswith("觸及布林下軌"):
+                categories.add("bollinger")
+            elif text.startswith(("放量上漲", "溫和放量上漲")):
+                categories.add("volume")
+            elif text.startswith("5日動量+"):
+                categories.add("momentum")
+        elif signal_type == "SELL":
+            if text.startswith(("空頭排列", "短均線偏弱")):
+                categories.add("trend")
+            elif text.startswith(("RSI偏高", "RSI偏弱")):
+                categories.add("rsi")
+            elif text.startswith(("MACD死叉", "MACD柱轉負")):
+                categories.add("macd")
+            elif text.startswith("觸及布林上軌"):
+                categories.add("bollinger")
+            elif text.startswith("放量下跌"):
+                categories.add("volume")
+            elif text.startswith("5日動量-"):
+                categories.add("momentum")
+    return sorted(categories)
+
 def alert_signal_date(quote_time=None, generated_at=None, market=None):
     parsed_quote_time = parse_quote_datetime(quote_time, market=market)
     if parsed_quote_time is not None:
@@ -1414,6 +1484,15 @@ class TriggerEngine:
 
     def min_rr_ratio(self):
         return as_float((self.strategy_config.get("risk_model") or {}).get("min_rr_ratio"), 1.2) or 1.2
+
+    def min_supporting_factor_count(self, signal_type):
+        signal_type = str(signal_type or "").upper()
+        default = MIN_SUPPORTING_FACTOR_COUNT.get(signal_type)
+        if default is None:
+            return None
+        requirements = self.strategy_config.get("confirmation_requirements") or {}
+        side_req = requirements.get(signal_type) if isinstance(requirements.get(signal_type), dict) else {}
+        return as_int(side_req.get("min_supporting_factor_count"), default) or default
 
     def min_avg_daily_turnover(self, market):
         liquidity = self.strategy_config.get("liquidity_model") or {}
@@ -1608,6 +1687,17 @@ class TriggerEngine:
                 if signal_type in ("BUY", "SELL")
                 else False
             )
+            factor_confluence_categories = supporting_factor_categories(signal_type, full_reasons)
+            min_factor_count = self.min_supporting_factor_count(signal_type)
+            if signal_type in ("BUY", "SELL"):
+                factor_confluence_valid = (
+                    min_factor_count is not None
+                    and len(factor_confluence_categories) >= min_factor_count
+                )
+                factor_confluence_reason = None if factor_confluence_valid else "supporting_factor_count_below_minimum"
+            else:
+                factor_confluence_valid = False
+                factor_confluence_reason = "not_directional_candidate"
             candidate_entry_price = self.round_risk_price(c)
             if signal_type == "BUY" and atr_valid:
                 candidate_stop_loss = self.round_risk_price(c - stop_multiple * atr, reference_price=c)
@@ -1687,11 +1777,15 @@ class TriggerEngine:
             if signal_type in ("BUY", "SELL") and not risk_geometry_valid:
                 emitted_signal_type = "WATCH"
                 suppressed_directional_reason = risk_geometry_reason
+            if signal_type in ("BUY", "SELL") and confirmed and risk_geometry_valid and not factor_confluence_valid:
+                emitted_signal_type = "WATCH"
+                suppressed_directional_reason = factor_confluence_reason
 
             execution_candidate = (
                 emitted_signal_type in ("BUY", "SELL")
                 and confirmed
                 and risk_geometry_valid
+                and factor_confluence_valid
             )
             execution_blocked_reasons = []
             if signal_type not in ("BUY", "SELL"):
@@ -1705,6 +1799,8 @@ class TriggerEngine:
                     execution_blocked_reasons.append("strategy_review_shadow_only")
                 if not risk_geometry_valid:
                     execution_blocked_reasons.append(f"risk_geometry_invalid:{risk_geometry_reason}")
+                if confirmed and not factor_confluence_valid:
+                    execution_blocked_reasons.append(f"factor_confluence_invalid:{factor_confluence_reason}")
 
             if execution_candidate and signal_type in emitted_directional_candidates:
                 emitted_signal_type = "WATCH"
@@ -1764,6 +1860,11 @@ class TriggerEngine:
                 "risk_geometry_reason": risk_geometry_reason,
                 "liquidity_geometry_valid": liquidity_geometry_valid,
                 "liquidity_geometry_reason": liquidity_geometry_reason,
+                "factor_confluence_valid": factor_confluence_valid,
+                "factor_confluence_reason": factor_confluence_reason,
+                "factor_confluence_categories": factor_confluence_categories,
+                "factor_confluence_supporting_count": len(factor_confluence_categories),
+                "factor_confluence_min_count": min_factor_count,
                 "full_score": round(full_score, 3) if full_score is not None else None,
                 "full_reasons": full_reasons,
                 "price": c,

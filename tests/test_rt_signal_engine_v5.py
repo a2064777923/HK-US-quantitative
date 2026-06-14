@@ -23,6 +23,10 @@ class FakeIndicators:
         self.ma20 = 100
         self.atr_14 = 1
         self.score = score
+        if reasons is None and score >= rt.BUY_CONFIRMATION_MIN_SCORE:
+            reasons = ["多頭排列", "MACD金叉+正值"]
+        elif reasons is None and score <= rt.SELL_CONFIRMATION_MAX_SCORE:
+            reasons = ["空頭排列", "MACD死叉+負值"]
         self.reasons = reasons or []
 
     def get_score(self, quote_context=None):
@@ -1589,6 +1593,36 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertNotIn("invalid_buy_min_full_score_using_default", warnings)
         self.assertNotIn("invalid_sell_max_full_score_using_default", warnings)
 
+    def test_strategy_config_does_not_allow_looser_factor_confluence(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "confirmation_requirements": {
+                    "BUY": {"min_supporting_factor_count": 1},
+                    "SELL": {"min_supporting_factor_count": 1},
+                }
+            }
+        )
+
+        self.assertEqual(config["confirmation_requirements"]["BUY"]["min_supporting_factor_count"], 2)
+        self.assertEqual(config["confirmation_requirements"]["SELL"]["min_supporting_factor_count"], 2)
+        self.assertIn("invalid_buy_min_supporting_factor_count_using_default", warnings)
+        self.assertIn("invalid_sell_min_supporting_factor_count_using_default", warnings)
+
+    def test_strategy_config_allows_stricter_factor_confluence(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "confirmation_requirements": {
+                    "BUY": {"min_supporting_factor_count": 3},
+                    "SELL": {"min_supporting_factor_count": 4},
+                }
+            }
+        )
+
+        self.assertEqual(config["confirmation_requirements"]["BUY"]["min_supporting_factor_count"], 3)
+        self.assertEqual(config["confirmation_requirements"]["SELL"]["min_supporting_factor_count"], 4)
+        self.assertNotIn("invalid_buy_min_supporting_factor_count_using_default", warnings)
+        self.assertNotIn("invalid_sell_min_supporting_factor_count_using_default", warnings)
+
     def test_strategy_config_drops_out_of_range_trigger_threshold_override(self):
         config, warnings = rt.normalize_strategy_config(
             {
@@ -1949,6 +1983,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         with patch.object(rt.time, "time", side_effect=[1_000_000, 1_000_060]):
             engine.check("AAPL", indicators, quote)
             indicators.score = 0.8
+            indicators.reasons = ["多頭排列", "MACD金叉+正值"]
             engine.check("AAPL", indicators, quote)
 
         ma5_alerts = [item for item in engine.alerts if item["trigger"] == "站上MA5"]
@@ -2037,6 +2072,77 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(by_trigger["站上MA5"]["signal_type"], "BUY")
         self.assertTrue(by_trigger["站上MA5"]["execution_candidate"])
         self.assertIsNone(by_trigger["站上MA5"]["suppressed_directional_reason"])
+
+    def test_single_strong_factor_is_confirmed_but_not_execution_candidate(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+            }
+        )
+        indicators = FakeIndicators(score=0.8, reasons=["多頭排列"])
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertFalse(alert["factor_confluence_valid"])
+        self.assertEqual(alert["factor_confluence_reason"], "supporting_factor_count_below_minimum")
+        self.assertEqual(alert["factor_confluence_categories"], ["trend"])
+        self.assertEqual(alert["factor_confluence_supporting_count"], 1)
+        self.assertEqual(alert["factor_confluence_min_count"], 2)
+        self.assertIn(
+            "factor_confluence_invalid:supporting_factor_count_below_minimum",
+            alert["execution_blocked_reasons"],
+        )
+        self.assertIsNone(alert["entry_price"])
+
+    def test_two_supporting_factor_categories_can_remain_execution_candidate(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+            }
+        )
+        indicators = FakeIndicators(score=0.8, reasons=["多頭排列", "MACD金叉+正值"])
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertEqual(alert["signal_type"], "BUY")
+        self.assertTrue(alert["execution_candidate"])
+        self.assertTrue(alert["factor_confluence_valid"])
+        self.assertEqual(alert["factor_confluence_categories"], ["macd", "trend"])
+        self.assertEqual(alert["factor_confluence_supporting_count"], 2)
 
     def test_low_rr_directional_is_downgraded_to_watch(self):
         engine = rt.TriggerEngine(

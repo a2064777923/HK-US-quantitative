@@ -438,6 +438,11 @@ class HermesReviewPacketTests(unittest.TestCase):
                 "liquidity_geometry_reason": "avg_daily_turnover_below_minimum",
                 "avg_daily_turnover": 10_000,
                 "min_avg_daily_turnover": 1_000_000,
+                "factor_confluence_valid": False,
+                "factor_confluence_reason": "supporting_factor_count_below_minimum",
+                "factor_confluence_categories": ["trend"],
+                "factor_confluence_supporting_count": 1,
+                "factor_confluence_min_count": 2,
             }
         )
 
@@ -462,6 +467,11 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(summary["liquidity_geometry_reason"], "avg_daily_turnover_below_minimum")
         self.assertEqual(summary["avg_daily_turnover"], 10_000)
         self.assertEqual(summary["min_avg_daily_turnover"], 1_000_000)
+        self.assertFalse(summary["factor_confluence_valid"])
+        self.assertEqual(summary["factor_confluence_reason"], "supporting_factor_count_below_minimum")
+        self.assertEqual(summary["factor_confluence_categories"], ["trend"])
+        self.assertEqual(summary["factor_confluence_supporting_count"], 1)
+        self.assertEqual(summary["factor_confluence_min_count"], 2)
 
     def test_packet_marks_valid_dry_run_as_eligible_for_review_approval(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}

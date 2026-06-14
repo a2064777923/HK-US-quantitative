@@ -519,6 +519,11 @@ def alert_summary(alert):
         "liquidity_geometry_reason": alert.get("liquidity_geometry_reason"),
         "avg_daily_turnover": alert.get("avg_daily_turnover"),
         "min_avg_daily_turnover": alert.get("min_avg_daily_turnover"),
+        "factor_confluence_valid": alert.get("factor_confluence_valid"),
+        "factor_confluence_reason": alert.get("factor_confluence_reason"),
+        "factor_confluence_categories": alert.get("factor_confluence_categories") or [],
+        "factor_confluence_supporting_count": alert.get("factor_confluence_supporting_count"),
+        "factor_confluence_min_count": alert.get("factor_confluence_min_count"),
         "generated_at": alert.get("generated_at"),
         "quote_time": alert.get("quote_time") or alert.get("time"),
     }
