@@ -4389,6 +4389,36 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(payload["source_reliability"]["status"], "DEGRADED")
         self.assertEqual(payload["source_reliability"]["components"][0]["name"], "external_market_context")
 
+    def test_build_packet_loads_local_backtest_reliability_when_not_passed(self):
+        health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
+        portfolio = {"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []}
+        local_backtest = local_backtest_reliability()
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "local_backtest_reliability.json"
+            path.write_text(json.dumps(local_backtest), encoding="utf-8")
+            old_path = packet.LOCAL_BACKTEST_RELIABILITY_REPORT_FILE
+            packet.LOCAL_BACKTEST_RELIABILITY_REPORT_FILE = str(path)
+            try:
+                payload = packet.build_packet(
+                    [alert()],
+                    health_payload=health,
+                    portfolio_payload=portfolio,
+                    intake_results=[intake_result()],
+                    execution_readiness_payload=ready_execution_readiness(),
+                )
+            finally:
+                packet.LOCAL_BACKTEST_RELIABILITY_REPORT_FILE = old_path
+
+        self.assertEqual(payload["local_backtest_reliability"]["schema"], "local_backtest_reliability_report_v1")
+        self.assertEqual(payload["local_backtest_reliability"]["summary"]["overall_status"], "RESEARCH_USEFUL_WITH_LIMITATIONS")
+        self.assertEqual(
+            payload["strategy_learning_brief"]["local_backtest_reliability"]["dataset"]["data_manifest_evidence"]["complete_manifest_market_count"],
+            3,
+        )
+        self.assertTrue(
+            payload["strategy_learning_brief"]["local_backtest_reliability"]["dataset"]["data_manifest_evidence"]["markets"]["HK"]["checksum_verified"]
+        )
+
     def test_build_packet_loads_intraday_market_session_overrides_when_not_passed(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
         portfolio = {"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []}
