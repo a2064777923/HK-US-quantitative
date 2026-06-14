@@ -135,12 +135,36 @@ def signal_side(alert):
     return str(alert.get("signal_type", "")).upper()
 
 
+def candidate_side(alert):
+    return str(alert.get("candidate_signal_type") or signal_side(alert)).upper()
+
+
 def is_directional(alert):
     return signal_side(alert) in ("BUY", "SELL")
 
 
+def is_directional_candidate(alert):
+    return candidate_side(alert) in ("BUY", "SELL")
+
+
 def entry_price(alert):
     return as_float(alert.get("entry_price"), as_float(alert.get("price")))
+
+
+def effective_entry_price(alert):
+    return as_float(alert.get("entry_price"), as_float(alert.get("candidate_entry_price"), as_float(alert.get("price"))))
+
+
+def effective_stop_loss(alert):
+    return as_float(alert.get("stop_loss"), as_float(alert.get("candidate_stop_loss")))
+
+
+def effective_take_profit(alert):
+    return as_float(alert.get("take_profit"), as_float(alert.get("candidate_take_profit")))
+
+
+def effective_rr_ratio(alert):
+    return as_float(alert.get("rr_ratio"), as_float(alert.get("candidate_rr_ratio")))
 
 
 def parse_date(value):
@@ -222,23 +246,27 @@ def first_threshold_hit(side, window, stop_loss, take_profit):
 
 
 def evaluate_alert(alert, klines, horizons=DEFAULT_HORIZONS):
-    side = signal_side(alert)
+    emitted_side = signal_side(alert)
+    side = candidate_side(alert)
     sid = intake.signal_id(alert)
     symbol = str(alert.get("symbol", "")).upper()
     signal_date = alert_signal_date(alert)
-    entry = entry_price(alert)
+    entry = effective_entry_price(alert)
     base = {
         "signal_id": sid,
         "symbol": symbol,
         "market": alert.get("market"),
         "signal_type": side,
+        "emitted_signal_type": emitted_side,
+        "candidate_signal_type": side,
+        "downgraded_directional": emitted_side != side and side in ("BUY", "SELL"),
         "trigger": alert.get("trigger"),
         "confirmed": alert.get("confirmed"),
         "full_score": as_float(alert.get("full_score")),
-        "rr_ratio": as_float(alert.get("rr_ratio")),
+        "rr_ratio": effective_rr_ratio(alert),
         "entry_price": entry,
-        "stop_loss": as_float(alert.get("stop_loss")),
-        "take_profit": as_float(alert.get("take_profit")),
+        "stop_loss": effective_stop_loss(alert),
+        "take_profit": effective_take_profit(alert),
         "signal_date": signal_date,
         "quote_time": alert.get("quote_time"),
         "generated_at": alert.get("generated_at"),
@@ -248,6 +276,12 @@ def evaluate_alert(alert, klines, horizons=DEFAULT_HORIZONS):
         "strategy_config_id": alert.get("strategy_config_id"),
         "strategy_config_source": alert.get("strategy_config_source"),
         "strategy_config_version": alert.get("strategy_config_version"),
+        "trigger_review_mode": alert.get("trigger_review_mode"),
+        "strategy_policy_shadow_only": alert.get("strategy_policy_shadow_only"),
+        "strategy_policy_disabled_observation": alert.get("strategy_policy_disabled_observation"),
+        "suppressed_directional_reason": alert.get("suppressed_directional_reason"),
+        "execution_candidate": alert.get("execution_candidate"),
+        "execution_blocked_reasons": alert.get("execution_blocked_reasons") or [],
         "available_future_days": 0,
         "latest_kline_date": None,
         "status": "pending",
@@ -300,8 +334,8 @@ def evaluate_alert(alert, klines, horizons=DEFAULT_HORIZONS):
         target_hit, stop_hit, first_hit = first_threshold_hit(
             side,
             window,
-            alert.get("stop_loss"),
-            alert.get("take_profit"),
+            base.get("stop_loss"),
+            base.get("take_profit"),
         )
         base["outcomes"][key] = {
             "status": "resolved",
@@ -365,7 +399,7 @@ def dedupe_directional_alerts(alerts):
     out = []
     duplicates = 0
     for alert in alerts:
-        if not is_directional(alert):
+        if not is_directional_candidate(alert):
             continue
         sid = intake.signal_id(alert)
         if sid in seen:
@@ -396,7 +430,7 @@ def infer_current_sample_scope(alerts, sample_scope_mode="current"):
             "latest_signal_id": None,
         }
     for alert in reversed(alerts):
-        if not is_directional(alert):
+        if not is_directional_candidate(alert):
             continue
         strategy_config_id = alert.get("strategy_config_id")
         watchlist_id = alert.get("watchlist_id")
@@ -427,8 +461,8 @@ def alert_matches_scope(alert, scope):
 def apply_sample_scope(alerts, sample_scope_mode="current"):
     scope = infer_current_sample_scope(alerts, sample_scope_mode=sample_scope_mode)
     scoped = [alert for alert in alerts if alert_matches_scope(alert, scope)]
-    all_directional = [alert for alert in alerts if is_directional(alert)]
-    scoped_directional = [alert for alert in scoped if is_directional(alert)]
+    all_directional = [alert for alert in alerts if is_directional_candidate(alert)]
+    scoped_directional = [alert for alert in scoped if is_directional_candidate(alert)]
     scope.update(
         {
             "raw_alert_count_before_filter": len(alerts),
@@ -525,6 +559,8 @@ def strategy_trigger_group_metadata(items):
         "strategy_config_source_counts": value_counts(items, "strategy_config_source"),
         "strategy_config_version_counts": value_counts(items, "strategy_config_version"),
         "trigger_key": f"{first.get('signal_type')}:{first.get('trigger') or 'UNKNOWN'}",
+        "emitted_signal_type_counts": value_counts(items, "emitted_signal_type"),
+        "downgraded_directional_count": len([item for item in items if item.get("downgraded_directional")]),
     }
 
 
@@ -585,7 +621,14 @@ def build_report(alerts, klines_by_symbol=None, horizons=DEFAULT_HORIZONS, sampl
     overall_horizons = {f"{horizon}d": horizon_metrics(evaluations, f"{horizon}d") for horizon in horizons}
     pending_reasons = Counter(item.get("reason", "none") for item in evaluations if item.get("status") != "resolved")
     raw_alert_count = len(scoped_alerts)
-    directional_alert_count = len([alert for alert in scoped_alerts if is_directional(alert)])
+    directional_alert_count = len([alert for alert in scoped_alerts if is_directional_candidate(alert)])
+    downgraded_directional_alert_count = len(
+        [
+            alert
+            for alert in scoped_alerts
+            if is_directional_candidate(alert) and signal_side(alert) != candidate_side(alert)
+        ]
+    )
     evaluated_signal_count = len(evaluations)
     resolved_signal_count = len([item for item in evaluations if item.get("status") == "resolved"])
     pending_or_invalid_count = len([item for item in evaluations if item.get("status") != "resolved"])
@@ -598,6 +641,7 @@ def build_report(alerts, klines_by_symbol=None, horizons=DEFAULT_HORIZONS, sampl
         "status": report_status(evaluated_signal_count, primary_horizon_metric),
         "raw_alert_count": raw_alert_count,
         "directional_alert_count": directional_alert_count,
+        "downgraded_directional_alert_count": downgraded_directional_alert_count,
         "evaluated_signal_count": evaluated_signal_count,
         "duplicate_signal_count": duplicate_count,
         "resolved_signal_count": resolved_signal_count,
@@ -615,9 +659,11 @@ def build_report(alerts, klines_by_symbol=None, horizons=DEFAULT_HORIZONS, sampl
         "counts": {
             "raw_alert_count": raw_alert_count,
             "directional_alert_count": directional_alert_count,
+            "downgraded_directional_alert_count": downgraded_directional_alert_count,
             "evaluated_signal_count": evaluated_signal_count,
             "duplicate_signal_count": duplicate_count,
             "by_signal_type": dict(Counter(signal_side(alert) or "UNKNOWN" for alert in scoped_alerts)),
+            "by_candidate_signal_type": dict(Counter(candidate_side(alert) or "UNKNOWN" for alert in scoped_alerts)),
             "missing_watchlist_metadata_count": len(
                 [item for item in evaluations if not item.get("watchlist_id") or not item.get("watchlist_source")]
             ),

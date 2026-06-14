@@ -3104,6 +3104,8 @@ Recommended read-only cron:
 
 By default, the outcome evidence uses the same current-sample scope as `alert_quality_report.py`: latest `strategy_config_id + watchlist_id` only. This prevents old v5 revisions or legacy alerts without provenance from backing a new config in `rt_order_intake.py` strategy evidence gates. Use `--sample-scope all` for offline research only; do not use the all-scope report as execute evidence.
 
+When v5 has downgraded a directional candidate to `WATCH`, the outcome report evaluates the original direction from `candidate_signal_type` while preserving the emitted row type as `emitted_signal_type`. Candidate risk fields are used only for read-only outcome analysis; `execution_candidate=false`, blocked reasons, and review-mode metadata remain in each evaluation, so strategy review can learn from shadow/disabled diagnostic rows without turning them into approved trades.
+
 It reports:
 
 - evaluated directional alert count and duplicate count;

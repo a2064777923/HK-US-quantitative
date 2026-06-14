@@ -47,6 +47,30 @@ def alert(
     return item
 
 
+def downgraded_watch_alert(signal_id="dw1", symbol="AAPL", candidate_side="BUY", entry=100):
+    item = alert(signal_id, symbol, candidate_side, entry=entry, strategy_config_id="cfg-a", watchlist_id="wl-a")
+    item.update(
+        {
+            "signal_type": "WATCH",
+            "candidate_signal_type": candidate_side,
+            "entry_price": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "rr_ratio": None,
+            "candidate_entry_price": entry,
+            "candidate_stop_loss": entry * 0.95 if candidate_side == "BUY" else entry * 1.05,
+            "candidate_take_profit": entry * 1.10 if candidate_side == "BUY" else entry * 0.90,
+            "candidate_rr_ratio": 2.0,
+            "execution_candidate": False,
+            "execution_blocked_reasons": ["strategy_review_disabled_pending_rework"],
+            "suppressed_directional_reason": "strategy_review_disabled_pending_rework",
+            "trigger_review_mode": "disabled_pending_rework",
+            "strategy_policy_disabled_observation": True,
+        }
+    )
+    return item
+
+
 class RtSignalOutcomeReportTests(unittest.TestCase):
     def test_buy_outcome_uses_future_daily_klines(self):
         klines = {
@@ -96,6 +120,40 @@ class RtSignalOutcomeReportTests(unittest.TestCase):
         self.assertEqual(outcome["signed_close_return_pct"], 10.0)
         self.assertTrue(outcome["target_hit"])
         self.assertFalse(outcome["stop_hit"])
+
+    def test_downgraded_watch_candidate_is_evaluated_by_candidate_side(self):
+        klines = {
+            "AAPL": [
+                {"date": "2026-06-10", "open": 99, "high": 101, "low": 98, "close": 100},
+                {"date": "2026-06-11", "open": 101, "high": 112, "low": 99, "close": 110},
+            ]
+        }
+
+        payload = report.build_report(
+            [downgraded_watch_alert("dw1", "AAPL", "BUY")],
+            klines_by_symbol=klines,
+            horizons=(1,),
+        )
+        item = payload["recent_evaluations"][0]
+        by_trigger = {row["key"]: row for row in payload["by_trigger"]}
+
+        self.assertEqual(payload["directional_alert_count"], 1)
+        self.assertEqual(payload["downgraded_directional_alert_count"], 1)
+        self.assertEqual(payload["counts"]["by_signal_type"], {"WATCH": 1})
+        self.assertEqual(payload["counts"]["by_candidate_signal_type"], {"BUY": 1})
+        self.assertEqual(item["signal_type"], "BUY")
+        self.assertEqual(item["emitted_signal_type"], "WATCH")
+        self.assertEqual(item["candidate_signal_type"], "BUY")
+        self.assertTrue(item["downgraded_directional"])
+        self.assertEqual(item["entry_price"], 100)
+        self.assertEqual(item["stop_loss"], 95)
+        self.assertAlmostEqual(item["take_profit"], 110)
+        self.assertEqual(item["rr_ratio"], 2.0)
+        self.assertFalse(item["execution_candidate"])
+        self.assertEqual(item["trigger_review_mode"], "disabled_pending_rework")
+        self.assertEqual(item["outcomes"]["1d"]["signed_close_return_pct"], 10.0)
+        self.assertIn("BUY:MA", by_trigger)
+        self.assertEqual(by_trigger["BUY:MA"]["horizons"]["1d"]["resolved_count"], 1)
 
     def test_pending_when_no_future_kline_exists(self):
         klines = {
