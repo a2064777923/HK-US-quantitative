@@ -679,6 +679,8 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(len(engine.alerts), 1)
         self.assertEqual(engine.alerts[0]["trigger"], "急漲")
         self.assertAlmostEqual(engine.alerts[0]["change_pct"], 10.0)
+        self.assertFalse(engine.alerts[0]["confirmed"])
+        self.assertFalse(engine.alerts[0]["execution_candidate"])
 
     def test_send_alert_writes_latest_file_and_append_only_queue(self):
         alerts = [
@@ -1025,6 +1027,8 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(len(engine.alerts), 1)
         self.assertEqual(engine.alerts[0]["trigger"], "成交量異動")
         self.assertEqual(engine.alerts[0]["signal_type"], "WATCH")
+        self.assertFalse(engine.alerts[0]["confirmed"])
+        self.assertFalse(engine.alerts[0]["execution_candidate"])
 
     def test_hk_board_lot_volume_watch_requires_lot_size(self):
         engine = rt.TriggerEngine()

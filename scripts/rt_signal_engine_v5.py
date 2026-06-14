@@ -1461,7 +1461,11 @@ class TriggerEngine:
             stop_multiple = self.risk_multiple("atr_stop_multiple", 2.0)
             take_profit_multiple = self.risk_multiple("atr_take_profit_multiple", 3.0)
             
-            confirmed = self.is_confirmed(signal_type, trigger_name, full_score)
+            confirmed = (
+                self.is_confirmed(signal_type, trigger_name, full_score)
+                if signal_type in ("BUY", "SELL")
+                else False
+            )
             candidate_entry_price = self.round_risk_price(c)
             if signal_type == "BUY" and atr_valid:
                 candidate_stop_loss = self.round_risk_price(c - stop_multiple * atr, reference_price=c)
