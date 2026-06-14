@@ -1488,7 +1488,10 @@ class TriggerEngine:
                 candidate_stop_loss,
                 candidate_take_profit,
             )
-            if signal_type in ("BUY", "SELL") and not atr_valid:
+            if signal_type not in ("BUY", "SELL"):
+                risk_geometry_valid = False
+                risk_geometry_reason = "not_directional_candidate"
+            elif not atr_valid:
                 risk_geometry_valid = False
                 risk_geometry_reason = "missing_or_invalid_atr"
             min_rr_ratio = self.min_rr_ratio() if signal_type in ("BUY", "SELL") else None
