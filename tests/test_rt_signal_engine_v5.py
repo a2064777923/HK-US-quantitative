@@ -1111,8 +1111,8 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config["confirmation_thresholds"]["BUY"]["min_full_score"], 0.25)
-        self.assertEqual(config["confirmation_thresholds"]["SELL"]["max_full_score"], -0.25)
+        self.assertEqual(config["confirmation_thresholds"]["BUY"]["min_full_score"], rt.BUY_CONFIRMATION_MIN_SCORE)
+        self.assertEqual(config["confirmation_thresholds"]["SELL"]["max_full_score"], rt.SELL_CONFIRMATION_MAX_SCORE)
         self.assertIn("invalid_buy_min_full_score_using_default", warnings)
         self.assertIn("invalid_sell_max_full_score_using_default", warnings)
 
@@ -1126,8 +1126,8 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             }
         )
 
-        self.assertEqual(config["confirmation_thresholds"]["BUY"]["min_full_score"], 0.25)
-        self.assertEqual(config["confirmation_thresholds"]["SELL"]["max_full_score"], -0.25)
+        self.assertEqual(config["confirmation_thresholds"]["BUY"]["min_full_score"], rt.BUY_CONFIRMATION_MIN_SCORE)
+        self.assertEqual(config["confirmation_thresholds"]["SELL"]["max_full_score"], rt.SELL_CONFIRMATION_MAX_SCORE)
         self.assertIn("invalid_buy_min_full_score_using_default", warnings)
         self.assertIn("invalid_sell_max_full_score_using_default", warnings)
 
@@ -1303,6 +1303,60 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(ma5_alert["signal_type"], "WATCH")
         self.assertEqual(ma5_alert["suppressed_directional_reason"], "unconfirmed_directional")
         self.assertFalse(ma5_alert["execution_candidate"])
+
+    def test_single_weak_buy_factor_is_not_confirmed_by_default(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.3)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertFalse(alert["confirmed"])
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertEqual(alert["suppressed_directional_reason"], "unconfirmed_directional")
+        self.assertFalse(alert["execution_candidate"])
+
+    def test_single_weak_sell_factor_is_not_confirmed_by_default(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=-0.3)
+        indicators.rsi_14 = 80
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超買"][0]
+        self.assertFalse(alert["confirmed"])
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertEqual(alert["candidate_signal_type"], "SELL")
+        self.assertEqual(alert["suppressed_directional_reason"], "unconfirmed_directional")
+        self.assertFalse(alert["execution_candidate"])
 
     def test_strategy_config_shadow_only_emits_watch_for_confirmed_directional(self):
         engine = rt.TriggerEngine(

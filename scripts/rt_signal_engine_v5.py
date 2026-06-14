@@ -28,6 +28,8 @@ STRATEGY_CONFIG_FILE = os.environ.get("RT_SIGNAL_STRATEGY_CONFIG_FILE", "/root/r
 MIN_SIGNAL_HISTORY_BARS = 30
 MIN_VOLUME_SESSION_FRACTION = 0.05
 VOLUME_ANOMALY_RATIO = 3.0
+BUY_CONFIRMATION_MIN_SCORE = 0.45
+SELL_CONFIRMATION_MAX_SCORE = -0.45
 HK_SYMBOL_RE = re.compile(r"^\d{5}$")
 US_SYMBOL_RE = re.compile(r"^(?=.{1,10}$)[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?$")
 
@@ -55,8 +57,8 @@ def default_strategy_config():
         "signal_cooldown_seconds": SIGNAL_COOLDOWN,
         "volume_anomaly_ratio": VOLUME_ANOMALY_RATIO,
         "confirmation_thresholds": {
-            "BUY": {"min_full_score": 0.25},
-            "SELL": {"max_full_score": -0.25}
+            "BUY": {"min_full_score": BUY_CONFIRMATION_MIN_SCORE},
+            "SELL": {"max_full_score": SELL_CONFIRMATION_MAX_SCORE}
         },
         "risk_model": {
             "atr_stop_multiple": 2.0,
@@ -234,9 +236,9 @@ def normalize_override_score_threshold(override, key, field, warnings):
         return
     threshold = as_float(override.get(field))
     invalid = threshold is None or threshold < -1 or threshold > 1
-    if field == "min_full_score" and threshold is not None and threshold < 0.25:
+    if field == "min_full_score" and threshold is not None and threshold < BUY_CONFIRMATION_MIN_SCORE:
         invalid = True
-    if field == "max_full_score" and threshold is not None and threshold > -0.25:
+    if field == "max_full_score" and threshold is not None and threshold > SELL_CONFIRMATION_MAX_SCORE:
         invalid = True
     if invalid:
         warnings.append(f"invalid_trigger_{field}:{key}")
@@ -264,14 +266,14 @@ def normalize_strategy_config(config):
     sell = thresholds.setdefault("SELL", {})
     buy["min_full_score"] = normalize_global_score_threshold(
         buy.get("min_full_score"),
-        0.25,
+        BUY_CONFIRMATION_MIN_SCORE,
         "invalid_buy_min_full_score_using_default",
         warnings,
         "BUY",
     )
     sell["max_full_score"] = normalize_global_score_threshold(
         sell.get("max_full_score"),
-        -0.25,
+        SELL_CONFIRMATION_MAX_SCORE,
         "invalid_sell_max_full_score_using_default",
         warnings,
         "SELL",
@@ -1180,9 +1182,15 @@ class TriggerEngine:
         thresholds = self.strategy_config.get("confirmation_thresholds") or {}
         override = self.trigger_override(signal_type, trigger_name)
         if signal_type == "BUY":
-            threshold = as_float(override.get("min_full_score"), as_float((thresholds.get("BUY") or {}).get("min_full_score"), 0.25))
+            threshold = as_float(
+                override.get("min_full_score"),
+                as_float((thresholds.get("BUY") or {}).get("min_full_score"), BUY_CONFIRMATION_MIN_SCORE),
+            )
             return full_score >= threshold
-        threshold = as_float(override.get("max_full_score"), as_float((thresholds.get("SELL") or {}).get("max_full_score"), -0.25))
+        threshold = as_float(
+            override.get("max_full_score"),
+            as_float((thresholds.get("SELL") or {}).get("max_full_score"), SELL_CONFIRMATION_MAX_SCORE),
+        )
         return full_score <= threshold
 
     @staticmethod

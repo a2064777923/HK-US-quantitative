@@ -41,8 +41,14 @@ def load_json_file(path, default=None):
 def signal_threshold(config, signal_type):
     thresholds = config.get("confirmation_thresholds") or {}
     if signal_type == "SELL":
-        return rt.as_float((thresholds.get("SELL") or {}).get("max_full_score"), -0.25)
-    return rt.as_float((thresholds.get("BUY") or {}).get("min_full_score"), 0.25)
+        return rt.as_float(
+            (thresholds.get("SELL") or {}).get("max_full_score"),
+            rt.SELL_CONFIRMATION_MAX_SCORE,
+        )
+    return rt.as_float(
+        (thresholds.get("BUY") or {}).get("min_full_score"),
+        rt.BUY_CONFIRMATION_MIN_SCORE,
+    )
 
 
 def proposed_tightened_threshold(config, row):

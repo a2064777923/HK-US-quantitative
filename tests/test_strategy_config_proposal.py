@@ -1,5 +1,6 @@
 import unittest
 
+from scripts import rt_signal_engine_v5 as rt
 from scripts import strategy_config_proposal as proposal
 
 
@@ -41,8 +42,8 @@ class StrategyConfigProposalTests(unittest.TestCase):
                 "schema": "rt_signal_strategy_config_v1",
                 "version": "current",
                 "confirmation_thresholds": {
-                    "BUY": {"min_full_score": 0.25},
-                    "SELL": {"max_full_score": -0.25},
+                    "BUY": {"min_full_score": rt.BUY_CONFIRMATION_MIN_SCORE},
+                    "SELL": {"max_full_score": rt.SELL_CONFIRMATION_MAX_SCORE},
                 },
                 "trigger_overrides": {},
             },
@@ -55,7 +56,7 @@ class StrategyConfigProposalTests(unittest.TestCase):
         self.assertTrue(payload["source"]["manual_review_required"])
         self.assertEqual(payload["change_count"], 3)
         self.assertFalse(overrides["BUY:weak"]["enabled"])
-        self.assertEqual(overrides["SELL:breakdown"]["max_full_score"], -0.35)
+        self.assertEqual(overrides["SELL:breakdown"]["max_full_score"], -0.55)
         self.assertEqual(overrides["BUY:new"]["review_mode"], "shadow_only_pending_sample")
         self.assertEqual(len(payload["proposal_hash"]), 16)
 

@@ -35,7 +35,7 @@ Improvements:
 - Every v5 alert now declares its timeframe basis with `timeframe_scope=completed_daily_ohlcv_with_realtime_quote`, `primary_timeframe=1d`, `realtime_input=single_quote_temporary_bar`, `intraday_minute_bars_used=false`, and `intraday_evidence_policy=external_read_only_context_only`. Hermes should treat this as the technical-signal contract: v5 does not consume stored minute bars directly, and 5m/15m/30m/60m evidence must come from the separate read-only intraday context/quality reports.
 - MA5 and MA10/MA20 crossover triggers compare the current temporary intraday bar against the latest completed historical daily state, so an already-crossed moving average is not re-emitted as a fresh crossover. MA10/MA20 crossovers are symmetric: `MA金叉` emits a BUY candidate and `MA死叉` emits a SELL candidate under the same confirmation, risk/reward, cooldown, and Hermes review gates.
 - v5 only scans symbols with at least 30 completed valid and aligned daily OHLCV bars, matching the multi-factor `full_score` lookback requirement. Symbols with shorter, failed, or misaligned history loads are skipped with a startup log entry instead of emitting partial-history WATCH/BUY/SELL alerts. This does not change watchlists, strategy thresholds, order intake, simulation state, or intraday context reports.
-- BUY/SELL candidates carry a full-score confirmation flag. Unconfirmed directional candidates are downgraded to `WATCH` by default, with `candidate_signal_type` and candidate risk fields retained for diagnostics.
+- BUY/SELL candidates carry a full-score confirmation flag. The default confirmation floor is now deliberately multi-factor: BUY requires `full_score >= 0.45` and SELL requires `full_score <= -0.45`, so a single weak trigger contribution such as standalone RSI/布林 evidence is not enough to enter the confirmed directional queue. Unconfirmed directional candidates are downgraded to `WATCH` by default, with `candidate_signal_type` and candidate risk fields retained for diagnostics.
 - Confirmed BUY/SELL candidates must also satisfy the v5 risk model's minimum risk/reward ratio. The default `risk_model.min_rr_ratio=1.2` matches the order-intake minimum, and v5 refuses strategy config values below 1.2 while allowing stricter values above it. v5 calculates `rr_ratio` from the rounded entry/stop/take-profit prices that downstream intake will actually see. Lower-RR directional triggers are emitted as diagnostic `WATCH` rows with candidate risk fields, not trade candidates.
 - Directional candidates require a finite positive ATR before v5 can calculate executable stop/take-profit geometry. Missing, non-finite, or non-positive ATR now downgrades the candidate to `WATCH` with `risk_geometry_reason=missing_or_invalid_atr`; v5 does not synthesize a default ATR or fabricated risk prices.
 - `execution_candidate=true` is now explicitly reserved for alerts that remain BUY/SELL after policy downgrades, are full-score confirmed, and have valid risk geometry. Hermes and order-intake readers should not infer executability from `candidate_signal_type` alone; diagnostic WATCH rows may still carry candidate risk fields for review, but they are not executable candidates.
@@ -1675,11 +1675,11 @@ Repository reference config:
 config/rt_signal_strategy_config.json
 ```
 
-The default config matches the previous hard-coded behavior:
+The current default config is intentionally stricter than the original hard-coded behavior:
 
-- `BUY` confirmed when `full_score >= 0.25`;
-- `SELL` confirmed when `full_score <= -0.25`;
-- `full_score` confirmation thresholds can be tightened but not loosened: global and per-trigger BUY `min_full_score` values below `0.25` are rejected, while SELL `max_full_score` values above `-0.25` are rejected. Values must also stay inside the engine score domain `[-1, 1]`; invalid global thresholds fall back to defaults and invalid per-trigger threshold overrides are ignored, so a config typo cannot make every directional trigger confirmed.
+- `BUY` confirmed when `full_score >= 0.45`;
+- `SELL` confirmed when `full_score <= -0.45`;
+- `full_score` confirmation thresholds can be tightened but not loosened: global and per-trigger BUY `min_full_score` values below `0.45` are rejected, while SELL `max_full_score` values above `-0.45` are rejected. Values must also stay inside the engine score domain `[-1, 1]`; invalid global thresholds fall back to defaults and invalid per-trigger threshold overrides are ignored, so a config typo cannot make every directional trigger confirmed.
 - volume anomaly ratio threshold `3.0`; strategy config values below `3.0` are rejected while stricter values above it are allowed, so a config typo or overly aggressive proposal cannot turn volume-anomaly WATCH rows into a low-threshold noise source;
 - signal cooldown `1800` seconds;
 - per-trigger `enabled` values are normalized from booleans or boolean-like strings, and invalid per-trigger `cooldown_seconds` values are ignored so the trigger inherits the global cooldown instead of a hard-coded fallback;
@@ -1717,7 +1717,7 @@ Server rollout on 2026-06-12:
 - `rt_signal_engine_v5.service` now sets `RT_SIGNAL_STRATEGY_CONFIG_FILE=/root/rt_signal_strategy_config.json`;
 - v5 was restarted under systemd and stayed active;
 - startup log showed `strategy_config_id=8c5fa44224376503`, `strategy_config_source=file`, and `version=v5-compatible-default-20260612`;
-- default config preserved the previous BUY/SELL confirmation thresholds, volume anomaly threshold, cooldown, and ATR stop/take-profit multiples.
+- current repository config keeps the existing volume anomaly threshold, cooldown, and ATR stop/take-profit multiples, but tightens BUY/SELL confirmation thresholds to `0.45`/`-0.45` so standalone weak trigger evidence is emitted as diagnostic `WATCH` rather than confirmed directional flow. Deploy this by copying the updated reference config to `/root/rt_signal_strategy_config.json` and restarting v5; until then, an already-running server keeps the threshold values from its local config file.
 
 Operator workflow for manually changing strategy behavior:
 

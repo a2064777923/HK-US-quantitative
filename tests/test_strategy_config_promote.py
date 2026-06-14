@@ -27,7 +27,7 @@ class StrategyConfigPromoteTests(unittest.TestCase):
             proposal = Path(td) / "proposal.json"
             target.write_text(json.dumps(rt.default_strategy_config()), encoding="utf-8")
             proposed = rt.default_strategy_config()
-            proposed["confirmation_thresholds"]["BUY"]["min_full_score"] = 0.35
+            proposed["confirmation_thresholds"]["BUY"]["min_full_score"] = 0.55
             proposal.write_text(json.dumps(proposal_payload(proposed)), encoding="utf-8")
 
             payload = promote.build_report(str(proposal), str(target))
@@ -36,7 +36,7 @@ class StrategyConfigPromoteTests(unittest.TestCase):
         self.assertEqual(payload["status"], "dry_run")
         self.assertFalse(payload["applied"])
         self.assertEqual(payload["change_count"], 1)
-        self.assertEqual(stored["confirmation_thresholds"]["BUY"]["min_full_score"], 0.25)
+        self.assertEqual(stored["confirmation_thresholds"]["BUY"]["min_full_score"], rt.BUY_CONFIRMATION_MIN_SCORE)
 
     def test_apply_requires_matching_hash(self):
         with tempfile.TemporaryDirectory() as td:

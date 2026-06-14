@@ -6,10 +6,10 @@
   "volume_anomaly_ratio": 3.0,
   "confirmation_thresholds": {
     "BUY": {
-      "min_full_score": 0.25
+      "min_full_score": 0.45
     },
     "SELL": {
-      "max_full_score": -0.25
+      "max_full_score": -0.45
     }
   },
   "risk_model": {
