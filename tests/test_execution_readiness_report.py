@@ -170,6 +170,27 @@ def healthy_inputs():
             },
             "reason_codes": [],
             "recommendations": ["simulation_performance_clean_continue_shadow_collection"],
+            "remediation_plan": {
+                "status": "not_required",
+                "proposal_hash": "sim-ok-hash",
+                "manual_review_required": False,
+                "auto_applied": False,
+                "actions": [],
+                "operator_contract": {
+                    "read_only": True,
+                    "submits_orders": False,
+                    "changes_execution_mode": False,
+                    "changes_strategy_config": False,
+                    "changes_watchlists": False,
+                    "requires_operator_review_before_promotion": False,
+                },
+            },
+            "failure_postmortem": {
+                "status": "not_required",
+                "diagnostics": {},
+                "hypotheses": [],
+                "required_learning_record": {"required_fields": []},
+            },
         },
         "position_judgment_audit": {
             "status": "OK",
@@ -359,6 +380,35 @@ class ExecutionReadinessReportTests(unittest.TestCase):
             "simulation_closed_pnl_not_positive",
             "simulation_closed_win_rate_too_low",
         ]
+        inputs["simulation_performance"]["remediation_plan"] = {
+            "status": "operator_review_required",
+            "proposal_hash": "simfail123456789",
+            "manual_review_required": True,
+            "auto_applied": False,
+            "actions": [
+                {"action_id": "keep_alert_sim_disabled"},
+                {"action_id": "reject_or_hold_new_buy_by_default"},
+            ],
+            "operator_contract": {
+                "read_only": True,
+                "submits_orders": False,
+                "changes_execution_mode": False,
+                "changes_strategy_config": False,
+                "changes_watchlists": False,
+                "requires_operator_review_before_promotion": True,
+            },
+        }
+        inputs["simulation_performance"]["failure_postmortem"] = {
+            "status": "ACTION_REQUIRED",
+            "diagnostics": {"closed_trade_count": 3},
+            "hypotheses": [
+                {"id": "entry_filter_or_signal_quality_weak"},
+                {"id": "loss_concentration_requires_symbol_postmortem"},
+            ],
+            "required_learning_record": {
+                "required_fields": ["failure_category", "lesson", "next_evidence_required"]
+            },
+        }
 
         payload = report.build_report(**inputs, now=NOW)
 
@@ -368,6 +418,22 @@ class ExecutionReadinessReportTests(unittest.TestCase):
             if gate["gate"] == "simulation_performance_attribution"
         ][0]
         self.assertEqual(gate["data"]["status"], "FAIL")
+        self.assertEqual(gate["data"]["remediation_plan"]["proposal_hash"], "simfail123456789")
+        self.assertFalse(gate["data"]["remediation_plan"]["operator_contract"]["submits_orders"])
+        self.assertFalse(gate["data"]["remediation_plan"]["operator_contract"]["changes_strategy_config"])
+        self.assertEqual(
+            gate["data"]["remediation_plan"]["action_ids"],
+            ["keep_alert_sim_disabled", "reject_or_hold_new_buy_by_default"],
+        )
+        self.assertEqual(gate["data"]["failure_postmortem"]["status"], "ACTION_REQUIRED")
+        self.assertIn(
+            "entry_filter_or_signal_quality_weak",
+            gate["data"]["failure_postmortem"]["hypothesis_ids"],
+        )
+        self.assertIn(
+            "failure_category",
+            gate["data"]["failure_postmortem"]["required_learning_record_fields"],
+        )
 
     def test_missing_market_context_schema_blocks(self):
         inputs = healthy_inputs()

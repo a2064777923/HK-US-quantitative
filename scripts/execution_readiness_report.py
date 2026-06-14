@@ -301,6 +301,55 @@ def simulation_trade_review_metrics(portfolio_report):
     }
 
 
+def compact_simulation_remediation(simulation_performance):
+    remediation = (
+        simulation_performance.get("remediation_plan")
+        if isinstance(simulation_performance.get("remediation_plan"), dict)
+        else {}
+    )
+    contract = (
+        remediation.get("operator_contract")
+        if isinstance(remediation.get("operator_contract"), dict)
+        else {}
+    )
+    actions = remediation.get("actions") if isinstance(remediation.get("actions"), list) else []
+    return {
+        "status": remediation.get("status"),
+        "proposal_hash": remediation.get("proposal_hash"),
+        "manual_review_required": remediation.get("manual_review_required"),
+        "auto_applied": remediation.get("auto_applied"),
+        "action_ids": [row.get("action_id") for row in actions[:12] if isinstance(row, dict) and row.get("action_id")],
+        "operator_contract": {
+            "read_only": contract.get("read_only"),
+            "submits_orders": contract.get("submits_orders"),
+            "changes_execution_mode": contract.get("changes_execution_mode"),
+            "changes_strategy_config": contract.get("changes_strategy_config"),
+            "changes_watchlists": contract.get("changes_watchlists"),
+            "requires_operator_review_before_promotion": contract.get("requires_operator_review_before_promotion"),
+        },
+    }
+
+
+def compact_simulation_failure_postmortem(simulation_performance):
+    postmortem = (
+        simulation_performance.get("failure_postmortem")
+        if isinstance(simulation_performance.get("failure_postmortem"), dict)
+        else {}
+    )
+    hypotheses = postmortem.get("hypotheses") if isinstance(postmortem.get("hypotheses"), list) else []
+    required_record = (
+        postmortem.get("required_learning_record")
+        if isinstance(postmortem.get("required_learning_record"), dict)
+        else {}
+    )
+    return {
+        "status": postmortem.get("status"),
+        "diagnostics": postmortem.get("diagnostics") if isinstance(postmortem.get("diagnostics"), dict) else {},
+        "hypothesis_ids": [row.get("id") for row in hypotheses[:12] if isinstance(row, dict) and row.get("id")],
+        "required_learning_record_fields": required_record.get("required_fields") or [],
+    }
+
+
 def market_context_summary(market_context):
     markets = market_context.get("markets") if isinstance(market_context.get("markets"), dict) else {}
     rows = []
@@ -764,6 +813,8 @@ def build_report(
             "summary": simulation_performance.get("summary") or {},
             "reason_codes": simulation_performance.get("reason_codes") or [],
             "recommendations": simulation_performance.get("recommendations") or [],
+            "remediation_plan": compact_simulation_remediation(simulation_performance),
+            "failure_postmortem": compact_simulation_failure_postmortem(simulation_performance),
         },
     )
 
