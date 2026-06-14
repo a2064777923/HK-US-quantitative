@@ -84,19 +84,28 @@ def timeframe_window(symbol_row, timeframe):
     return latest
 
 
-def timeframe_status(window):
-    status = str((window or {}).get("coverage_status") or "").upper()
-    if status in ("OK", "LIMITED", "MISSING"):
-        return status
-    if as_int((window or {}).get("row_count")) > 0:
-        return "OK"
-    return "MISSING"
-
-
-def coverage_pct(window, timeframe):
+def expected_minutes_for_timeframe(window, timeframe):
     expected = as_int((window or {}).get("expected_minute_count"))
     if expected <= 0:
         expected = as_int(timeframe.rstrip("m"), 0)
+    return expected
+
+
+def timeframe_status(window, timeframe):
+    status = str((window or {}).get("coverage_status") or "").upper()
+    rows = as_int((window or {}).get("row_count"))
+    expected = expected_minutes_for_timeframe(window, timeframe)
+    if rows <= 0:
+        return "MISSING"
+    if expected > 0 and rows < expected:
+        return "LIMITED"
+    if status in ("LIMITED", "MISSING"):
+        return status
+    return "OK"
+
+
+def coverage_pct(window, timeframe):
+    expected = expected_minutes_for_timeframe(window, timeframe)
     rows = as_int((window or {}).get("row_count"))
     return rate(rows, expected) if expected else None
 
@@ -113,7 +122,7 @@ def summarize_symbol(symbol_row):
     missing = []
     for timeframe in TIMEFRAMES:
         window = timeframe_window(symbol_row, timeframe)
-        status = timeframe_status(window)
+        status = timeframe_status(window, timeframe)
         if status == "LIMITED":
             limited.append(timeframe)
         elif status == "MISSING":

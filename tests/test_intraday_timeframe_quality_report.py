@@ -120,6 +120,27 @@ class IntradayTimeframeQualityReportTests(unittest.TestCase):
         self.assertEqual(policy["allowed_effects"], ["cap_confidence", "challenge_signal"])
         self.assertIn("timeframe_coverage_limited", policy["reason_codes"])
 
+    def test_underfilled_windows_cannot_be_promoted_to_ok(self):
+        inferred_limited = window(60, rows=20)
+        inferred_limited.pop("coverage_status")
+        windows = {
+            "5m": window(5),
+            "15m": window(15),
+            "30m": window(30, "OK", rows=12),
+            "60m": inferred_limited,
+        }
+        payload = report.build_report(context([symbol_row(windows=windows)]))
+
+        symbol = payload["markets"]["HK"]["symbols"][0]
+
+        self.assertEqual(payload["status"], "DEGRADED")
+        self.assertEqual(payload["summary"]["limited_timeframe_symbol_count"], 1)
+        self.assertEqual(symbol["limited_timeframes"], ["30m", "60m"])
+        self.assertEqual(symbol["timeframes"]["30m"]["status"], "LIMITED")
+        self.assertEqual(symbol["timeframes"]["60m"]["status"], "LIMITED")
+        self.assertEqual(symbol["timeframes"]["60m"]["coverage_pct"], 33.33)
+        self.assertIn("timeframe_coverage_limited", symbol["reasons"])
+
     def test_snapshot_low_fidelity_timeframes_are_advisory_only(self):
         quality = {
             "schema": "intraday_symbol_quality_v1",

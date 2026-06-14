@@ -1070,6 +1070,8 @@ The cron producer line is still dry-run; it makes the current plan visible but d
 
 `scripts/intraday_timeframe_quality_report.py` is the compact read-only quality gate for 5m/15m/30m/60m evidence. It reads only `/tmp/intraday_context_report.json` and writes `/tmp/intraday_timeframe_quality_report.json` with schema `intraday_timeframe_quality_report_v1`. It does not query the DB, fetch new minute rows, write DB rows, submit orders, change strategy, apply cron, or repair data. The report summarizes per-market and per-symbol timeframe coverage, limited/missing windows, multi-timeframe conflicts, source-granularity gaps, low-fidelity minute sources, snapshot-like minute rows, stale symbols, and closed-session context.
 
+The timeframe-quality gate does not trust `coverage_status=OK` by itself. For each 5m/15m/30m/60m window, it checks `row_count` against `expected_minute_count` or the timeframe length; underfilled windows are downgraded to `LIMITED`, and empty windows are `MISSING`. This keeps sparse minute/hour evidence from being presented to Hermes as complete confirmation.
+
 Hermes packet integration is lossless: `hermes_review_packet.py` embeds the report as top-level `intraday_timeframe_quality`. Existing jobs can ignore this section. Hermes should use it to cap confidence and explain why 5m/15m/30m/60m evidence is only advisory when coverage is partial or source fidelity is weak. It must not use a clean or degraded timeframe-quality report to relax daily data-health, source-reliability, simulation-performance, strategy-evidence, or execution-readiness gates.
 
 Readiness/source-quality integration is also additive:
