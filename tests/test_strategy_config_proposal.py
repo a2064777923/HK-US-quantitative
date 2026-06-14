@@ -102,10 +102,14 @@ def strategy_learning(
     audit_missing_count=0,
     approved_resolved=5,
     rejected_resolved=5,
+    approved_avg=1.6,
+    rejected_avg=-0.3,
     execution_candidate_scope=None,
     execution_candidate_audit_pass=True,
     execution_approved_resolved=5,
     execution_rejected_resolved=5,
+    execution_approved_avg=1.4,
+    execution_rejected_avg=-0.2,
 ):
     payload = {
         "schema": "strategy_learning_report_v1",
@@ -143,12 +147,12 @@ def strategy_learning(
             "sample_filter": "judgment_audit_status_PASS",
             "approved_or_reduced": {
                 "resolved_count": approved_resolved,
-                "avg_signed_return_pct": 1.6,
+                "avg_signed_return_pct": approved_avg,
                 "win_rate_pct": 60.0,
             },
             "rejected_or_held": {
                 "resolved_count": rejected_resolved,
-                "avg_signed_return_pct": -0.3,
+                "avg_signed_return_pct": rejected_avg,
                 "win_rate_pct": 40.0,
             },
         }
@@ -159,12 +163,12 @@ def strategy_learning(
             "sample_filter": "execution_candidate_true_and_judgment_audit_status_PASS",
             "approved_or_reduced": {
                 "resolved_count": execution_approved_resolved,
-                "avg_signed_return_pct": 1.4,
+                "avg_signed_return_pct": execution_approved_avg,
                 "win_rate_pct": 60.0,
             },
             "rejected_or_held": {
                 "resolved_count": execution_rejected_resolved,
-                "avg_signed_return_pct": -0.2,
+                "avg_signed_return_pct": execution_rejected_avg,
                 "win_rate_pct": 40.0,
             },
         }
@@ -467,6 +471,29 @@ class StrategyConfigProposalTests(unittest.TestCase):
         codes = [row["code"] for row in payload["promotion_blockers"]]
         self.assertIn("strategy_learning_audit_pass_sample_too_small_blocks_strategy_promotion", codes)
 
+    def test_strategy_learning_audit_pass_negative_effect_blocks_promotion(self):
+        payload = proposal.build_report(
+            review_payload(),
+            {"schema": "rt_signal_strategy_config_v1"},
+            simulation_performance("OK"),
+            execution_readiness("READY"),
+            strategy_learning(approved_avg=-0.1, rejected_avg=0.3),
+            trigger_evidence_convergence(),
+            now=NOW,
+        )
+
+        self.assertTrue(payload["promotion"]["blocked"])
+        codes = [row["code"] for row in payload["promotion_blockers"]]
+        self.assertIn("strategy_learning_audit_pass_effect_not_supportive_blocks_strategy_promotion", codes)
+        blocker = [
+            row
+            for row in payload["promotion_blockers"]
+            if row["code"] == "strategy_learning_audit_pass_effect_not_supportive_blocks_strategy_promotion"
+        ][0]
+        self.assertEqual(blocker["approved_avg_signed_return_pct"], -0.1)
+        self.assertEqual(blocker["rejected_avg_signed_return_pct"], 0.3)
+        self.assertEqual(blocker["approval_vs_rejection_delta_pct"], -0.4)
+
     def test_diagnostic_learning_scope_requires_executable_only_evidence(self):
         payload = proposal.build_report(
             review_payload(),
@@ -506,6 +533,29 @@ class StrategyConfigProposalTests(unittest.TestCase):
         self.assertFalse(payload["promotion"]["blocked"])
         self.assertEqual(payload["promotion_blockers"], [])
         self.assertTrue(payload["strategy_learning_context"]["has_execution_candidate_audit_pass_judgment_effect"])
+
+    def test_diagnostic_learning_scope_blocks_negative_executable_only_effect(self):
+        payload = proposal.build_report(
+            review_payload(),
+            {"schema": "rt_signal_strategy_config_v1"},
+            simulation_performance("OK"),
+            execution_readiness("READY"),
+            strategy_learning(
+                execution_candidate_scope=execution_candidate_scope(downgraded_directional_count=3),
+                execution_candidate_audit_pass=True,
+                execution_approved_avg=0.1,
+                execution_rejected_avg=0.4,
+            ),
+            trigger_evidence_convergence(),
+            now=NOW,
+        )
+
+        self.assertTrue(payload["promotion"]["blocked"])
+        codes = [row["code"] for row in payload["promotion_blockers"]]
+        self.assertIn(
+            "strategy_learning_execution_candidate_audit_pass_effect_not_supportive_blocks_strategy_promotion",
+            codes,
+        )
 
     def test_missing_trigger_convergence_blocks_promotion(self):
         payload = proposal.build_report(

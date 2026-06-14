@@ -79,6 +79,15 @@ def as_int(value, default=0):
         return default
 
 
+def as_float(value, default=None):
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def simulation_performance_freshness(payload, now=None, max_age_minutes=MAX_SIMULATION_PERFORMANCE_AGE_MINUTES):
     now = now or datetime.now()
     if not isinstance(payload, dict) or not payload:
@@ -443,6 +452,8 @@ def strategy_learning_promotion_guards(context, min_sample=5):
     rejected = effect.get("rejected_or_held") if isinstance(effect.get("rejected_or_held"), dict) else {}
     approved_count = as_int(approved.get("resolved_count"))
     rejected_count = as_int(rejected.get("resolved_count"))
+    approved_avg = as_float(approved.get("avg_signed_return_pct"))
+    rejected_avg = as_float(rejected.get("avg_signed_return_pct"))
     execution_scope = (
         context.get("execution_candidate_scope")
         if isinstance(context.get("execution_candidate_scope"), dict)
@@ -466,6 +477,8 @@ def strategy_learning_promotion_guards(context, min_sample=5):
     downgraded_directional_count = as_int(execution_scope.get("downgraded_directional_count"))
     execution_approved_count = as_int(execution_approved.get("resolved_count"))
     execution_rejected_count = as_int(execution_rejected.get("resolved_count"))
+    execution_approved_avg = as_float(execution_approved.get("avg_signed_return_pct"))
+    execution_rejected_avg = as_float(execution_rejected.get("avg_signed_return_pct"))
 
     if not context.get("present"):
         blockers.append(
@@ -517,6 +530,18 @@ def strategy_learning_promotion_guards(context, min_sample=5):
                 "rejected_resolved_count": rejected_count,
             }
         )
+    elif approved_avg is None or rejected_avg is None or approved_avg <= 0 or approved_avg <= rejected_avg:
+        blockers.append(
+            {
+                "code": "strategy_learning_audit_pass_effect_not_supportive_blocks_strategy_promotion",
+                "detail": "audit-pass Hermes approvals must have positive average return and outperform rejected/held judgments before strategy promotion",
+                "approved_avg_signed_return_pct": approved_avg,
+                "rejected_avg_signed_return_pct": rejected_avg,
+                "approval_vs_rejection_delta_pct": round(approved_avg - rejected_avg, 6)
+                if approved_avg is not None and rejected_avg is not None
+                else None,
+            }
+        )
     if downgraded_directional_count:
         if not context.get("has_execution_candidate_audit_pass_judgment_effect"):
             blockers.append(
@@ -536,6 +561,24 @@ def strategy_learning_promotion_guards(context, min_sample=5):
                     "downgraded_directional_count": downgraded_directional_count,
                     "approved_resolved_count": execution_approved_count,
                     "rejected_resolved_count": execution_rejected_count,
+                }
+            )
+        elif (
+            execution_approved_avg is None
+            or execution_rejected_avg is None
+            or execution_approved_avg <= 0
+            or execution_approved_avg <= execution_rejected_avg
+        ):
+            blockers.append(
+                {
+                    "code": "strategy_learning_execution_candidate_audit_pass_effect_not_supportive_blocks_strategy_promotion",
+                    "detail": "executable-only audit-pass Hermes approvals must have positive average return and outperform rejected/held judgments before strategy promotion",
+                    "downgraded_directional_count": downgraded_directional_count,
+                    "approved_avg_signed_return_pct": execution_approved_avg,
+                    "rejected_avg_signed_return_pct": execution_rejected_avg,
+                    "approval_vs_rejection_delta_pct": round(execution_approved_avg - execution_rejected_avg, 6)
+                    if execution_approved_avg is not None and execution_rejected_avg is not None
+                    else None,
                 }
             )
     return blockers

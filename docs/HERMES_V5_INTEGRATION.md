@@ -3715,8 +3715,10 @@ Simulation-performance integration is additive and lossless for v5:
 - missing `audit_pass_judgment_effect` adds `promotion_blockers[].code=strategy_learning_audit_pass_effect_missing_blocks_strategy_promotion`; raw `judgment_effect` is diagnostic only and must not support promotion;
 - missing/truncated judgment-audit coverage or nonzero audit failed/missing counts add judgment-audit promotion blockers;
 - too-small audit-pass approved/reduced or rejected/held samples add `promotion_blockers[].code=strategy_learning_audit_pass_sample_too_small_blocks_strategy_promotion`;
+- audit-pass approved/reduced average return must be positive and must outperform rejected/held average return; otherwise `promotion_blockers[].code=strategy_learning_audit_pass_effect_not_supportive_blocks_strategy_promotion` keeps threshold changes review-only;
 - when `strategy_learning_context.execution_candidate_scope.downgraded_directional_count` is nonzero, strategy learning contains research-only directional diagnostics. Promotion then also requires `execution_candidate_audit_pass_judgment_effect`; otherwise `promotion_blockers[].code=strategy_learning_execution_candidate_evidence_missing_blocks_strategy_promotion` keeps the proposal review-only;
 - too-small executable-only audit-pass approved/reduced or rejected/held samples add `promotion_blockers[].code=strategy_learning_execution_candidate_audit_pass_sample_too_small_blocks_strategy_promotion`;
+- executable-only audit-pass approved/reduced average return must also be positive and outperform rejected/held when diagnostic directional rows exist; otherwise `promotion_blockers[].code=strategy_learning_execution_candidate_audit_pass_effect_not_supportive_blocks_strategy_promotion` prevents replay/diagnostic rows from hiding weak executable Hermes alpha;
 - the default freshness window is 90 minutes, inherited from `EXECUTION_READINESS_MAX_REPORT_AGE_MINUTES` unless `STRATEGY_CONFIG_PROPOSAL_MAX_SIMULATION_PERFORMANCE_AGE_MINUTES` or `--max-simulation-performance-age-minutes` is set;
 - none of these fields change alert generation, Hermes eligibility, thresholds, watchlists, crontab, or execution mode.
 
