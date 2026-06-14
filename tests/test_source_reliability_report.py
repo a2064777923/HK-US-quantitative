@@ -29,13 +29,32 @@ def ok_payloads():
             summary={
                 "table_status_counts": {"present": 7},
                 "context_file_status_counts": {"present": 12},
+                "optional_context_file_status_counts": {"missing": 1},
                 "present_input_payload_file_count": 4,
                 "kline_source_counts": {"tencent": 1000},
-                "weakness_count": 0,
+                "weakness_count": 1,
                 "error_weakness_count": 0,
                 "warning_weakness_count": 0,
+                "info_weakness_count": 1,
             },
-            weaknesses=[],
+            files={
+                "optional_context_reports": [
+                    {
+                        "name": "local_backtest_reliability",
+                        "exists": False,
+                        "stale": False,
+                        "schema_valid": None,
+                        "status": None,
+                    }
+                ]
+            },
+            weaknesses=[
+                {
+                    "code": "optional_context_reports_not_ready",
+                    "severity": "INFO",
+                    "detail": "Optional research context is missing.",
+                }
+            ],
         ),
         "data_health": payload("data_health_report_v1"),
         "kline_source_granularity": payload(
@@ -306,6 +325,54 @@ class SourceReliabilityReportTests(unittest.TestCase):
             "fix_data_source_inventory_errors_before_claiming_data_visibility",
             result["recommendations"],
         )
+
+    def test_optional_local_backtest_reliability_missing_does_not_degrade_source_reliability(self):
+        inputs = ok_payloads()
+        inputs["data_source_inventory"] = payload(
+            "data_source_inventory_report_v1",
+            summary={
+                "table_status_counts": {"present": 7},
+                "context_file_status_counts": {"present": 12},
+                "optional_context_file_status_counts": {"missing": 1},
+                "present_input_payload_file_count": 4,
+                "kline_source_counts": {"tencent": 1000},
+                "weakness_count": 1,
+                "error_weakness_count": 0,
+                "warning_weakness_count": 0,
+                "info_weakness_count": 1,
+            },
+            files={
+                "optional_context_reports": [
+                    {
+                        "name": "local_backtest_reliability",
+                        "exists": False,
+                        "stale": False,
+                        "schema_valid": None,
+                        "status": None,
+                    }
+                ]
+            },
+            weaknesses=[
+                {
+                    "code": "optional_context_reports_not_ready",
+                    "severity": "INFO",
+                    "detail": "Optional research context is missing.",
+                }
+            ],
+        )
+
+        result = report.build_report(inputs, now=NOW)
+        inventory = [row for row in result["components"] if row["name"] == "data_source_inventory"][0]
+
+        self.assertEqual(result["status"], "OK")
+        self.assertEqual(inventory["reliability_status"], "OK")
+        self.assertIn("optional_context_reports_not_ready", inventory["coverage"]["weakness_codes"])
+        self.assertEqual(
+            inventory["coverage"]["optional_context_file_status_counts"],
+            {"missing": 1},
+        )
+        self.assertEqual(inventory["coverage"]["optional_context_reports"][0]["name"], "local_backtest_reliability")
+        self.assertIn("source_reliability_matrix_clean", result["recommendations"])
 
     def test_kline_source_granularity_proposal_degrades_source_reliability(self):
         inputs = ok_payloads()

@@ -251,18 +251,36 @@ def apply_data_source_inventory(component, payload):
     error_count = int(summary.get("error_weakness_count") or 0)
     warning_count = int(summary.get("warning_weakness_count") or 0)
     weakness_codes = sorted({row.get("code") for row in weaknesses if isinstance(row, dict) and row.get("code")})
-    if weakness_codes:
-        component["coverage"] = {
-            "table_status_counts": summary.get("table_status_counts") if isinstance(summary.get("table_status_counts"), dict) else {},
-            "context_file_status_counts": (
-                summary.get("context_file_status_counts")
-                if isinstance(summary.get("context_file_status_counts"), dict)
-                else {}
-            ),
-            "present_input_payload_file_count": int(summary.get("present_input_payload_file_count") or 0),
-            "kline_source_counts": summary.get("kline_source_counts") if isinstance(summary.get("kline_source_counts"), dict) else {},
-            "weakness_codes": weakness_codes,
-        }
+    optional_context_reports = []
+    files = payload.get("files") if isinstance(payload.get("files"), dict) else {}
+    for row in files.get("optional_context_reports") or []:
+        if isinstance(row, dict):
+            optional_context_reports.append(
+                {
+                    "name": row.get("name"),
+                    "exists": bool(row.get("exists")),
+                    "stale": bool(row.get("stale")),
+                    "schema_valid": row.get("schema_valid"),
+                    "status": row.get("status"),
+                }
+            )
+    component["coverage"] = {
+        "table_status_counts": summary.get("table_status_counts") if isinstance(summary.get("table_status_counts"), dict) else {},
+        "context_file_status_counts": (
+            summary.get("context_file_status_counts")
+            if isinstance(summary.get("context_file_status_counts"), dict)
+            else {}
+        ),
+        "optional_context_file_status_counts": (
+            summary.get("optional_context_file_status_counts")
+            if isinstance(summary.get("optional_context_file_status_counts"), dict)
+            else {}
+        ),
+        "optional_context_reports": optional_context_reports[:8],
+        "present_input_payload_file_count": int(summary.get("present_input_payload_file_count") or 0),
+        "kline_source_counts": summary.get("kline_source_counts") if isinstance(summary.get("kline_source_counts"), dict) else {},
+        "weakness_codes": weakness_codes,
+    }
     if error_count:
         component["reasons"].append("data_source_inventory_errors")
         component["reliability_status"] = "FAIL"

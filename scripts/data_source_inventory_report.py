@@ -36,28 +36,30 @@ CORE_TABLES = (
 CRITICAL_TABLES = {"stocks", "klines", "portfolios", "positions"}
 
 CONTEXT_REPORT_FILES = [
-    ("data_health", "/tmp/data_health_report.json", "data_health_report_v1", ("generated_at", "checked_at")),
-    ("kline_source_granularity", "/tmp/kline_source_granularity_report.json", "kline_source_granularity_report_v1", ("generated_at",)),
-    ("market_context", "/tmp/market_context_report.json", "market_context_report_v1", ("generated_at",)),
-    ("intraday_kline_batch", "/tmp/intraday_kline_batch.json", "intraday_kline_batch_report_v1", ("generated_at",)),
-    ("intraday_context", "/tmp/intraday_context_report.json", "intraday_context_report_v1", ("generated_at",)),
+    ("data_health", "/tmp/data_health_report.json", "data_health_report_v1", ("generated_at", "checked_at"), True),
+    ("kline_source_granularity", "/tmp/kline_source_granularity_report.json", "kline_source_granularity_report_v1", ("generated_at",), True),
+    ("market_context", "/tmp/market_context_report.json", "market_context_report_v1", ("generated_at",), True),
+    ("intraday_kline_batch", "/tmp/intraday_kline_batch.json", "intraday_kline_batch_report_v1", ("generated_at",), True),
+    ("intraday_context", "/tmp/intraday_context_report.json", "intraday_context_report_v1", ("generated_at",), True),
     (
         "intraday_timeframe_quality",
         "/tmp/intraday_timeframe_quality_report.json",
         "intraday_timeframe_quality_report_v1",
         ("generated_at",),
+        True,
     ),
-    ("external_market_context", "/tmp/external_market_context_report.json", "external_market_context_report_v1", ("generated_at",)),
-    ("event_catalysts", "/tmp/event_catalyst_report.json", "event_catalyst_report_v1", ("generated_at",)),
-    ("event_catalyst_signals", "/tmp/event_catalyst_signal_report.json", "event_catalyst_signal_report_v1", ("generated_at",)),
-    ("market_sentiment", "/tmp/market_sentiment_report.json", "market_sentiment_report_v1", ("generated_at",)),
-    ("fundamentals_context", "/tmp/fundamentals_context_report.json", "fundamentals_context_report_v1", ("generated_at",)),
-    ("trusted_source_discovery", "/tmp/trusted_source_discovery_report.json", "trusted_source_discovery_report_v1", ("generated_at",)),
-    ("trusted_source_preflight", "/tmp/trusted_source_preflight_report.json", "trusted_source_preflight_report_v1", ("generated_at",)),
-    ("source_reliability", "/tmp/source_reliability_report.json", "source_reliability_report_v1", ("generated_at",)),
-    ("portfolio_report", "/tmp/portfolio_report.json", "portfolio_context_report_v1", ("generated_at",)),
-    ("simulation_performance", "/tmp/simulation_performance_report.json", "simulation_performance_report_v1", ("generated_at",)),
-    ("execution_readiness", "/tmp/execution_readiness_report.json", "execution_readiness_report_v1", ("generated_at",)),
+    ("external_market_context", "/tmp/external_market_context_report.json", "external_market_context_report_v1", ("generated_at",), True),
+    ("event_catalysts", "/tmp/event_catalyst_report.json", "event_catalyst_report_v1", ("generated_at",), True),
+    ("event_catalyst_signals", "/tmp/event_catalyst_signal_report.json", "event_catalyst_signal_report_v1", ("generated_at",), True),
+    ("market_sentiment", "/tmp/market_sentiment_report.json", "market_sentiment_report_v1", ("generated_at",), True),
+    ("fundamentals_context", "/tmp/fundamentals_context_report.json", "fundamentals_context_report_v1", ("generated_at",), True),
+    ("trusted_source_discovery", "/tmp/trusted_source_discovery_report.json", "trusted_source_discovery_report_v1", ("generated_at",), True),
+    ("trusted_source_preflight", "/tmp/trusted_source_preflight_report.json", "trusted_source_preflight_report_v1", ("generated_at",), True),
+    ("source_reliability", "/tmp/source_reliability_report.json", "source_reliability_report_v1", ("generated_at",), True),
+    ("portfolio_report", "/tmp/portfolio_report.json", "portfolio_context_report_v1", ("generated_at",), True),
+    ("simulation_performance", "/tmp/simulation_performance_report.json", "simulation_performance_report_v1", ("generated_at",), True),
+    ("execution_readiness", "/tmp/execution_readiness_report.json", "execution_readiness_report_v1", ("generated_at",), True),
+    ("local_backtest_reliability", "/tmp/local_backtest_reliability_report.json", "local_backtest_reliability_report_v1", ("generated_at",), False),
 ]
 
 INPUT_PAYLOAD_FILES = [
@@ -416,10 +418,12 @@ def summarize_json_file(name, path, expected_schema=None, timestamp_keys=("gener
 
 
 def fetch_context_file_rows(now=None, max_age_minutes=MAX_FILE_AGE_MINUTES):
-    return [
-        summarize_json_file(name, path, schema, keys, now=now, max_age_minutes=max_age_minutes)
-        for name, path, schema, keys in CONTEXT_REPORT_FILES
-    ]
+    rows_out = []
+    for name, path, schema, keys, required in CONTEXT_REPORT_FILES:
+        row = summarize_json_file(name, path, schema, keys, now=now, max_age_minutes=max_age_minutes)
+        row["required_for_live_review"] = required
+        rows_out.append(row)
+    return rows_out
 
 
 def fetch_input_file_rows(now=None):
@@ -494,9 +498,13 @@ def build_weaknesses(table_summaries, kline_source_rows, context_file_rows, inpu
                 {"intervals": sorted({row.get("interval") for row in minute_rows})},
             )
         )
-    missing_context = [row.get("name") for row in context_file_rows or [] if not row.get("exists")]
-    stale_context = [row.get("name") for row in context_file_rows or [] if row.get("stale")]
-    invalid_context = [row.get("name") for row in context_file_rows or [] if row.get("exists") and row.get("schema_valid") is False]
+    required_context = [row for row in context_file_rows or [] if row.get("required_for_live_review")]
+    optional_context = [row for row in context_file_rows or [] if not row.get("required_for_live_review")]
+    missing_context = [row.get("name") for row in required_context if not row.get("exists")]
+    stale_context = [row.get("name") for row in required_context if row.get("stale")]
+    invalid_context = [
+        row.get("name") for row in required_context if row.get("exists") and row.get("schema_valid") is False
+    ]
     if missing_context:
         weaknesses.append(
             weakness(
@@ -522,6 +530,22 @@ def build_weaknesses(table_summaries, kline_source_rows, context_file_rows, inpu
                 "WARN",
                 "Some context report schemas do not match the expected contract.",
                 {"reports": invalid_context[:20]},
+            )
+        )
+    optional_missing = [row.get("name") for row in optional_context if not row.get("exists")]
+    optional_stale = [row.get("name") for row in optional_context if row.get("stale")]
+    optional_invalid = [row.get("name") for row in optional_context if row.get("exists") and row.get("schema_valid") is False]
+    if optional_missing or optional_stale or optional_invalid:
+        weaknesses.append(
+            weakness(
+                "optional_context_reports_not_ready",
+                "INFO",
+                "Some optional research context reports are missing, stale, or schema-mismatched, but they do not gate live review.",
+                {
+                    "missing": optional_missing[:20],
+                    "stale": optional_stale[:20],
+                    "invalid": optional_invalid[:20],
+                },
             )
         )
     external_inputs = [row for row in input_file_rows or [] if row.get("name", "").startswith("external_market_context")]
@@ -575,6 +599,8 @@ def build_recommendations(weaknesses):
             recs.append("refresh_stale_context_reports_before_hermes_review")
         elif code == "context_report_schema_mismatch":
             recs.append("fix_context_report_schema_mismatch_before_embedding_in_packet")
+        elif code == "optional_context_reports_not_ready":
+            recs.append("treat_optional_research_context_as_unavailable_until_refreshed")
         elif code == "external_context_input_payloads_missing":
             recs.append("wire_external_market_context_input_payloads_or_disclose_limited_event_awareness")
         elif code == "inventory_query_warnings":
@@ -625,6 +651,17 @@ def build_report(
         else "present"
         for row in context_file_rows or []
     )
+    optional_context_rows = [row for row in context_file_rows or [] if not row.get("required_for_live_review")]
+    optional_context_counts = Counter(
+        "missing"
+        if not row.get("exists")
+        else "stale"
+        if row.get("stale")
+        else "schema_mismatch"
+        if row.get("schema_valid") is False
+        else "present"
+        for row in optional_context_rows
+    )
     source_counts = source_token_counts(kline_source_rows)
     return {
         "schema": "data_source_inventory_report_v1",
@@ -650,6 +687,8 @@ def build_report(
             "table_status_counts": dict(table_status_counts),
             "context_file_count": len(context_file_rows or []),
             "context_file_status_counts": dict(context_status_counts),
+            "optional_context_file_count": len(optional_context_rows),
+            "optional_context_file_status_counts": dict(optional_context_counts),
             "input_payload_file_count": len(input_file_rows or []),
             "present_input_payload_file_count": len([row for row in input_file_rows or [] if row.get("exists")]),
             "kline_source_counts": source_counts,
@@ -659,6 +698,7 @@ def build_report(
             "weakness_count": len(weaknesses),
             "error_weakness_count": len([row for row in weaknesses if row.get("severity") == "ERROR"]),
             "warning_weakness_count": len([row for row in weaknesses if row.get("severity") == "WARN"]),
+            "info_weakness_count": len([row for row in weaknesses if row.get("severity") == "INFO"]),
         },
         "database": {
             "tables": table_summaries or [],
@@ -673,6 +713,7 @@ def build_report(
         },
         "files": {
             "context_reports": context_file_rows or [],
+            "optional_context_reports": optional_context_rows,
             "input_payloads": input_file_rows or [],
         },
         "weaknesses": weaknesses,
