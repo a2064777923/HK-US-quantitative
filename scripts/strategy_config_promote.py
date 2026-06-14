@@ -54,6 +54,15 @@ def validate_proposal(proposal):
         reasons.append("proposal_source_must_be_manual")
     if (proposal.get("source") or {}).get("manual_review_required") is not True:
         reasons.append("proposal_manual_review_required_missing")
+    blockers = proposal.get("promotion_blockers") if isinstance(proposal.get("promotion_blockers"), list) else []
+    for blocker in blockers:
+        code = "unknown"
+        if isinstance(blocker, dict) and blocker.get("code"):
+            code = str(blocker.get("code"))
+        reasons.append(f"proposal_promotion_blocker:{code}")
+    promotion = proposal.get("promotion") if isinstance(proposal.get("promotion"), dict) else {}
+    if promotion.get("blocked") is True and not blockers:
+        reasons.append("proposal_promotion_blocked")
     proposed_config = proposal.get("proposed_config")
     if not isinstance(proposed_config, dict):
         reasons.append("proposed_config_missing")
@@ -134,6 +143,8 @@ def build_report(
     current_id = proposal_hash_for_config(current_config)
     changes = diff_summary(current_config, proposed_config or {})
     status = "dry_run"
+    has_promotion_blocker = any(str(reason).startswith("proposal_promotion_blocker:") for reason in reasons)
+    has_promotion_blocked_flag = "proposal_promotion_blocked" in reasons
     backup_file = None
     restart_result = None
     applied = False
@@ -150,7 +161,7 @@ def build_report(
                 if restart_result["status"] != "restarted":
                     status = "applied_restart_failed"
     elif reasons:
-        status = "invalid_proposal"
+        status = "blocked" if has_promotion_blocker or has_promotion_blocked_flag else "invalid_proposal"
 
     return {
         "schema": "rt_signal_strategy_config_promotion_report_v1",
@@ -164,6 +175,8 @@ def build_report(
         "confirm_proposal_hash": confirm_proposal_hash,
         "change_count": len(changes),
         "changes": changes,
+        "promotion_blockers": proposal.get("promotion_blockers") or [],
+        "promotion_risk_warnings": proposal.get("promotion_risk_warnings") or [],
         "validation_reasons": reasons,
         "applied": applied,
         "backup_file": backup_file,
@@ -188,6 +201,16 @@ def build_text_report(payload):
     ]
     if payload.get("validation_reasons"):
         lines.append("Reasons: " + ", ".join(payload["validation_reasons"]))
+    if payload.get("promotion_blockers"):
+        lines.append(
+            "Promotion blockers: "
+            + ", ".join(blocker.get("code", "unknown") for blocker in payload["promotion_blockers"])
+        )
+    if payload.get("promotion_risk_warnings"):
+        lines.append(
+            "Promotion risk warnings: "
+            + ", ".join(warning.get("code", "unknown") for warning in payload["promotion_risk_warnings"])
+        )
     for change in payload.get("changes", [])[:12]:
         lines.append(f"  {change['field']}: current={change['current']} proposed={change['proposed']}")
     if payload.get("backup_file"):
