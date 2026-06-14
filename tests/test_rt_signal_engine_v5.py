@@ -216,7 +216,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
     def test_volume_score_supports_up_volume_not_down_volume(self):
         up = rt.IncrementalIndicators("AAPL")
         down = rt.IncrementalIndicators("AAPL")
-        wide_neutral_history = [80, 120] * 13 + [100] * 4
+        wide_neutral_history = [80, 120] * 12 + [80] + [100] * 5
         for ind in (up, down):
             ind.closes = list(wide_neutral_history)
             ind.highs = [121] * 30
@@ -258,6 +258,32 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIn("5日動量+6.0%", up_reasons)
         self.assertEqual(down_score, -0.2)
         self.assertIn("5日動量-6.0%", down_reasons)
+
+    def test_momentum_uses_true_five_bar_lookback_not_four_bar_window(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        ind.closes = [100] * 24 + [100, 99, 100, 100, 100, 105]
+        ind.highs = [110] * 30
+        ind.lows = [90] * 30
+        ind.volumes = [1000] * 30
+
+        _score, reasons = ind.get_score()
+
+        self.assertFalse(any(reason.startswith("5日動量") for reason in reasons))
+
+    def test_realtime_momentum_uses_true_five_completed_bar_lookback(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        ind.closes = [100] * 25 + [100, 99, 100, 100, 100]
+        ind.highs = [110] * 30
+        ind.lows = [90] * 30
+        ind.volumes = [1000] * 30
+        ind.rt_close = 105
+        ind.rt_high = 106
+        ind.rt_low = 104
+        ind.rt_volume = 0
+
+        _score, reasons = ind.get_score()
+
+        self.assertFalse(any(reason.startswith("5日動量") for reason in reasons))
 
     def test_alert_preserves_all_full_score_reasons_for_hermes(self):
         reasons = [

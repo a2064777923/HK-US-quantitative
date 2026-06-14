@@ -29,6 +29,7 @@ MAX_QUOTE_AGE_SECONDS = 15 * 60
 MAX_QUOTE_FUTURE_SKEW_SECONDS = 120
 MIN_SIGNAL_HISTORY_BARS = 30
 MIN_VOLUME_SESSION_FRACTION = 0.05
+MOMENTUM_THRESHOLD_PCT = 5.0
 VOLUME_ANOMALY_RATIO = 3.0
 BUY_CONFIRMATION_MIN_SCORE = 0.45
 SELL_CONFIRMATION_MAX_SCORE = -0.45
@@ -813,6 +814,11 @@ def completed_moving_average(closes, window):
         return None
     return sum(closes[-window:]) / window
 
+def lookback_close(closes, bars):
+    if not isinstance(closes, list) or len(closes) <= bars:
+        return None
+    return closes[-(bars + 1)]
+
 def signal_bollinger_bands(indicators):
     if getattr(indicators, "rt_close", None) is not None:
         upper, lower = completed_bollinger_bands(getattr(indicators, "closes", []))
@@ -1138,9 +1144,10 @@ class IncrementalIndicators:
                 score += 0.1; reasons.append(f"溫和放量上漲{vr:.1f}倍")
 
         # 動量
-        if len(closes) >= 5:
-            mom = (c / closes[-5] - 1) * 100
-            if abs(mom) > 5:
+        base_close = lookback_close(closes, 5)
+        if base_close is not None and base_close > 0:
+            mom = (c / base_close - 1) * 100
+            if abs(mom) > MOMENTUM_THRESHOLD_PCT + 1e-9:
                 score += 0.2 if mom > 0 else -0.2
                 reasons.append(f"5日動量{mom:+.1f}%")
 
