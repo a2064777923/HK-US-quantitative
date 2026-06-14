@@ -2861,6 +2861,19 @@ def factor_contract_alignment_brief(factor_contract_alignment_payload):
     v5 = contracts.get("v5") if isinstance(contracts.get("v5"), dict) else {}
     backtests = contracts.get("backtests") if isinstance(contracts.get("backtests"), list) else []
     warn_or_fail = [item for item in checks if isinstance(item, dict) and item.get("status") in ("WARN", "FAIL")]
+    contract_drift_summary = []
+    for item in warn_or_fail:
+        code = str(item.get("code") or "")
+        if not code.endswith("_drift"):
+            continue
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        contract_drift_summary.append(
+            {
+                "code": item.get("code"),
+                "status": item.get("status"),
+                "missing_from_backtest": data.get("missing_from_backtest") or [],
+            }
+        )
     return {
         "read_only": True,
         "submits_orders": False,
@@ -2892,6 +2905,7 @@ def factor_contract_alignment_brief(factor_contract_alignment_payload):
             {"code": item.get("code"), "status": item.get("status"), "detail": item.get("detail")}
             for item in warn_or_fail[:8]
         ],
+        "contract_drift_summary": contract_drift_summary[:8],
         "hermes_note": summary.get("message") or "factor_contract_alignment_is_research_context_only",
     }
 

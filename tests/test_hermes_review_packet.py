@@ -218,6 +218,12 @@ def factor_contract_alignment(status="PARTIAL_ALIGNMENT_REQUIRES_CAUTION", promo
                 "status": "WARN",
                 "code": "portfolio_backtest_realistic:score_thresholds_drift",
                 "detail": "Backtest score thresholds differ from v5 full-score confirmation thresholds.",
+            },
+            {
+                "status": "WARN",
+                "code": "portfolio_backtest_realistic:factor_confluence_contract_drift",
+                "detail": "Backtest does not model all v5 factor-confluence confirmation requirements.",
+                "data": {"missing_from_backtest": ["factor_confluence_gate", "structured_factor_contributions"]},
             }
         ],
     }
@@ -3187,6 +3193,11 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(alignment["status"], "PARTIAL_ALIGNMENT_REQUIRES_CAUTION")
         self.assertEqual(alignment["hermes_use"], "research_alignment_context_only")
         self.assertFalse(alignment["promotion_ready"])
+        drift_by_code = {row["code"]: row for row in alignment["contract_drift_summary"]}
+        self.assertEqual(
+            drift_by_code["portfolio_backtest_realistic:factor_confluence_contract_drift"]["missing_from_backtest"],
+            ["factor_confluence_gate", "structured_factor_contributions"],
+        )
         replay = brief["v5_local_replay"]
         self.assertTrue(replay["read_only"])
         self.assertFalse(replay["submits_orders"])
