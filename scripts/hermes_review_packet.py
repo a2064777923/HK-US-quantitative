@@ -1242,6 +1242,68 @@ def intraday_timeframe_policy_summary(payload):
     }
 
 
+def intraday_timeframe_decision_for_alert(alert, payload):
+    market = normalize_market((alert or {}).get("market"))
+    symbol_set = symbol_tokens((alert or {}).get("symbol"), market=market)
+    report_status = str((payload or {}).get("status") or "MISSING").upper()
+    markets = (payload or {}).get("markets") if isinstance((payload or {}).get("markets"), dict) else {}
+    market_payload = markets.get(market) if isinstance(markets.get(market), dict) else {}
+    base = {
+        "schema": "hermes_review_item_intraday_timeframe_decision_v1",
+        "report_status": report_status,
+        "market": market,
+        "symbol": (alert or {}).get("symbol"),
+    }
+    if not market_payload:
+        return {
+            **base,
+            "matched": False,
+            "status": "MISSING",
+            "decision_use": "diagnostic_only",
+            "allowed_effects": [],
+            "reasons": ["intraday_timeframe_quality_missing_for_signal_market"],
+        }
+    matched = None
+    for item in market_payload.get("symbols") or []:
+        item_tokens = symbol_tokens(item.get("symbol"), market=item.get("market") or market)
+        if symbol_set and item_tokens and symbol_set & item_tokens:
+            matched = item
+            break
+    if not matched:
+        return {
+            **base,
+            "matched": False,
+            "status": "MISSING",
+            "decision_use": "diagnostic_only",
+            "allowed_effects": [],
+            "market_status": market_payload.get("status"),
+            "market_symbol_count": market_payload.get("symbol_count"),
+            "reasons": ["intraday_timeframe_quality_missing_for_signal_symbol"],
+        }
+    quality = matched.get("quality") if isinstance(matched.get("quality"), dict) else {}
+    return {
+        **base,
+        "matched": True,
+        "status": matched.get("status"),
+        "source_status": matched.get("source_status"),
+        "decision_use": matched.get("decision_use") or "diagnostic_only",
+        "allowed_effects": normalize_list(matched.get("allowed_effects")),
+        "alignment": matched.get("alignment"),
+        "dominant_direction": matched.get("dominant_direction"),
+        "limited_timeframes": matched.get("limited_timeframes") or [],
+        "missing_timeframes": matched.get("missing_timeframes") or [],
+        "reasons": normalize_list(matched.get("reasons")),
+        "quality": {
+            "status": quality.get("status"),
+            "valid_point_count": quality.get("valid_point_count"),
+            "full_ohlc_row_count": quality.get("full_ohlc_row_count"),
+            "low_fidelity_point_count": quality.get("low_fidelity_point_count"),
+            "snapshot_like_row_count": quality.get("snapshot_like_row_count"),
+            "missing_source_granularity_count": quality.get("missing_source_granularity_count"),
+        },
+    }
+
+
 def intraday_signal_evidence(alert, intraday_context):
     context = intraday_context if isinstance(intraday_context, dict) else {}
     side = str((alert or {}).get("signal_type") or "").upper()
@@ -1579,6 +1641,7 @@ def context_digest_for_item(
     market_context = market_context_for_alert(alert, market_context_payload)
     intraday_context = intraday_context_for_alert(alert, intraday_context_payload)
     intraday_timeframe_policy = intraday_timeframe_policy_summary(intraday_timeframe_quality_payload)
+    intraday_timeframe_decision = intraday_timeframe_decision_for_alert(alert, intraday_timeframe_quality_payload)
     intraday_market_session_overrides = intraday_market_session_overrides_for_alert(
         alert,
         intraday_market_session_overrides_payload,
@@ -1614,6 +1677,7 @@ def context_digest_for_item(
         "market_context": market_context,
         "intraday_context": intraday_context,
         "intraday_timeframe_policy": intraday_timeframe_policy,
+        "intraday_timeframe_decision": intraday_timeframe_decision,
         "intraday_signal_evidence": intraday_evidence,
         "intraday_minute_producer": intraday_minute_producer,
         "intraday_market_session_overrides": intraday_market_session_overrides,

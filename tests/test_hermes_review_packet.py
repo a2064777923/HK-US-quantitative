@@ -527,6 +527,40 @@ class HermesReviewPacketTests(unittest.TestCase):
                         "60m": {"ok_symbol_count": 0, "limited_symbol_count": 1, "missing_symbol_count": 0},
                     },
                 },
+                "markets": {
+                    "HK": {
+                        "market": "HK",
+                        "status": "DEGRADED",
+                        "symbol_count": 1,
+                        "symbols": [
+                            {
+                                "symbol": "00700",
+                                "market": "HK",
+                                "status": "DEGRADED",
+                                "source_status": "OK",
+                                "decision_use": "cap_or_challenge_only",
+                                "allowed_effects": ["cap_confidence", "challenge_signal"],
+                                "alignment": "bearish_aligned",
+                                "dominant_direction": "down",
+                                "limited_timeframes": ["30m", "60m"],
+                                "missing_timeframes": [],
+                                "reasons": [
+                                    "timeframe_coverage_limited",
+                                    "low_fidelity_minute_source",
+                                    "snapshot_like_minute_rows",
+                                ],
+                                "quality": {
+                                    "status": "WARN",
+                                    "valid_point_count": 60,
+                                    "full_ohlc_row_count": 0,
+                                    "low_fidelity_point_count": 60,
+                                    "snapshot_like_row_count": 60,
+                                    "missing_source_granularity_count": 1,
+                                },
+                            }
+                        ],
+                    }
+                },
                 "recommendations": [
                     "do_not_raise_confidence_from_limited_30m_60m_coverage",
                     "treat_snapshot_minute_timeframes_as_advisory_until_full_ohlcv",
@@ -985,6 +1019,19 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertIn("timeframe_coverage_limited", timeframe_policy["reason_codes"])
         self.assertIn("cap_confidence", timeframe_policy["allowed_effects"])
         self.assertTrue(timeframe_policy["requires_judgment_acknowledgement"])
+        timeframe_decision = payload["review_items"][0]["context_digest"]["intraday_timeframe_decision"]
+        self.assertEqual(
+            timeframe_decision["schema"],
+            "hermes_review_item_intraday_timeframe_decision_v1",
+        )
+        self.assertTrue(timeframe_decision["matched"])
+        self.assertEqual(timeframe_decision["symbol"], "00700")
+        self.assertEqual(timeframe_decision["decision_use"], "cap_or_challenge_only")
+        self.assertEqual(timeframe_decision["allowed_effects"], ["cap_confidence", "challenge_signal"])
+        self.assertEqual(timeframe_decision["limited_timeframes"], ["30m", "60m"])
+        self.assertIn("timeframe_coverage_limited", timeframe_decision["reasons"])
+        self.assertEqual(timeframe_decision["quality"]["full_ohlc_row_count"], 0)
+        self.assertEqual(timeframe_decision["quality"]["low_fidelity_point_count"], 60)
         self.assertIn(
             "intraday_timeframe_policy_requires_acknowledgement",
             payload["review_items"][0]["context_digest"]["required_judgment_attention"],
