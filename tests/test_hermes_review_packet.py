@@ -366,9 +366,13 @@ def trigger_evidence_convergence():
 def watch_alert(signal_id="watch-1"):
     item = alert(signal_id)
     item["signal_type"] = "WATCH"
+    item["candidate_signal_type"] = "WATCH"
     item["stop_loss"] = None
     item["take_profit"] = None
     item["rr_ratio"] = None
+    item["candidate_stop_loss"] = None
+    item["candidate_take_profit"] = None
+    item["candidate_rr_ratio"] = None
     return item
 
 
@@ -382,6 +386,24 @@ def unconfirmed_alert(signal_id="unconfirmed-1"):
     item["stop_loss"] = None
     item["take_profit"] = None
     item["rr_ratio"] = None
+    return item
+
+
+def downgraded_directional_watch(signal_id="downgraded-1"):
+    item = watch_alert(signal_id)
+    item.update(
+        {
+            "candidate_signal_type": "BUY",
+            "confirmed": True,
+            "execution_candidate": False,
+            "execution_blocked_reasons": ["strategy_review_disabled_pending_rework"],
+            "suppressed_directional_reason": "strategy_review_disabled_pending_rework",
+            "trigger_review_mode": "disabled_pending_rework",
+            "strategy_policy_disabled_observation": True,
+            "strategy_config_id": "cfg-current",
+            "watchlist_id": "wl-current",
+        }
+    )
     return item
 
 
@@ -4029,6 +4051,22 @@ class HermesReviewPacketTests(unittest.TestCase):
 
         self.assertEqual([item["signal_id"] for item in selected], ["w1", "b1", "w2"])
 
+    def test_sample_scope_uses_downgraded_directional_candidate_side(self):
+        old = alert("old")
+        old.update({"strategy_config_id": "cfg-old", "watchlist_id": "wl"})
+        current_watch = downgraded_directional_watch("current-watch")
+        plain_watch = watch_alert("plain-watch")
+
+        scoped, scope = packet.apply_sample_scope([old, plain_watch, current_watch], sample_scope_mode="current")
+
+        self.assertEqual(scope["mode"], "latest_strategy_config_and_watchlist")
+        self.assertEqual(scope["strategy_config_id"], "cfg-current")
+        self.assertEqual(scope["watchlist_id"], "wl-current")
+        self.assertEqual(scope["latest_signal_id"], "current-watch")
+        self.assertEqual([item["signal_id"] for item in scoped], ["current-watch"])
+        self.assertEqual(scope["directional_alert_count_before_filter"], 2)
+        self.assertEqual(scope["directional_alert_count"], 1)
+
     def test_select_review_alerts_defaults_to_latest_strategy_watchlist_scope(self):
         old = alert("old")
         old.update({"strategy_config_id": "cfg-old", "watchlist_id": "wl"})
@@ -4051,7 +4089,8 @@ class HermesReviewPacketTests(unittest.TestCase):
     def test_packet_alert_selection_counts_source_noise(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
         portfolio = {"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []}
-        source_alerts = [watch_alert("w1"), alert("b1"), alert("b2")]
+        downgraded = downgraded_directional_watch("w1")
+        source_alerts = [downgraded, alert("b1"), alert("b2")]
 
         payload = packet.build_packet(
             [source_alerts[1], source_alerts[2]],
@@ -4063,12 +4102,14 @@ class HermesReviewPacketTests(unittest.TestCase):
 
         self.assertEqual(payload["alert_selection"]["source_alert_count"], 3)
         self.assertEqual(payload["alert_selection"]["review_alert_count"], 2)
-        self.assertEqual(payload["alert_selection"]["directional_count"], 2)
-        self.assertEqual(payload["alert_selection"]["confirmed_directional_count"], 2)
+        self.assertEqual(payload["alert_selection"]["directional_count"], 3)
+        self.assertEqual(payload["alert_selection"]["downgraded_directional_count"], 1)
+        self.assertEqual(payload["alert_selection"]["confirmed_directional_count"], 3)
         self.assertEqual(payload["alert_selection"]["unconfirmed_directional_count"], 0)
         self.assertEqual(payload["alert_selection"]["execution_candidate_directional_count"], 2)
-        self.assertEqual(payload["alert_selection"]["non_execution_candidate_directional_count"], 0)
+        self.assertEqual(payload["alert_selection"]["non_execution_candidate_directional_count"], 1)
         self.assertEqual(payload["alert_selection"]["by_signal_type"]["WATCH"], 1)
+        self.assertEqual(payload["alert_selection"]["by_candidate_signal_type"]["BUY"], 3)
 
     def test_packet_alert_selection_counts_non_execution_candidate_directionals(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}

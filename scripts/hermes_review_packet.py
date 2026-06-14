@@ -313,8 +313,20 @@ def packet_id_for(alerts, health_payload):
     return digest[:16]
 
 
+def signal_side(alert):
+    return str((alert or {}).get("signal_type", "UNKNOWN")).upper() or "UNKNOWN"
+
+
+def candidate_side(alert):
+    return str((alert or {}).get("candidate_signal_type") or signal_side(alert)).upper() or "UNKNOWN"
+
+
 def is_directional(alert):
-    return str(alert.get("signal_type", "")).upper() in ("BUY", "SELL")
+    return signal_side(alert) in ("BUY", "SELL")
+
+
+def is_directional_candidate(alert):
+    return candidate_side(alert) in ("BUY", "SELL")
 
 
 def infer_current_sample_scope(alerts, sample_scope_mode="current"):
@@ -326,7 +338,7 @@ def infer_current_sample_scope(alerts, sample_scope_mode="current"):
             "latest_signal_id": None,
         }
     for alert in reversed(alerts):
-        if not is_directional(alert):
+        if not is_directional_candidate(alert):
             continue
         strategy_config_id = alert.get("strategy_config_id")
         watchlist_id = alert.get("watchlist_id")
@@ -357,8 +369,8 @@ def alert_matches_scope(alert, scope):
 def apply_sample_scope(alerts, sample_scope_mode="current"):
     scope = infer_current_sample_scope(alerts, sample_scope_mode=sample_scope_mode)
     scoped = [alert for alert in alerts if alert_matches_scope(alert, scope)]
-    all_directional = [alert for alert in alerts if is_directional(alert)]
-    scoped_directional = [alert for alert in scoped if is_directional(alert)]
+    all_directional = [alert for alert in alerts if is_directional_candidate(alert)]
+    scoped_directional = [alert for alert in scoped if is_directional_candidate(alert)]
     scope.update(
         {
             "raw_alert_count_before_filter": len(alerts),
@@ -374,16 +386,22 @@ def apply_sample_scope(alerts, sample_scope_mode="current"):
 
 def alert_selection_stats(source_alerts, review_alerts, sample_scope=None):
     by_type = {}
+    by_candidate_type = {}
     directional = 0
+    downgraded_directional = 0
     confirmed_directional = 0
     unconfirmed_directional = 0
     execution_candidate_directional = 0
     non_execution_candidate_directional = 0
     for alert in source_alerts:
-        side = str(alert.get("signal_type", "UNKNOWN")).upper() or "UNKNOWN"
+        side = signal_side(alert)
+        candidate = candidate_side(alert)
         by_type[side] = by_type.get(side, 0) + 1
-        if side in ("BUY", "SELL"):
+        by_candidate_type[candidate] = by_candidate_type.get(candidate, 0) + 1
+        if candidate in ("BUY", "SELL"):
             directional += 1
+            if side != candidate:
+                downgraded_directional += 1
             if alert.get("confirmed") is True:
                 confirmed_directional += 1
             else:
@@ -396,12 +414,14 @@ def alert_selection_stats(source_alerts, review_alerts, sample_scope=None):
         "source_alert_count": len(source_alerts),
         "review_alert_count": len(review_alerts),
         "directional_count": directional,
+        "downgraded_directional_count": downgraded_directional,
         "confirmed_directional_count": confirmed_directional,
         "unconfirmed_directional_count": unconfirmed_directional,
         "execution_candidate_directional_count": execution_candidate_directional,
         "non_execution_candidate_directional_count": non_execution_candidate_directional,
         "directional_not_selected_count": max(directional - len(review_alerts), 0),
         "by_signal_type": by_type,
+        "by_candidate_signal_type": by_candidate_type,
         "review_signal_ids": [intake.signal_id(alert) for alert in review_alerts],
         "sample_scope": sample_scope or infer_current_sample_scope(source_alerts),
     }
