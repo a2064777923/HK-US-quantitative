@@ -31,6 +31,8 @@ EXECUTION_DENSITY_WARN_PER_100_BARS = 10.0
 DIRECTIONAL_CONFIRMATION_MIN_WARN_PCT = 35.0
 DIRECTIONAL_DOWNGRADE_WARN_PCT = 60.0
 MULTI_TRIGGER_SYMBOL_DAY_WARN_PCT = 30.0
+TRIGGER_ALERT_DENSITY_WARN_PER_100_BARS = 5.0
+TRIGGER_EXECUTION_DENSITY_WARN_PER_100_BARS = 2.0
 
 STATUS_RANK = {"OK": 0, "INFO": 0, "WARN": 1, "FAIL": 2}
 
@@ -508,6 +510,171 @@ def replay_quality_assessment(evaluated_bars, symbol_count, alert_summary):
     }
 
 
+def trigger_group_quality_row(group, counts, denominator_bars, total_alerts):
+    market, candidate_signal_type, trigger_name = group
+    alert_count = counts.get("alert_count", 0)
+    execution_candidate_count = counts.get("execution_candidate_count", 0)
+    confirmed_directional_count = counts.get("confirmed_directional_count", 0)
+    downgraded_directional_count = counts.get("downgraded_directional_count", 0)
+    directional = candidate_signal_type in ("BUY", "SELL")
+    metrics = {
+        "denominator_bars": denominator_bars,
+        "alert_count": alert_count,
+        "pct_of_all_alerts": ratio_pct(alert_count, total_alerts),
+        "alert_rate_per_100_bars": ratio_pct(alert_count, denominator_bars),
+        "execution_candidate_count": execution_candidate_count,
+        "execution_candidate_rate_per_100_bars": ratio_pct(execution_candidate_count, denominator_bars),
+        "confirmed_directional_count": confirmed_directional_count,
+        "downgraded_directional_count": downgraded_directional_count,
+        "directional_confirmation_ratio_pct": ratio_pct(confirmed_directional_count, alert_count)
+        if directional
+        else None,
+        "directional_downgrade_ratio_pct": ratio_pct(downgraded_directional_count, alert_count)
+        if directional
+        else None,
+        "execution_candidate_ratio_pct": ratio_pct(execution_candidate_count, alert_count)
+        if directional
+        else None,
+    }
+    reasons = []
+    alert_rate = metrics["alert_rate_per_100_bars"]
+    if alert_rate is not None and alert_rate > TRIGGER_ALERT_DENSITY_WARN_PER_100_BARS:
+        reasons.append("trigger_replay_alert_density_high")
+    execution_rate = metrics["execution_candidate_rate_per_100_bars"]
+    if execution_rate is not None and execution_rate > TRIGGER_EXECUTION_DENSITY_WARN_PER_100_BARS:
+        reasons.append("trigger_execution_candidate_density_high")
+    confirmation_ratio = metrics["directional_confirmation_ratio_pct"]
+    if directional and confirmation_ratio is not None and confirmation_ratio < DIRECTIONAL_CONFIRMATION_MIN_WARN_PCT:
+        reasons.append("trigger_directional_confirmation_ratio_low")
+    downgrade_ratio = metrics["directional_downgrade_ratio_pct"]
+    if directional and downgrade_ratio is not None and downgrade_ratio > DIRECTIONAL_DOWNGRADE_WARN_PCT:
+        reasons.append("trigger_directional_downgrade_ratio_high")
+
+    return {
+        "market": market,
+        "candidate_signal_type": candidate_signal_type,
+        "trigger": trigger_name,
+        "key": f"{market}:{candidate_signal_type}:{trigger_name}",
+        "status": "WARN" if reasons else "OK",
+        "reasons": reasons,
+        "metrics": metrics,
+    }
+
+
+def market_quality_row(market, counts, denominator_bars):
+    candidate_counts = counts.get("candidate_counts") or Counter()
+    directional_candidate_count = (candidate_counts.get("BUY") or 0) + (candidate_counts.get("SELL") or 0)
+    metrics = {
+        "denominator_bars": denominator_bars,
+        "alert_count": counts.get("alert_count", 0),
+        "alert_rate_per_100_bars": ratio_pct(counts.get("alert_count", 0), denominator_bars),
+        "execution_candidate_count": counts.get("execution_candidate_count", 0),
+        "execution_candidate_rate_per_100_bars": ratio_pct(counts.get("execution_candidate_count", 0), denominator_bars),
+        "directional_candidate_count": directional_candidate_count,
+        "directional_confirmation_ratio_pct": ratio_pct(counts.get("confirmed_directional_count", 0), directional_candidate_count),
+        "directional_downgrade_ratio_pct": ratio_pct(counts.get("downgraded_directional_count", 0), directional_candidate_count),
+    }
+    reasons = []
+    if metrics["alert_rate_per_100_bars"] is not None and metrics["alert_rate_per_100_bars"] > ALERT_DENSITY_WARN_PER_100_BARS:
+        reasons.append("market_replay_alert_density_high")
+    if (
+        metrics["execution_candidate_rate_per_100_bars"] is not None
+        and metrics["execution_candidate_rate_per_100_bars"] > EXECUTION_DENSITY_WARN_PER_100_BARS
+    ):
+        reasons.append("market_execution_candidate_density_high")
+    if (
+        metrics["directional_confirmation_ratio_pct"] is not None
+        and metrics["directional_confirmation_ratio_pct"] < DIRECTIONAL_CONFIRMATION_MIN_WARN_PCT
+        and directional_candidate_count > 0
+    ):
+        reasons.append("market_directional_confirmation_ratio_low")
+    if (
+        metrics["directional_downgrade_ratio_pct"] is not None
+        and metrics["directional_downgrade_ratio_pct"] > DIRECTIONAL_DOWNGRADE_WARN_PCT
+    ):
+        reasons.append("market_directional_downgrade_ratio_high")
+    return {
+        "market": market,
+        "status": "WARN" if reasons else "OK",
+        "reasons": reasons,
+        "metrics": metrics,
+    }
+
+
+def replay_breakdown(symbol_reports, total_evaluated_bars, alert_summary):
+    market_bars = Counter()
+    market_counts = defaultdict(lambda: {"candidate_counts": Counter()})
+    trigger_counts = defaultdict(Counter)
+    total_alerts = (alert_summary or {}).get("alert_count") or 0
+    for report in symbol_reports:
+        market = str(report.get("market") or "UNKNOWN")
+        market_bars[market] += report.get("evaluated_bars") or 0
+        market_counts[market]
+        for _replay_date, alert in report.get("alerts") or []:
+            candidate_signal_type = str(alert.get("candidate_signal_type") or "UNKNOWN").upper()
+            trigger_name = str(alert.get("trigger") or "UNKNOWN")
+            alert_market = str(alert.get("market") or market)
+            group = (alert_market, candidate_signal_type, trigger_name)
+            trigger_counts[group]["alert_count"] += 1
+            market_counts[alert_market]["alert_count"] = market_counts[alert_market].get("alert_count", 0) + 1
+            market_counts[alert_market]["candidate_counts"][candidate_signal_type] += 1
+            if alert.get("execution_candidate") is True:
+                trigger_counts[group]["execution_candidate_count"] += 1
+                market_counts[alert_market]["execution_candidate_count"] = (
+                    market_counts[alert_market].get("execution_candidate_count", 0) + 1
+                )
+            if candidate_signal_type in ("BUY", "SELL") and alert.get("confirmed") is True:
+                trigger_counts[group]["confirmed_directional_count"] += 1
+                market_counts[alert_market]["confirmed_directional_count"] = (
+                    market_counts[alert_market].get("confirmed_directional_count", 0) + 1
+                )
+            if candidate_signal_type in ("BUY", "SELL") and str(alert.get("signal_type") or "").upper() != candidate_signal_type:
+                trigger_counts[group]["downgraded_directional_count"] += 1
+                market_counts[alert_market]["downgraded_directional_count"] = (
+                    market_counts[alert_market].get("downgraded_directional_count", 0) + 1
+                )
+
+    trigger_groups = [
+        trigger_group_quality_row(
+            group,
+            counts,
+            market_bars.get(group[0]) or total_evaluated_bars,
+            total_alerts,
+        )
+        for group, counts in trigger_counts.items()
+    ]
+    trigger_groups = sorted(
+        trigger_groups,
+        key=lambda row: (
+            0 if row["status"] == "WARN" else 1,
+            -(row["metrics"].get("alert_count") or 0),
+            row["key"],
+        ),
+    )
+    market_quality = [
+        market_quality_row(market, counts, market_bars.get(market) or 0)
+        for market, counts in market_counts.items()
+    ]
+    market_quality = sorted(market_quality, key=lambda row: row["market"])
+    return {
+        "schema": "v5_local_replay_breakdown_v1",
+        "market_quality": market_quality,
+        "trigger_groups": trigger_groups,
+        "top_noisy_triggers": [row for row in trigger_groups if row["status"] == "WARN"][:12],
+        "summary": {
+            "trigger_group_count": len(trigger_groups),
+            "warn_trigger_group_count": sum(1 for row in trigger_groups if row["status"] == "WARN"),
+            "market_count": len(market_quality),
+            "warn_market_count": sum(1 for row in market_quality if row["status"] == "WARN"),
+        },
+        "hermes_use": [
+            "Use trigger_groups to identify which v5 triggers are noisy in local replay before proposing threshold changes.",
+            "Use market_quality to check whether HK and US behave differently before applying a global trigger policy.",
+            "Do not treat repeated trigger groups as independent evidence without forward outcome and simulation validation.",
+        ],
+    }
+
+
 def data_checks(sources, total_rows, total_symbols):
     checks = [
         check(
@@ -590,6 +757,7 @@ def build_report(args):
         score_values.extend(report.get("score_values") or [])
     alert_summary = summarize_alerts(symbol_reports, alert_sample_limit=args.alert_sample_limit)
     replay_quality = replay_quality_assessment(evaluated_bars, len(symbol_reports), alert_summary)
+    breakdown = replay_breakdown(symbol_reports, evaluated_bars, alert_summary)
     checks = data_checks(
         {market: source for market, source in (("HK", hk_source), ("US", us_source)) if market in selected_markets},
         total_rows,
@@ -636,6 +804,7 @@ def build_report(args):
             "execution_candidate_count": alert_summary["execution_candidate_count"],
             "downgraded_directional_count": alert_summary["downgraded_directional_count"],
             "replay_quality_status": replay_quality["status"],
+            "warn_trigger_group_count": (breakdown.get("summary") or {}).get("warn_trigger_group_count"),
             "message": "v5 replay evidence is useful for trigger/confirmation/risk distribution review, not for execution approval or profitability claims.",
         },
         "replay_contract": {
@@ -660,6 +829,7 @@ def build_report(args):
         "inputs": {"HK": hk_source, "US": us_source},
         "alert_summary": alert_summary,
         "replay_quality": replay_quality,
+        "replay_breakdown": breakdown,
         "score_summary": distribution(score_values),
         "symbols": [
             {
@@ -688,6 +858,7 @@ def build_report(args):
             "allowed_use": [
                 "compare v5 trigger, confirmation, WATCH downgrade, and risk-geometry distributions",
                 "flag high replay alert density, high downgrade ratio, or same-day trigger stacking before promotion",
+                "identify noisy trigger groups by market before proposing v5 threshold or trigger changes",
                 "identify noisy triggers or repeated downgrade reasons before strategy promotion",
                 "support or challenge research hypotheses alongside local backtest reliability and factor alignment",
             ],
@@ -730,6 +901,14 @@ def text_report(payload):
     )
     if alerts.get("by_candidate_signal_type"):
         lines.append(f"Candidate types: {alerts.get('by_candidate_signal_type')}")
+    breakdown = payload.get("replay_breakdown") or {}
+    noisy = breakdown.get("top_noisy_triggers") or []
+    if noisy:
+        sample = [
+            f"{row.get('key')}:{(row.get('metrics') or {}).get('alert_rate_per_100_bars')}/100"
+            for row in noisy[:5]
+        ]
+        lines.append("Top noisy triggers: " + ", ".join(sample))
     warnings = [item.get("code") for item in payload.get("checks") or [] if item.get("status") in {"WARN", "FAIL"}]
     if warnings:
         lines.append("Warnings: " + ", ".join(warnings[:12]))

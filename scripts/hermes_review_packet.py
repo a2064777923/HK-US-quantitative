@@ -2746,6 +2746,7 @@ def v5_local_replay_brief(v5_local_replay_payload):
     replay_contract = payload.get("replay_contract") if isinstance(payload.get("replay_contract"), dict) else {}
     alert_summary = payload.get("alert_summary") if isinstance(payload.get("alert_summary"), dict) else {}
     replay_quality = payload.get("replay_quality") if isinstance(payload.get("replay_quality"), dict) else {}
+    replay_breakdown = payload.get("replay_breakdown") if isinstance(payload.get("replay_breakdown"), dict) else {}
     quality_metrics = replay_quality.get("metrics") if isinstance(replay_quality.get("metrics"), dict) else {}
     storage_policy = payload.get("storage_policy") if isinstance(payload.get("storage_policy"), dict) else {}
     checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
@@ -2791,6 +2792,36 @@ def v5_local_replay_brief(v5_local_replay_payload):
             "directional_downgrade_ratio_pct": quality_metrics.get("directional_downgrade_ratio_pct"),
             "multi_alert_symbol_day_ratio_pct": quality_metrics.get("multi_alert_symbol_day_ratio_pct"),
             "top_trigger": quality_metrics.get("top_trigger") or {},
+        },
+        "breakdown": {
+            "schema": replay_breakdown.get("schema") or "v5_local_replay_breakdown_v1",
+            "summary": replay_breakdown.get("summary") or {},
+            "market_quality": (replay_breakdown.get("market_quality") or [])[:4],
+            "top_noisy_triggers": [
+                {
+                    "key": item.get("key"),
+                    "market": item.get("market"),
+                    "candidate_signal_type": item.get("candidate_signal_type"),
+                    "trigger": item.get("trigger"),
+                    "status": item.get("status"),
+                    "reasons": item.get("reasons") or [],
+                    "metrics": {
+                        "alert_count": (item.get("metrics") or {}).get("alert_count"),
+                        "alert_rate_per_100_bars": (item.get("metrics") or {}).get("alert_rate_per_100_bars"),
+                        "execution_candidate_rate_per_100_bars": (item.get("metrics") or {}).get(
+                            "execution_candidate_rate_per_100_bars"
+                        ),
+                        "directional_confirmation_ratio_pct": (item.get("metrics") or {}).get(
+                            "directional_confirmation_ratio_pct"
+                        ),
+                        "directional_downgrade_ratio_pct": (item.get("metrics") or {}).get(
+                            "directional_downgrade_ratio_pct"
+                        ),
+                    },
+                }
+                for item in (replay_breakdown.get("top_noisy_triggers") or [])[:8]
+                if isinstance(item, dict)
+            ],
         },
         "replay_contract": {
             "engine": replay_contract.get("engine"),

@@ -81,6 +81,9 @@ class V5LocalReplayReportTests(unittest.TestCase):
             self.assertEqual(payload["replay_quality"]["schema"], "v5_local_replay_quality_v1")
             self.assertIn(payload["replay_quality"]["status"], {"OK", "WARN"})
             self.assertIn("alert_rate_per_100_bars", payload["replay_quality"]["metrics"])
+            self.assertEqual(payload["replay_breakdown"]["schema"], "v5_local_replay_breakdown_v1")
+            self.assertGreaterEqual(payload["replay_breakdown"]["summary"]["trigger_group_count"], 1)
+            self.assertGreaterEqual(payload["replay_breakdown"]["summary"]["market_count"], 1)
             self.assertEqual(payload["storage_policy"]["commit_raw_csv_to_git"], False)
             self.assertEqual(payload["hermes_contract"]["contract"], "v5_replay_research_context_only")
             self.assertIn(
@@ -126,6 +129,58 @@ class V5LocalReplayReportTests(unittest.TestCase):
         self.assertEqual(quality["thresholds"]["alert_density_warn_per_100_bars"], 50.0)
         self.assertEqual(quality["metrics"]["alert_rate_per_100_bars"], 80.0)
         self.assertEqual(quality["metrics"]["directional_confirmation_ratio_pct"], 25.0)
+
+    def test_replay_breakdown_flags_noisy_trigger_groups_by_market(self):
+        symbol_reports = [
+            {
+                "symbol": "00700",
+                "market": "HK",
+                "evaluated_bars": 100,
+                "alerts": [
+                    (
+                        "2026-02-01",
+                        {
+                            "market": "HK",
+                            "symbol": "00700",
+                            "trigger": "站上MA5",
+                            "signal_type": "WATCH",
+                            "candidate_signal_type": "BUY",
+                            "confirmed": False,
+                            "execution_candidate": False,
+                        },
+                    )
+                    for _ in range(8)
+                ]
+                + [
+                    (
+                        "2026-02-02",
+                        {
+                            "market": "HK",
+                            "symbol": "00700",
+                            "trigger": "布林下軌突破",
+                            "signal_type": "BUY",
+                            "candidate_signal_type": "BUY",
+                            "confirmed": True,
+                            "execution_candidate": True,
+                        },
+                    )
+                    for _ in range(3)
+                ],
+            }
+        ]
+        alert_summary = report.summarize_alerts(symbol_reports)
+
+        breakdown = report.replay_breakdown(symbol_reports, 100, alert_summary)
+
+        self.assertEqual(breakdown["schema"], "v5_local_replay_breakdown_v1")
+        self.assertEqual(breakdown["summary"]["trigger_group_count"], 2)
+        noisy = breakdown["top_noisy_triggers"][0]
+        self.assertEqual(noisy["key"], "HK:BUY:站上MA5")
+        self.assertIn("trigger_replay_alert_density_high", noisy["reasons"])
+        self.assertIn("trigger_directional_confirmation_ratio_low", noisy["reasons"])
+        self.assertIn("trigger_directional_downgrade_ratio_high", noisy["reasons"])
+        self.assertEqual(noisy["metrics"]["alert_rate_per_100_bars"], 8.0)
+        self.assertEqual(breakdown["market_quality"][0]["market"], "HK")
 
     def test_main_writes_report_and_text_mode(self):
         with tempfile.TemporaryDirectory() as tmp:

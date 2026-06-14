@@ -134,7 +134,7 @@ python3 scripts/v5_local_replay_report.py \
 ```
 
 這份 replay 也是研究上下文，不是 PnL 回測，不會寫 alert queue、下單、或改生產門檻。
-它還會把 alert 密度、確認率、降級率和同日多 trigger 堆疊標成 quality 風險，方便 Hermes 保持批判態度。
+它還會把 alert 密度、確認率、降級率、同日多 trigger 堆疊，以及按 trigger/market 的噪音分解標成 quality 風險，方便 Hermes 保持批判態度。
 
 檢查本地回測與 v5 實時引擎的因子契約是否對齊：
 

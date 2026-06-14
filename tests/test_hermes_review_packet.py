@@ -210,6 +210,46 @@ def v5_local_replay(status="V5_REPLAY_RESEARCH_ONLY", promotion_ready=False):
                 "top_trigger": {"trigger": "站上MA5", "count": 100, "pct_of_alerts": 20.0},
             },
         },
+        "replay_breakdown": {
+            "schema": "v5_local_replay_breakdown_v1",
+            "summary": {
+                "trigger_group_count": 12,
+                "warn_trigger_group_count": 9,
+                "market_count": 2,
+                "warn_market_count": 2,
+            },
+            "market_quality": [
+                {
+                    "market": "HK",
+                    "status": "WARN",
+                    "reasons": ["market_replay_alert_density_high"],
+                    "metrics": {"alert_rate_per_100_bars": 70.0},
+                },
+                {
+                    "market": "US",
+                    "status": "WARN",
+                    "reasons": ["market_replay_alert_density_high"],
+                    "metrics": {"alert_rate_per_100_bars": 60.0},
+                },
+            ],
+            "top_noisy_triggers": [
+                {
+                    "key": "HK:BUY:站上MA5",
+                    "market": "HK",
+                    "candidate_signal_type": "BUY",
+                    "trigger": "站上MA5",
+                    "status": "WARN",
+                    "reasons": ["trigger_replay_alert_density_high"],
+                    "metrics": {
+                        "alert_count": 100,
+                        "alert_rate_per_100_bars": 10.0,
+                        "execution_candidate_rate_per_100_bars": 4.0,
+                        "directional_confirmation_ratio_pct": 25.4,
+                        "directional_downgrade_ratio_pct": 74.6,
+                    },
+                }
+            ],
+        },
         "checks": [
             {
                 "status": "WARN",
@@ -2809,6 +2849,8 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(replay["quality"]["alert_rate_per_100_bars"], 66.76)
         self.assertEqual(replay["quality"]["directional_confirmation_ratio_pct"], 25.4)
         self.assertEqual(replay["quality"]["directional_downgrade_ratio_pct"], 74.6)
+        self.assertEqual(replay["breakdown"]["summary"]["warn_trigger_group_count"], 9)
+        self.assertEqual(replay["breakdown"]["top_noisy_triggers"][0]["key"], "HK:BUY:站上MA5")
         self.assertFalse(replay["promotion_ready"])
         self.assertTrue(replay["storage_policy"]["raw_data_local_only"])
 
