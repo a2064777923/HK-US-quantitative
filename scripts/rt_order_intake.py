@@ -18,6 +18,17 @@ API_BASE = os.environ.get("QM_API_BASE", "https://notopenai.asia/api/v1").rstrip
 API_USER = os.environ.get("QM_API_USER", "kaitosim")
 API_PASSWORD = os.environ.get("QM_API_PASSWORD", "")
 PORTFOLIO_ID = int(os.environ.get("QM_PORTFOLIO_ID", "8"))
+ALPACA_TRADING_BASE_URL = os.environ.get(
+    "ALPACA_TRADING_BASE_URL",
+    "https://paper-api.alpaca.markets/v2",
+).rstrip("/")
+ALPACA_API_KEY_ID = os.environ.get("APCA_API_KEY_ID") or os.environ.get("ALPACA_API_KEY_ID") or os.environ.get("ALPACA_KEY_ID", "")
+ALPACA_API_SECRET_KEY = (
+    os.environ.get("APCA_API_SECRET_KEY")
+    or os.environ.get("ALPACA_API_SECRET_KEY")
+    or os.environ.get("ALPACA_SECRET_KEY", "")
+)
+US_ORDER_BROKER = os.environ.get("RT_ORDER_US_BROKER", "quantmind-sim").strip().lower()
 
 STATE_FILE = os.environ.get("RT_ORDER_STATE_FILE", "/tmp/rt_order_intake_state.json")
 ALERT_QUEUE_FILE = os.environ.get("RT_ALERT_QUEUE_FILE", "/tmp/rt_signal_alerts.jsonl")
@@ -54,6 +65,15 @@ MAX_MARKET_CONTEXT_AGE_HOURS = int(os.environ.get("RT_ORDER_MAX_MARKET_CONTEXT_A
 MIN_MARKET_EXCEPTION_CONFIDENCE = float(os.environ.get("RT_ORDER_MIN_MARKET_EXCEPTION_CONFIDENCE", "0.80"))
 REQUIRE_NO_SYMBOL_CONFLICT = os.environ.get("RT_ORDER_REQUIRE_NO_SYMBOL_CONFLICT", "1") != "0"
 SYMBOL_CONFLICT_QUEUE_SCAN_LIMIT = int(os.environ.get("RT_ORDER_CONFLICT_QUEUE_SCAN_LIMIT", "1000"))
+PILOT_EXECUTION_ENABLED = os.environ.get("RT_ORDER_EXECUTE_PILOT_ENABLED", "0") == "1"
+PILOT_MAX_ORDER_NOTIONAL_HKD = float(os.environ.get("RT_ORDER_PILOT_MAX_ORDER_NOTIONAL_HKD", "5000"))
+PILOT_MAX_ORDER_RISK_HKD = float(os.environ.get("RT_ORDER_PILOT_MAX_ORDER_RISK_HKD", "500"))
+PILOT_MAX_DAILY_SUBMITTED_ORDERS = int(os.environ.get("RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS", "1"))
+PILOT_ALLOWED_MARKETS = {
+    item.strip().upper()
+    for item in os.environ.get("RT_ORDER_PILOT_ALLOWED_MARKETS", "HK,US").split(",")
+    if item.strip()
+}
 
 LOT_SIZES_HK = {
     "00700": 100,
@@ -247,6 +267,54 @@ def fetch_context():
     return token, normalize_account(account, positions), warnings
 
 
+def fetch_alpaca_context():
+    warnings = []
+    if not alpaca_auth_available():
+        warnings.append("alpaca_paper_credentials_missing; using default empty account context")
+        return "", normalize_account({"cash": DEFAULT_EQUITY_HKD, "total_asset": DEFAULT_EQUITY_HKD}, {}), warnings
+
+    account = {}
+    positions = []
+    try:
+        account = alpaca_request("/account")
+    except Exception as exc:
+        warnings.append(f"alpaca_account_query_failed: {exc}")
+    try:
+        positions = alpaca_request("/positions")
+    except Exception as exc:
+        warnings.append(f"alpaca_positions_query_failed: {exc}")
+    if not isinstance(account, dict):
+        account = {}
+    if not isinstance(positions, list):
+        positions = []
+
+    raw_positions = {}
+    for pos in positions:
+        if not isinstance(pos, dict) or not pos.get("symbol"):
+            continue
+        raw_positions[str(pos.get("symbol")).upper()] = {
+            "quantity": pos.get("qty"),
+            "cost_price": pos.get("avg_entry_price"),
+            "last_price": pos.get("current_price") or pos.get("avg_entry_price"),
+            "status": "holding",
+        }
+    normalized_positions = normalize_positions(raw_positions)
+    cash_usd = first_number(account, ("cash", "buying_power"), DEFAULT_EQUITY_HKD / USD_TO_HKD)
+    equity_usd = first_number(account, ("equity", "portfolio_value", "last_equity"), cash_usd)
+    context = {
+        "cash_hkd": cash_usd * USD_TO_HKD,
+        "equity_hkd": equity_usd * USD_TO_HKD,
+        "positions": normalized_positions,
+    }
+    return "alpaca-paper", context, warnings
+
+
+def fetch_context_for_backend(backend):
+    if backend == "alpaca-paper":
+        return fetch_alpaca_context()
+    return fetch_context()
+
+
 def submit_order(token, symbol, side, quantity, price=None):
     order = {
         "portfolio_id": PORTFOLIO_ID,
@@ -259,6 +327,58 @@ def submit_order(token, symbol, side, quantity, price=None):
     if price is not None and os.environ.get("RT_ORDER_INCLUDE_PRICE", "0") == "1":
         order["price"] = price
     return api_request("/simulation/orders", token=token, method="POST", data=order)
+
+
+def alpaca_auth_available():
+    return bool(ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY)
+
+
+def alpaca_request(path, method="GET", data=None):
+    url = ALPACA_TRADING_BASE_URL + path
+    body = json.dumps(data).encode() if data is not None else None
+    headers = {
+        "Content-Type": "application/json",
+        "Apca-Api-Key-Id": ALPACA_API_KEY_ID,
+        "Apca-Api-Secret-Key": ALPACA_API_SECRET_KEY,
+    }
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        raw = resp.read().decode()
+        return json.loads(raw) if raw else {}
+
+
+def submit_alpaca_paper_order(symbol, side, quantity):
+    order = {
+        "symbol": symbol,
+        "side": side.lower(),
+        "type": "market",
+        "time_in_force": "day",
+        "qty": str(int(quantity)),
+    }
+    result = alpaca_request("/orders", method="POST", data=order)
+    if isinstance(result, dict):
+        result = dict(result)
+        result.setdefault("broker", "alpaca-paper")
+    return result
+
+
+def order_backend(alert):
+    market = alert_market(alert)
+    if market == "US" and US_ORDER_BROKER in ("alpaca-paper", "alpaca_paper"):
+        return "alpaca-paper"
+    return "quantmind-sim"
+
+
+def broker_auth_available(token, backend):
+    if backend == "alpaca-paper":
+        return alpaca_auth_available()
+    return bool(token)
+
+
+def submit_order_to_backend(token, backend, plan):
+    if backend == "alpaca-paper":
+        return submit_alpaca_paper_order(plan["symbol"], plan["side"], plan["quantity"])
+    return submit_order(token, plan["symbol"], plan["side"], plan["quantity"], plan["price_reference"])
 
 
 def health_gate(mode):
@@ -1046,6 +1166,65 @@ def build_order_plan(alert, context):
     }, []
 
 
+def daily_submitted_order_count(state, now=None):
+    now = now or datetime.now()
+    count = 0
+    processed = state.get("processed") if isinstance(state, dict) else {}
+    if not isinstance(processed, dict):
+        return 0
+    for payload in processed.values():
+        if not isinstance(payload, dict) or payload.get("status") != "submitted":
+            continue
+        timestamp = parse_time(payload.get("submitted_at") or payload.get("checked_at"))
+        if timestamp and timestamp.date() == now.date():
+            count += 1
+    return count
+
+
+def pilot_execution_gate(alert, plan, state, mode, now=None):
+    """Last-mile cap for small alert-sim pilots before submitting to the simulation API."""
+    market = alert_market(alert)
+    submitted_today = daily_submitted_order_count(state, now)
+    payload = {
+        "status": "PASS",
+        "enabled": PILOT_EXECUTION_ENABLED,
+        "market": market,
+        "allowed_markets": sorted(PILOT_ALLOWED_MARKETS),
+        "submitted_today": submitted_today,
+        "max_daily_submitted_orders": PILOT_MAX_DAILY_SUBMITTED_ORDERS,
+        "max_order_notional_hkd": PILOT_MAX_ORDER_NOTIONAL_HKD,
+        "max_order_risk_hkd": PILOT_MAX_ORDER_RISK_HKD,
+        "order_notional_hkd": plan.get("notional_hkd") if isinstance(plan, dict) else None,
+        "order_risk_hkd": plan.get("risk_hkd") if isinstance(plan, dict) else None,
+        "reasons": [],
+    }
+    reasons = payload["reasons"]
+
+    if not PILOT_EXECUTION_ENABLED:
+        reasons.append("pilot_execution_not_enabled")
+    if market not in PILOT_ALLOWED_MARKETS:
+        reasons.append("pilot_market_not_allowed")
+    try:
+        if float(plan.get("notional_hkd", 0) or 0) > PILOT_MAX_ORDER_NOTIONAL_HKD:
+            reasons.append("pilot_order_notional_above_cap")
+    except (AttributeError, TypeError, ValueError):
+        reasons.append("pilot_order_notional_invalid")
+    try:
+        if float(plan.get("risk_hkd", 0) or 0) > PILOT_MAX_ORDER_RISK_HKD:
+            reasons.append("pilot_order_risk_above_cap")
+    except (AttributeError, TypeError, ValueError):
+        reasons.append("pilot_order_risk_invalid")
+    if submitted_today >= PILOT_MAX_DAILY_SUBMITTED_ORDERS:
+        reasons.append("pilot_daily_submitted_order_cap_reached")
+
+    if mode != "execute":
+        payload["status"] = "DRY_RUN_ONLY"
+        payload["would_block_execute"] = bool(reasons)
+        return True, payload
+    payload["status"] = "PASS" if not reasons else "REJECTED"
+    return not reasons, payload
+
+
 def record_processed(state, sid, payload, state_file):
     state["processed"][sid] = payload
     save_json_atomic(state_file, state)
@@ -1136,13 +1315,15 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
         record_decision(state, sid, decision, state_file, mode)
         return decision
 
-    token, context, context_warnings = fetch_context()
+    backend = order_backend(alert)
+    token, context, context_warnings = fetch_context_for_backend(backend)
     plan, plan_errors = build_order_plan(alert, context)
     if plan_errors:
         decision = {
             "signal_id": sid,
             "status": "rejected",
             "reasons": plan_errors,
+            "order_backend": backend,
             "warnings": context_warnings,
             "execution_readiness": execution_readiness,
             "strategy_evidence": strategy_gate,
@@ -1198,10 +1379,13 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
         record_decision(state, sid, decision, state_file, mode)
         return decision
 
+    pilot_ok, pilot_gate = pilot_execution_gate(alert, plan, state, mode)
+
     base = {
         "signal_id": sid,
         "status": "dry_run" if mode != "execute" else "inflight",
         "mode": mode,
+        "order_backend": backend,
         "plan": plan,
         "warnings": context_warnings,
         "context": {
@@ -1213,6 +1397,7 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
         "strategy_evidence": strategy_gate,
         "symbol_conflict": conflict_gate,
         "market_context": market_gate,
+        "pilot_execution": pilot_gate,
         "hermes": hermes_gate,
         "alert": {
             "symbol": alert.get("symbol"),
@@ -1228,15 +1413,22 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
         record_dry_run(state, sid, base, state_file)
         return base
 
-    if not token:
+    if not pilot_ok:
         decision = dict(base)
-        decision.update({"status": "rejected", "reasons": ["api_token_missing"]})
+        decision.update({"status": "rejected", "reasons": ["pilot_execution_gate_failed"]})
+        record_processed(state, sid, decision, state_file)
+        return decision
+
+    if not broker_auth_available(token, backend):
+        decision = dict(base)
+        reason = "alpaca_paper_credentials_missing" if backend == "alpaca-paper" else "api_token_missing"
+        decision.update({"status": "rejected", "reasons": [reason]})
         record_processed(state, sid, decision, state_file)
         return decision
 
     record_processed(state, sid, base, state_file)
     try:
-        result = submit_order(token, plan["symbol"], plan["side"], plan["quantity"], plan["price_reference"])
+        result = submit_order_to_backend(token, backend, plan)
         final = dict(base)
         final.update({"status": "submitted", "order_result": result, "submitted_at": now_iso()})
         record_processed(state, sid, final, state_file)

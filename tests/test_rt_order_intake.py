@@ -49,6 +49,15 @@ class RtOrderIntakeTests(unittest.TestCase):
         intake.REQUIRE_STRATEGY_EVIDENCE = True
         intake.REQUIRE_MARKET_CONTEXT = True
         intake.MIN_MARKET_EXCEPTION_CONFIDENCE = 0.8
+        intake.PILOT_EXECUTION_ENABLED = True
+        intake.PILOT_MAX_ORDER_NOTIONAL_HKD = 500_000
+        intake.PILOT_MAX_ORDER_RISK_HKD = 50_000
+        intake.PILOT_MAX_DAILY_SUBMITTED_ORDERS = 10
+        intake.PILOT_ALLOWED_MARKETS = {"HK", "US"}
+        intake.US_ORDER_BROKER = "quantmind-sim"
+        intake.ALPACA_API_KEY_ID = ""
+        intake.ALPACA_API_SECRET_KEY = ""
+        intake.ALPACA_TRADING_BASE_URL = "https://paper-api.alpaca.markets/v2"
         self.context = {
             "cash_hkd": 1_000_000,
             "equity_hkd": 1_000_000,
@@ -73,13 +82,15 @@ class RtOrderIntakeTests(unittest.TestCase):
         conflict_gate=(True, {"status": "PASS"}),
         market_gate=(True, {"status": "PASS"}),
         readiness_gate=(True, {"status": "PASS"}),
+        context_result=None,
     ):
+        context_result = context_result or ("token", self.context, [])
         patches = [
             patch.object(intake, "health_gate", return_value=(True, {"status": "OK"})),
             patch.object(intake, "execution_readiness_gate", return_value=readiness_gate),
             patch.object(intake, "strategy_evidence_gate", return_value=strategy_gate),
             patch.object(intake, "symbol_conflict_gate", return_value=conflict_gate),
-            patch.object(intake, "fetch_context", return_value=("token", self.context, [])),
+            patch.object(intake, "fetch_context_for_backend", return_value=context_result),
             patch.object(intake, "market_context_gate", return_value=market_gate),
         ]
         if submit_result is not None:
@@ -684,6 +695,176 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertIn("hermes_judgment_gate_failed", result["reasons"])
             self.assertIn("reduced_quantity_zero", result["hermes"]["reasons"])
             submit.assert_not_called()
+
+    def test_execute_requires_pilot_enablement(self):
+        intake.PILOT_EXECUTION_ENABLED = False
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-pilot-disabled")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            result, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "should-not-submit"},
+            )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("pilot_execution_gate_failed", result["reasons"])
+            self.assertIn("pilot_execution_not_enabled", result["pilot_execution"]["reasons"])
+            submit.assert_not_called()
+
+    def test_execute_rejects_pilot_order_above_notional_cap(self):
+        intake.PILOT_MAX_ORDER_NOTIONAL_HKD = 50_000
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-pilot-notional")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            result, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "should-not-submit"},
+            )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("pilot_execution_gate_failed", result["reasons"])
+            self.assertIn("pilot_order_notional_above_cap", result["pilot_execution"]["reasons"])
+            submit.assert_not_called()
+
+    def test_execute_rejects_pilot_daily_submitted_order_cap(self):
+        intake.PILOT_MAX_DAILY_SUBMITTED_ORDERS = 1
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            state["processed"]["existing"] = {
+                "status": "submitted",
+                "submitted_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            alert = fresh_alert("sig-pilot-daily-cap")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            result, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "should-not-submit"},
+            )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("pilot_daily_submitted_order_cap_reached", result["pilot_execution"]["reasons"])
+            submit.assert_not_called()
+
+    def test_dry_run_reports_pilot_would_block_without_rejecting(self):
+        intake.PILOT_EXECUTION_ENABLED = False
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-pilot-dry-run")
+
+            result, _ = self.run_with_common_patches(
+                alert,
+                "dry-run",
+                state,
+                state_file,
+                judgment_file,
+            )
+
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["pilot_execution"]["status"], "DRY_RUN_ONLY")
+            self.assertTrue(result["pilot_execution"]["would_block_execute"])
+
+    def test_us_execute_can_route_to_alpaca_paper_when_configured(self):
+        intake.US_ORDER_BROKER = "alpaca-paper"
+        intake.ALPACA_API_KEY_ID = "paper-key"
+        intake.ALPACA_API_SECRET_KEY = "paper-secret"
+        self.context = {
+            "cash_hkd": 1_000_000,
+            "equity_hkd": 1_000_000,
+            "positions": {},
+        }
+        alert = fresh_alert("sig-alpaca-paper", "AAPL")
+        alert.update({"market": "US", "entry_price": 100, "stop_loss": 95, "take_profit": 112})
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            with patch.object(
+                intake,
+                "submit_alpaca_paper_order",
+                return_value={"id": "alpaca-order", "broker": "alpaca-paper"},
+            ) as alpaca_submit, patch.object(intake, "submit_order") as qm_submit:
+                result, _submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                )
+
+            self.assertEqual(result["status"], "submitted")
+            self.assertEqual(result["order_backend"], "alpaca-paper")
+            self.assertEqual(result["order_result"]["id"], "alpaca-order")
+            alpaca_submit.assert_called_once_with("AAPL", "buy", result["plan"]["quantity"])
+            qm_submit.assert_not_called()
+
+    def test_us_alpaca_paper_requires_credentials(self):
+        intake.US_ORDER_BROKER = "alpaca-paper"
+        alert = fresh_alert("sig-alpaca-missing", "AAPL")
+        alert.update({"market": "US", "entry_price": 100, "stop_loss": 95, "take_profit": 112})
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            result, _submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+            )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertEqual(result["order_backend"], "alpaca-paper")
+            self.assertIn("alpaca_paper_credentials_missing", result["reasons"])
+
+    def test_fetch_alpaca_context_converts_usd_account_to_hkd_context(self):
+        intake.ALPACA_API_KEY_ID = "paper-key"
+        intake.ALPACA_API_SECRET_KEY = "paper-secret"
+
+        def fake_request(path, method="GET", data=None):
+            if path == "/account":
+                return {"cash": "10000", "equity": "12000"}
+            if path == "/positions":
+                return [{"symbol": "AAPL", "qty": "3", "avg_entry_price": "100", "current_price": "110"}]
+            return {}
+
+        with patch.object(intake, "alpaca_request", side_effect=fake_request):
+            token, context, warnings = intake.fetch_alpaca_context()
+
+        self.assertEqual(token, "alpaca-paper")
+        self.assertEqual(warnings, [])
+        self.assertAlmostEqual(context["cash_hkd"], 78_000)
+        self.assertAlmostEqual(context["equity_hkd"], 93_600)
+        self.assertEqual(context["positions"]["AAPL"]["quantity"], 3)
 
 
 if __name__ == "__main__":

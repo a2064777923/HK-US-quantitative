@@ -278,6 +278,13 @@ DANGEROUS_ENABLED_PATTERNS = [
     "rt_alert_bridge.py --mode execute",
 ]
 SCRIPT_TOKEN_RE = re.compile(r"(?<![\w.-])([A-Za-z_][A-Za-z0-9_]*\.py)(?![\w.-])")
+PILOT_ALERT_SIM_REQUIRED_TOKENS = (
+    "RT_ALERT_EXECUTION_MODE=alert-sim",
+    "RT_ORDER_EXECUTE_PILOT_ENABLED=1",
+    "RT_ORDER_PILOT_MAX_ORDER_NOTIONAL_HKD=",
+    "RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=",
+    "RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=",
+)
 
 
 def now_iso():
@@ -398,10 +405,39 @@ def script_availability_audit(lines, required_jobs, script_root=None, available_
 def dangerous_lines(lines):
     matches = []
     for line in lines:
+        if is_limited_pilot_alert_sim_line(line):
+            continue
         for pattern in DANGEROUS_ENABLED_PATTERNS:
             if pattern in line:
                 matches.append({"pattern": pattern, "line": line})
     return matches
+
+
+def is_limited_pilot_alert_sim_line(line):
+    text = str(line or "")
+    return all(token in text for token in PILOT_ALERT_SIM_REQUIRED_TOKENS)
+
+
+def limited_pilot_execution_lines(lines):
+    rows = []
+    for line in lines:
+        if not is_limited_pilot_alert_sim_line(line):
+            continue
+        broker = "alpaca-paper" if "RT_ORDER_US_BROKER=alpaca-paper" in line else "quantmind-sim"
+        rows.append(
+            {
+                "mode": "alert-sim",
+                "broker": broker,
+                "line": line,
+                "safety_contract": {
+                    "pilot_enabled": True,
+                    "notional_cap_present": "RT_ORDER_PILOT_MAX_ORDER_NOTIONAL_HKD=" in line,
+                    "risk_cap_present": "RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=" in line,
+                    "daily_order_cap_present": "RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=" in line,
+                },
+            }
+        )
+    return rows
 
 
 def stable_hash(payload):
@@ -497,7 +533,10 @@ def alert_delivery_audit(lines, env=None, env_file_text=None, sent_file_texts=No
     dangerous_bridge_lines = [
         line
         for line in dangerous_bridge_lines
-        if "RT_ALERT_EXECUTION_MODE=alert-sim" in line or "RT_ALERT_EXECUTION_MODE=legacy-sim" in line
+        if (
+            ("RT_ALERT_EXECUTION_MODE=alert-sim" in line and not is_limited_pilot_alert_sim_line(line))
+            or "RT_ALERT_EXECUTION_MODE=legacy-sim" in line
+        )
     ]
 
     if env_file_text is None and env_file_error is None:
@@ -674,6 +713,7 @@ def build_report(
         if not present:
             missing.append(row)
     dangerous = dangerous_lines(lines)
+    limited_pilot = limited_pilot_execution_lines(lines)
     alert_delivery = alert_delivery_audit(
         lines,
         env=env,
@@ -724,6 +764,7 @@ def build_report(
             "present_required_job_count": len(required) - len(missing),
             "missing_required_job_count": len(missing),
             "dangerous_enabled_count": len(dangerous),
+            "limited_pilot_execution_count": len(limited_pilot),
             "alert_delivery_status": alert_delivery.get("status"),
             "missing_script_count": script_availability.get("missing_script_count", 0),
             "script_availability_status": script_availability.get("status"),
@@ -731,6 +772,7 @@ def build_report(
         "required_jobs": required,
         "missing_required_jobs": missing,
         "dangerous_enabled_jobs": dangerous,
+        "limited_pilot_execution_jobs": limited_pilot,
         "alert_delivery": alert_delivery,
         "script_availability": script_availability,
         "installation_plan": installation_plan,
@@ -740,7 +782,8 @@ def build_report(
             "Use this to detect drift between documented read-only jobs and the actual crontab.",
             "Missing read-only jobs explain stale or missing readiness inputs; do not treat the absence as execution permission.",
             "Present cron lines still need deployed scripts; missing scripts mean the line cannot refresh the report it advertises.",
-            "Any dangerous enabled job must be disabled before considering simulation execution.",
+            "Unbounded execute, legacy simulation, and direct order-intake cron lines remain dangerous.",
+            "Limited pilot alert-sim lines are visible separately and still depend on rt_order_intake.py pilot gates.",
             "Use alert_delivery to verify the notify bridge, optional Feishu credentials, and sent-state health without sending messages.",
         ],
     }
@@ -774,6 +817,12 @@ def build_text_report(payload):
     dangerous = payload.get("dangerous_enabled_jobs") or []
     if dangerous:
         lines.append("Dangerous enabled jobs: " + ", ".join(row["pattern"] for row in dangerous))
+    limited_pilot = payload.get("limited_pilot_execution_jobs") or []
+    if limited_pilot:
+        lines.append(
+            "Limited pilot execution jobs: "
+            + ", ".join(f"{row.get('mode')}:{row.get('broker')}" for row in limited_pilot)
+        )
     script_availability = payload.get("script_availability") or {}
     if script_availability.get("status") == "WARN":
         missing = []

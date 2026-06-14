@@ -329,6 +329,23 @@ class CronAuditReportTests(unittest.TestCase):
         self.assertEqual(payload["dangerous_enabled_jobs"][0]["pattern"], "RT_ALERT_EXECUTION_MODE=alert-sim")
         self.assertIn("disable_dangerous_execution_cron_before_any_review", payload["recommendations"])
 
+    def test_limited_pilot_alert_sim_cron_is_audited_separately(self):
+        pilot_line = (
+            "* * * * * RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=alert-sim "
+            "RT_ALERT_REQUIRE_CONFIRMED=1 RT_ORDER_EXECUTE_PILOT_ENABLED=1 "
+            "RT_ORDER_PILOT_MAX_ORDER_NOTIONAL_HKD=5000 "
+            "RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=500 "
+            "RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=1 "
+            "RT_ORDER_US_BROKER=alpaca-paper /usr/bin/python3 /root/rt_alert_bridge.py"
+        )
+        payload = report.build_report(FULL_CRON + "\n" + pilot_line + "\n")
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["summary"]["dangerous_enabled_count"], 0)
+        self.assertEqual(payload["summary"]["limited_pilot_execution_count"], 1)
+        self.assertEqual(payload["limited_pilot_execution_jobs"][0]["broker"], "alpaca-paper")
+        self.assertIn("Limited pilot execution jobs:", report.build_text_report(payload))
+
     def test_commented_dangerous_cron_is_ignored(self):
         payload = report.build_report(
             FULL_CRON + "\n# * * * * * RT_ALERT_EXECUTION_MODE=alert-sim /usr/bin/python3 /root/rt_alert_bridge.py\n"

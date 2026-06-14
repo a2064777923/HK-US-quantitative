@@ -133,11 +133,34 @@ Dry-run examples:
 /usr/bin/python3 /root/rt_order_intake.py --queue-file /tmp/rt_signal_alerts.jsonl --limit 20
 ```
 
-Execute mode requires explicit opt-in and API credentials in the environment:
+Execute mode requires explicit opt-in, API credentials, and the pilot execution guard in the environment:
 
 ```bash
-RT_ORDER_EXECUTION_MODE=execute /usr/bin/python3 /root/rt_order_intake.py --alert-json "$ALERT_JSON"
+RT_ORDER_EXECUTION_MODE=execute \
+RT_ORDER_EXECUTE_PILOT_ENABLED=1 \
+RT_ORDER_PILOT_MAX_ORDER_NOTIONAL_HKD=5000 \
+RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=500 \
+RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=1 \
+/usr/bin/python3 /root/rt_order_intake.py --alert-json "$ALERT_JSON"
 ```
+
+`RT_ORDER_EXECUTE_PILOT_ENABLED` defaults to `0`. Even when all upstream evidence, readiness, Hermes judgment, and market-context gates pass, execute mode now rejects before `submit_order()` unless this final pilot guard is explicitly enabled. The guard is deliberately last-mile and lossless for existing jobs: dry-run output gains a `pilot_execution` section with `would_block_execute`, while notify-only, alert-dry-run, v5 alert generation, strategy proposals, and report jobs do not change behavior.
+
+Pilot defaults when enabled are intentionally small:
+
+- `RT_ORDER_PILOT_MAX_ORDER_NOTIONAL_HKD=5000`
+- `RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=500`
+- `RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=1`
+- `RT_ORDER_PILOT_ALLOWED_MARKETS=HK,US`
+
+Hermes should treat a `pilot_execution_gate_failed` rejection as an operator/runtime safety block, not as a negative strategy signal. Raise limits only after the simulation endpoint, order lineage, and post-trade reports are verified. By default this path submits to the QuantMind `/simulation/orders` API through `rt_order_intake.py`. For US symbols only, operators may set `RT_ORDER_US_BROKER=alpaca-paper` plus Alpaca paper credentials in `/root/.quantmind_env`; then US alert-sim orders route to Alpaca paper trading while HK orders continue to use QuantMind simulation. This is still paper/simulation execution. Real broker live trading remains manual: Hermes/v5 may send signals and analysis, but no live broker order adapter should be enabled before separate review.
+
+Alpaca paper environment keys accepted by `rt_order_intake.py`:
+
+- `RT_ORDER_US_BROKER=alpaca-paper`
+- `ALPACA_TRADING_BASE_URL=https://paper-api.alpaca.markets/v2`
+- `APCA_API_KEY_ID` or `ALPACA_API_KEY_ID`
+- `APCA_API_SECRET_KEY` or `ALPACA_API_SECRET_KEY`
 
 Execute mode also requires strategy evidence by default. The gate reads `/tmp/rt_signal_outcome_report.json` and rejects execution unless the configured horizon has enough resolved forward outcomes with positive average signed return and acceptable win rate. Defaults:
 
@@ -776,10 +799,18 @@ Compare:
 Only after the dry-run decisions are credible, switch to:
 
 ```bash
-RT_ALERT_EXECUTION_MODE=alert-sim RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py
+RT_ALERT_REMOTE=local \
+RT_ALERT_EXECUTION_MODE=alert-sim \
+RT_ALERT_REQUIRE_CONFIRMED=1 \
+RT_ORDER_EXECUTE_PILOT_ENABLED=1 \
+RT_ORDER_PILOT_MAX_ORDER_NOTIONAL_HKD=5000 \
+RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=500 \
+RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=1 \
+RT_ORDER_US_BROKER=alpaca-paper \
+/usr/bin/python3 /root/rt_alert_bridge.py
 ```
 
-`alert-sim` calls `rt_order_intake.py` in execute mode, so it consumes the v5 alert fields directly. It is the intended v5 simulation path, but it should not be enabled until the health checks and dry-run output are stable.
+`alert-sim` calls `rt_order_intake.py` in execute mode, so it consumes the v5 alert fields directly. It is the intended v5 alert-specific paper/simulation path: HK remains on QuantMind simulation, and US may use Alpaca paper when `RT_ORDER_US_BROKER=alpaca-paper` is set. It should not be enabled until health checks and dry-run output are stable. Without `RT_ORDER_EXECUTE_PILOT_ENABLED=1`, `alert-sim` will still run the full intake review and then reject at the final pilot gate before submitting an order.
 
 ### Legacy simulation trigger
 
@@ -2511,7 +2542,7 @@ Recommended read-only cron:
 /tmp/cron_audit_report.json
 ```
 
-The output schema is `cron_audit_report_v1`. `status=OK` means all required read-only context/report jobs are present, the notify bridge is wired in local mode, optional Feishu delivery is either disabled or has environment-backed credentials, sent-state files are structurally valid, and no dangerous execution cron is enabled. `status=WARN` means required read-only jobs are missing, the notify bridge is missing or not in local mode, Feishu delivery is enabled without complete `FEISHU_APP_ID`/`FEISHU_APP_SECRET`/`FEISHU_CHAT_ID`, the sent-state files are malformed, or the intraday K-line batch producer plan / session override validator / daily-gap source diagnostics have not been installed yet; this usually explains stale readiness inputs and should be fixed from `config/hermes_v5_crontab.txt`. Each item in `missing_required_jobs` includes `recommended_cron`, the exact read-only line operators can install after review. The intraday K-line batch recommendation is still dry-run/report-only and writes only `/tmp/intraday_kline_batch.json`; it does not populate DB minute rows unless an operator separately reruns `intraday_kline_batch.py --apply --confirm-plan-hash <plan_hash>` after reviewing the plan. `status=FAIL` means a dangerous execution path such as `RT_ALERT_EXECUTION_MODE=alert-sim`, `RT_ALERT_EXECUTION_MODE=legacy-sim`, direct `rt_order_intake.py --mode execute`, or `quantmind_sim_trader.py` is enabled in live cron.
+The output schema is `cron_audit_report_v1`. `status=OK` means all required read-only context/report jobs are present, the notify bridge is wired in local mode, optional Feishu delivery is either disabled or has environment-backed credentials, sent-state files are structurally valid, and no dangerous execution cron is enabled. `status=WARN` means required read-only jobs are missing, the notify bridge is missing or not in local mode, Feishu delivery is enabled without complete `FEISHU_APP_ID`/`FEISHU_APP_SECRET`/`FEISHU_CHAT_ID`, the sent-state files are malformed, or the intraday K-line batch producer plan / session override validator / daily-gap source diagnostics have not been installed yet; this usually explains stale readiness inputs and should be fixed from `config/hermes_v5_crontab.txt`. Each item in `missing_required_jobs` includes `recommended_cron`, the exact read-only line operators can install after review. The intraday K-line batch recommendation is still dry-run/report-only and writes only `/tmp/intraday_kline_batch.json`; it does not populate DB minute rows unless an operator separately reruns `intraday_kline_batch.py --apply --confirm-plan-hash <plan_hash>` after reviewing the plan. `status=FAIL` means a dangerous execution path such as unbounded `RT_ALERT_EXECUTION_MODE=alert-sim`, `RT_ALERT_EXECUTION_MODE=legacy-sim`, direct `rt_order_intake.py --mode execute`, or `quantmind_sim_trader.py` is enabled in live cron. A pilot `alert-sim` line that includes `RT_ORDER_EXECUTE_PILOT_ENABLED=1`, per-order notional/risk caps, and a daily submitted-order cap is reported under `limited_pilot_execution_jobs` instead of `dangerous_enabled_jobs`; it still depends on `rt_order_intake.py` health, readiness, evidence, Hermes judgment, market-context, and pilot gates.
 
 `alert_delivery` inside the report is also read-only. It checks `rt_alert_bridge.py` notify/local cron wiring, optional `RT_ALERT_SEND_FEISHU=1` setup, Feishu credential key presence from the environment or `/root/.quantmind_env`, and whether `/tmp/rt_signal_sent.json` plus `/tmp/rt_position_review_sent.json` are valid JSON lists. It redacts values and never sends messages, writes sent-state, edits crontab, or submits orders. Missing sent-state files are allowed as first-run state; malformed files warn because they can cause duplicate or suppressed notifications.
 
