@@ -637,9 +637,15 @@ def build_recommendations(payload):
     rejected_avg = effect["rejected_or_held"].get("avg_signed_return_pct")
     if approved_avg is not None and rejected_avg is not None and approved_avg <= rejected_avg:
         recs.append("hermes_approval_not_outperforming_rejections_review_prompt_and_gates")
+    execution_scope = payload.get("execution_candidate_scope") or {}
+    trigger_recommendation_rows = (
+        payload.get("execution_candidate_by_trigger")
+        if execution_scope.get("downgraded_directional_count", 0)
+        else payload.get("by_trigger")
+    ) or []
     weak_triggers = [
         row["key"]
-        for row in payload["by_trigger"]
+        for row in trigger_recommendation_rows
         if row["resolved_count"] >= MIN_LEARNING_SAMPLE and row.get("avg_signed_return_pct") is not None and row["avg_signed_return_pct"] <= 0
     ]
     for key in weak_triggers[:8]:
@@ -690,7 +696,6 @@ def build_recommendations(payload):
             "review_watchlist_proposal_for_sizing_blockers:"
             + str(sizing_remediation.get("watchlist_proposal_hash") or "missing_hash")
         )
-    execution_scope = payload.get("execution_candidate_scope") or {}
     if execution_scope.get("downgraded_directional_count", 0):
         recs.append("downgraded_directional_rows_research_only_require_execution_candidate_learning")
     intake_coverage = payload.get("intake_coverage") or {}
@@ -728,6 +733,11 @@ def build_report(
         infer_current_sample_scope(alerts, sample_scope_mode=sample_scope_mode),
     )
     execution_candidate_rows = [row for row in rows if row.get("execution_candidate") is True]
+    by_trigger = sorted(grouped_summary(rows, lambda row: row["trigger_key"]), key=lambda row: (-row["resolved_count"], row["key"]))
+    execution_candidate_by_trigger = sorted(
+        grouped_summary(execution_candidate_rows, lambda row: row["trigger_key"]),
+        key=lambda row: (-row["resolved_count"], row["key"]),
+    )
     payload = {
         "schema": "strategy_learning_report_v1",
         "generated_at": now_iso(),
@@ -768,7 +778,8 @@ def build_report(
         "judgment_effect": compare_judgment_effect(rows),
         "execution_candidate_scope": build_execution_candidate_scope(rows),
         "execution_candidate_judgment_effect": compare_judgment_effect(execution_candidate_rows),
-        "by_trigger": sorted(grouped_summary(rows, lambda row: row["trigger_key"]), key=lambda row: (-row["resolved_count"], row["key"])),
+        "by_trigger": by_trigger,
+        "execution_candidate_by_trigger": execution_candidate_by_trigger,
         "by_judgment_decision": grouped_summary(rows, lambda row: row["judgment_decision"]),
         "by_execution_sample_role": grouped_summary(rows, lambda row: row["execution_sample_role"]),
         "by_intake_status": grouped_summary(rows, lambda row: row["intake_status"]),

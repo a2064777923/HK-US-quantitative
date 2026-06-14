@@ -204,9 +204,84 @@ class StrategyLearningReportTests(unittest.TestCase):
         self.assertEqual(scope["downgraded_directional"]["avg_signed_return_pct"], -3.0)
         self.assertEqual(scope["promotion_evidence_requirement"], "execution_candidate_only_learning_required")
         self.assertEqual(payload["execution_candidate_judgment_effect"]["approved_or_reduced"]["resolved_count"], 1)
+        exec_by_trigger = {row["key"]: row for row in payload["execution_candidate_by_trigger"]}
+        self.assertEqual(exec_by_trigger["BUY:MA"]["resolved_count"], 1)
+        self.assertEqual(exec_by_trigger["BUY:MA"]["avg_signed_return_pct"], 1.0)
         self.assertEqual(rows_by_id["diag"]["execution_sample_role"], "diagnostic_downgraded_directional")
         self.assertFalse(rows_by_id["diag"]["execution_candidate"])
         self.assertEqual(roles["diagnostic_downgraded_directional"]["count"], 1)
+        self.assertIn(
+            "downgraded_directional_rows_research_only_require_execution_candidate_learning",
+            payload["recommendations"],
+        )
+        self.assertNotIn("trigger_forward_return_non_positive:BUY:MA", payload["recommendations"])
+
+    def test_trigger_recommendations_ignore_diagnostic_trigger_returns_when_downgraded_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            alerts = root / "alerts.jsonl"
+            judgments = root / "judgments.jsonl"
+            state = root / "state.json"
+            outcomes = root / "outcome.json"
+            alert_rows = []
+            judgment_rows = []
+            outcome_rows = []
+            dry_runs = {}
+            for i in range(1):
+                sid = f"exec-{i}"
+                alert_rows.append(alert(sid, "MA"))
+                judgment_rows.append(judgment(sid, "approve"))
+                dry_runs[sid] = intake_decision(sid, "dry_run")
+                row = outcome(sid, 1.0, "MA")
+                row["execution_candidate"] = True
+                outcome_rows.append(row)
+            for i in range(5):
+                sid = f"diag-{i}"
+                item = alert(sid, "MA")
+                item.update(
+                    {
+                        "signal_type": "WATCH",
+                        "candidate_signal_type": "BUY",
+                        "execution_candidate": False,
+                    }
+                )
+                alert_rows.append(item)
+                judgment_rows.append(judgment(sid, "hold"))
+                dry_runs[sid] = intake_decision(sid, "rejected", "same_scan_directional_duplicate")
+                row = outcome(sid, -2.0, "MA")
+                row.update(
+                    {
+                        "execution_candidate": False,
+                        "downgraded_directional": True,
+                        "emitted_signal_type": "WATCH",
+                        "candidate_signal_type": "BUY",
+                    }
+                )
+                outcome_rows.append(row)
+            write_jsonl(alerts, alert_rows)
+            write_jsonl(judgments, judgment_rows)
+            state.write_text(json.dumps({"dry_runs": dry_runs, "processed": {}}), encoding="utf-8")
+            outcomes.write_text(
+                json.dumps({"schema": "rt_signal_outcome_report_v1", "evaluations": outcome_rows}),
+                encoding="utf-8",
+            )
+
+            payload = learning.build_report(
+                alert_queue_file=str(alerts),
+                judgment_file=str(judgments),
+                intake_state_file=str(state),
+                outcome_report_file=str(outcomes),
+            )
+
+        by_trigger = {row["key"]: row for row in payload["by_trigger"]}
+        exec_by_trigger = {row["key"]: row for row in payload["execution_candidate_by_trigger"]}
+
+        self.assertEqual(by_trigger["WATCH:MA"]["resolved_count"], 5)
+        self.assertLess(by_trigger["WATCH:MA"]["avg_signed_return_pct"], 0)
+        self.assertEqual(exec_by_trigger["BUY:MA"]["resolved_count"], 1)
+        self.assertEqual(exec_by_trigger["BUY:MA"]["avg_signed_return_pct"], 1.0)
+        self.assertNotIn("trigger_forward_return_non_positive:BUY:MA", payload["recommendations"])
+        self.assertNotIn("trigger_forward_return_non_positive:WATCH:MA", payload["recommendations"])
         self.assertIn(
             "downgraded_directional_rows_research_only_require_execution_candidate_learning",
             payload["recommendations"],
