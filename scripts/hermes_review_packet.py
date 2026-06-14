@@ -886,6 +886,16 @@ def source_limit_summary(trusted_source_preflight_payload, source_reliability_pa
                 "low_fidelity_count": coverage.get("low_fidelity_count"),
                 "effective_unresolved_first_hit_rate_pct": coverage.get("effective_unresolved_first_hit_rate_pct"),
             }
+        if component.get("name") == "intraday_timeframe_quality":
+            coverage = component.get("coverage") if isinstance(component.get("coverage"), dict) else {}
+            row["intraday_timeframe_decision_use"] = {
+                "decision_use_counts_present": coverage.get("decision_use_counts_present"),
+                "soft_confirmation_eligible_symbol_count": coverage.get("soft_confirmation_eligible_symbol_count"),
+                "cap_or_challenge_only_symbol_count": coverage.get("cap_or_challenge_only_symbol_count"),
+                "diagnostic_only_symbol_count": coverage.get("diagnostic_only_symbol_count"),
+                "decision_use_counts": coverage.get("decision_use_counts") or {},
+                "confidence_use": coverage.get("confidence_use"),
+            }
         reliability_components.append(row)
     return {
         "trusted_source_preflight_status": preflight.get("status"),

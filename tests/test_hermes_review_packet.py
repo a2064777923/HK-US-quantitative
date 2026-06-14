@@ -1473,6 +1473,51 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(outcome["intraday_path_fidelity"]["low_fidelity_count"], 1)
         self.assertEqual(outcome["intraday_path_fidelity"]["effective_unresolved_first_hit_rate_pct"], 12.5)
 
+    def test_source_reliability_digest_exposes_intraday_timeframe_decision_use(self):
+        payload = packet.build_packet(
+            [alert()],
+            health_payload={"status": "OK", "checks": []},
+            portfolio_payload={"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []},
+            intake_results=[intake_result()],
+            execution_readiness_payload=ready_execution_readiness(),
+            source_reliability_payload={
+                "schema": "source_reliability_report_v1",
+                "status": "DEGRADED",
+                "components": [
+                    {
+                        "name": "intraday_timeframe_quality",
+                        "reliability_status": "DEGRADED",
+                        "reasons": ["intraday_timeframe_diagnostic_only_symbols"],
+                        "coverage": {
+                            "decision_use_counts_present": True,
+                            "decision_use_counts": {"cap_or_challenge_only": 2, "diagnostic_only": 1},
+                            "soft_confirmation_eligible_symbol_count": 0,
+                            "cap_or_challenge_only_symbol_count": 2,
+                            "diagnostic_only_symbol_count": 1,
+                            "confidence_use": "cap_or_challenge_only",
+                        },
+                    }
+                ],
+                "recommendations": [
+                    "treat_diagnostic_only_intraday_timeframes_as_unavailable_for_confirmation"
+                ],
+            },
+        )
+
+        digest = payload["review_items"][0]["context_digest"]
+        source_components = digest["source_limits"]["source_reliability_problem_components"]
+        timeframe = [row for row in source_components if row["name"] == "intraday_timeframe_quality"][0]
+
+        self.assertIn("source_reliability_limit_requires_acknowledgement", digest["required_judgment_attention"])
+        self.assertIn("intraday_timeframe_diagnostic_only_symbols", timeframe["reasons"])
+        self.assertEqual(timeframe["intraday_timeframe_decision_use"]["soft_confirmation_eligible_symbol_count"], 0)
+        self.assertEqual(timeframe["intraday_timeframe_decision_use"]["cap_or_challenge_only_symbol_count"], 2)
+        self.assertEqual(timeframe["intraday_timeframe_decision_use"]["diagnostic_only_symbol_count"], 1)
+        self.assertEqual(
+            timeframe["intraday_timeframe_decision_use"]["decision_use_counts"],
+            {"cap_or_challenge_only": 2, "diagnostic_only": 1},
+        )
+
     def test_intraday_context_digest_exposes_source_granularity_and_fidelity_limits(self):
         payload = packet.build_packet(
             [alert()],
