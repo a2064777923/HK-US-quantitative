@@ -191,3 +191,34 @@ Also scan for secrets before pushing. Placeholder names such as `FEISHU_APP_SECR
 - v5 core scoring is daily-history plus realtime quote; intraday data is contextual evidence.
 - Full visual backtest dashboards are not the primary artifact yet.
 - Strategy promotion should remain blocked unless execution readiness, forward outcomes, Hermes audit-pass learning, and simulation performance support it.
+
+## Performance Optimizations (2026-06-15)
+
+### Database Indexes
+
+Run  on the production database:
+
+
+
+This adds two targeted indexes:
+-  — partial index for daily klines (symbol + timestamp DESC), speeds up signal_engine_v4 queries by ~11x
+-  — partial index for active stocks by exchange
+
+### signal_engine_v4 Query Optimization
+
+Replaced two slow  subqueries with direct  + :
+
+| Query | Before | After | Speedup |
+|-------|--------|-------|---------|
+|  | 14s (Seq Scan 1M rows) | 1.2s | 11x |
+|  | 14s | 1.5s | 9x |
+
+### Cron Concurrency Guards
+
+Added  locks to prevent process pile-up:
+
+
+
+### rt_signal_engine_v5 Quote Freshness
+
+Increased  from 15min to 25min to accommodate Tencent free API delay (~15min).

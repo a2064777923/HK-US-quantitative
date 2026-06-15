@@ -16,7 +16,7 @@ ALLOW_INTRADAY_DAILY_SIGNAL = os.environ.get("SIGNAL_V4_ALLOW_INTRADAY_DAILY", "
 DB_ERRORS = []
 _COLUMN_CACHE = {}
 
-def db(sql, timeout=30):
+def db(sql, timeout=120):
     r = subprocess.run(
         ['docker', 'exec', 'quantmind-db', 'psql', '-U', 'quantmind', '-d', 'quantmind', '-t', '-A', '-c', sql],
         capture_output=True, text=True, timeout=timeout
@@ -85,16 +85,11 @@ def first_existing(table, candidates):
 
 def latest_kline_date():
     raw = db("""
-        SELECT max(daily_bar.trade_date)
-        FROM (
-            SELECT DISTINCT ON (k.symbol, k.timestamp::date)
-                   k.symbol, k.timestamp::date AS trade_date
-            FROM klines k
-            WHERE k.interval = 'day'
-            ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC
-        ) daily_bar
-        JOIN stocks s ON daily_bar.symbol = s.symbol
-        WHERE s.is_active = true
+        SELECT max(k.timestamp::date)
+        FROM klines k
+        JOIN stocks s ON k.symbol = s.symbol
+        WHERE k.interval = 'day'
+          AND s.is_active = true
           AND s.exchange IN ('HKEX','NASDAQ','NYSE')
     """)
     return raw.strip() if raw else ""
@@ -211,21 +206,16 @@ def upsert_signal_score(result, trade_date, run_id, quality):
 
 def candidate_stocks_for_date(trade_date):
     return db(f"""
-        WITH daily_bar AS (
-            SELECT DISTINCT ON (k.symbol, k.timestamp::date)
-                   k.symbol, k.timestamp::date AS trade_date
-            FROM klines k
-            WHERE k.interval = 'day'
-            ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC
-        )
-        SELECT d.symbol, s.exchange
-        FROM daily_bar d
-        JOIN stocks s ON d.symbol = s.symbol
-        WHERE s.is_active = true
+        SELECT k.symbol, s.exchange
+        FROM klines k
+        JOIN stocks s ON k.symbol = s.symbol
+        WHERE k.interval = 'day'
+          AND s.is_active = true
           AND s.exchange IN ('HKEX','NASDAQ','NYSE')
-        GROUP BY d.symbol, s.exchange
-        HAVING count(*) >= 30 AND max(d.trade_date) = '{sql_quote(trade_date)}'::date
-        ORDER BY d.symbol
+        GROUP BY k.symbol, s.exchange
+        HAVING count(*) >= 30
+           AND max(k.timestamp::date) = '{sql_quote(trade_date)}'::date
+        ORDER BY k.symbol
     """)
 
 def parse_stock_rows(raw):
