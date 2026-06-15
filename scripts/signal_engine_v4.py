@@ -16,16 +16,31 @@ ALLOW_INTRADAY_DAILY_SIGNAL = os.environ.get("SIGNAL_V4_ALLOW_INTRADAY_DAILY", "
 DB_ERRORS = []
 _COLUMN_CACHE = {}
 
+import psycopg2
+_DB_CONN = None
+def _get_conn():
+    global _DB_CONN
+    if _DB_CONN is None or _DB_CONN.closed:
+        _DB_CONN = psycopg2.connect(host="127.0.0.1", port=5432, dbname="quantmind", user="quantmind", password="quantmind2026")
+        _DB_CONN.autocommit = True
+    return _DB_CONN
+
 def db(sql, timeout=120):
-    r = subprocess.run(
-        ['docker', 'exec', 'quantmind-db', 'psql', '-U', 'quantmind', '-d', 'quantmind', '-t', '-A', '-c', sql],
-        capture_output=True, text=True, timeout=timeout
-    )
-    if r.returncode != 0:
-        err = r.stderr.strip()
-        DB_ERRORS.append(err)
-        print(f"[DB] SQL failed: {err}", flush=True)
-    return r.stdout.strip()
+    try:
+        conn = _get_conn()
+        with conn.cursor() as cur:
+            cur.execute("SET statement_timeout = %s", (str(timeout*1000),))
+            cur.execute(sql)
+            if cur.description:
+                rows = cur.fetchall()
+                return chr(10).join("|".join(str(v) for v in row) for row in rows)
+            return ""
+    except Exception as e:
+        DB_ERRORS.append(str(e))
+        print(f"[DB] SQL failed: {e}", flush=True)
+        global _DB_CONN
+        _DB_CONN = None
+        return ""
 
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
