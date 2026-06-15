@@ -21,10 +21,10 @@ INCLUDE_PACKET_CONTEXT = os.environ.get("RT_ALERT_INCLUDE_PACKET_CONTEXT", "1") 
 INCLUDE_POSITION_REVIEW = os.environ.get("RT_ALERT_INCLUDE_POSITION_REVIEW", "1") != "0"
 POSITION_REVIEW_URGENCY = {
     item.strip().lower()
-    for item in os.environ.get("RT_POSITION_REVIEW_URGENCY", "high").split(",")
+    for item in os.environ.get("RT_POSITION_REVIEW_URGENCY", "high,medium").split(",")
     if item.strip()
 }
-POSITION_REVIEW_LIMIT = int(os.environ.get("RT_POSITION_REVIEW_LIMIT", "3"))
+POSITION_REVIEW_LIMIT = int(os.environ.get("RT_POSITION_REVIEW_LIMIT", "20"))
 POSITION_REVIEW_REMINDER_HOURS = float(os.environ.get("RT_POSITION_REVIEW_REMINDER_HOURS", "6"))
 
 PASSTHROUGH_ENV_KEYS = (

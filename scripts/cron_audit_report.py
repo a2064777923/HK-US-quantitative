@@ -260,13 +260,13 @@ REQUIRED_READ_ONLY_JOBS = [
         "name": "hermes_review_packet",
         "tokens": ["hermes_review_packet.py", "/tmp/hermes_signal_review_packet.json"],
         "why": "Hermes needs a fresh combined review packet",
-        "recommended_cron": "* * * * * /bin/bash -lc \"cd /root && [ -f /root/.quantmind_env ] && . /root/.quantmind_env; /usr/bin/python3 /root/hermes_review_packet.py --output /tmp/hermes_signal_review_packet.json >> /tmp/hermes_review_packet.log 2>&1\"",
+        "recommended_cron": "* * * * * /bin/bash -lc \"cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/hermes_review_packet.py --output /tmp/hermes_signal_review_packet.json >> /tmp/hermes_review_packet.log 2>&1\"",
     },
     {
         "name": "rt_alert_bridge_notify",
         "tokens": ["rt_alert_bridge.py", "RT_ALERT_EXECUTION_MODE=notify", "RT_ALERT_REMOTE=local"],
         "why": "Feishu/operator notifications must read local v5 alerts and Hermes packets without depending on server self-SSH",
-        "recommended_cron": "* * * * * RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1",
+        "recommended_cron": "* * * * * /bin/bash -lc \"cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1\"",
     },
 ]
 

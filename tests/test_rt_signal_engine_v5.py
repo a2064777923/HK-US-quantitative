@@ -357,6 +357,42 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(down_score, -0.2)
         self.assertIn("5日動量-6.0%", down_reasons)
 
+    def test_same_session_momentum_can_confirm_short_term_reversal(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        ind.closes = [100] * 30
+        ind.highs = [101] * 30
+        ind.lows = [99] * 30
+        ind.volumes = [1000] * 30
+        ind.ma5 = 100
+        ind.ma10 = 100
+        ind.ma20 = 100
+        ind.macd_hist = -0.1
+        ind.macd_dif = -0.1
+        ind.rsi_14 = 50
+        ind.rt_close = 103.5
+        ind.rt_high = 104
+        ind.rt_low = 102
+        ind.rt_volume = 0
+
+        evidence = ind.get_score_evidence(
+            {
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 3.5,
+                "momentum_breakout_model": rt.default_strategy_config()["momentum_breakout_model"],
+            }
+        )
+
+        self.assertAlmostEqual(evidence["score"], 0.7)
+        self.assertIn("當日動量+3.5%", evidence["reasons"])
+        self.assertIn(
+            ("same_session_momentum", "BUY", 0.4, "當日動量+3.5%"),
+            [
+                (item["category"], item["direction"], item["score_delta"], item["reason"])
+                for item in evidence["factor_contributions"]
+            ],
+        )
+
     def test_momentum_uses_true_five_bar_lookback_not_four_bar_window(self):
         ind = rt.IncrementalIndicators("AAPL")
         ind.closes = [100] * 24 + [100, 99, 100, 100, 100, 105]
@@ -778,10 +814,161 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(len(engine.alerts), 1)
         self.assertEqual(engine.alerts[0]["trigger"], "急漲")
         self.assertAlmostEqual(engine.alerts[0]["change_pct"], 10.0)
+        self.assertEqual(engine.alerts[0]["candidate_signal_type"], "BUY")
         self.assertFalse(engine.alerts[0]["confirmed"])
         self.assertFalse(engine.alerts[0]["execution_candidate"])
-        self.assertFalse(engine.alerts[0]["risk_geometry_valid"])
-        self.assertEqual(engine.alerts[0]["risk_geometry_reason"], "not_directional_candidate")
+        self.assertTrue(engine.alerts[0]["risk_geometry_valid"])
+        self.assertIsNone(engine.alerts[0]["risk_geometry_reason"])
+        self.assertEqual(engine.alerts[0]["execution_blocked_reasons"], ["not_confirmed"])
+
+    def test_large_positive_momentum_breakout_can_emit_buy_candidate(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(
+            score=1.0,
+            reasons=["短均線偏強", "RSI偏強(66)", "當日動量+7.2%", "5日動量+12.0%"],
+            factor_contributions=[
+                {"category": "trend", "direction": "BUY", "score_delta": 0.4, "reason": "短均線偏強"},
+                {"category": "rsi", "direction": "BUY", "score_delta": 0.3, "reason": "RSI偏強(66)"},
+                {
+                    "category": "same_session_momentum",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "當日動量+7.2%",
+                },
+                {"category": "momentum", "direction": "BUY", "score_delta": 0.2, "reason": "5日動量+12.0%"},
+            ],
+        )
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AMD",
+            indicators,
+            {
+                "price": 548.63,
+                "high": 552,
+                "low": 520,
+                "prev_close": 511.58,
+                "volume": 4_000,
+                "market": "US",
+                "time": "2026-06-15 15:35:20",
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "急漲"][0]
+        self.assertEqual(alert["signal_type"], "BUY")
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertTrue(alert["confirmed"])
+        self.assertTrue(alert["execution_candidate"])
+        self.assertTrue(alert["risk_geometry_valid"])
+        self.assertEqual(alert["factor_confluence_categories"], ["momentum", "rsi", "same_session_momentum", "trend"])
+        self.assertGreaterEqual(alert["factor_confluence_supporting_count"], 2)
+        self.assertIsNotNone(alert["entry_price"])
+        self.assertIsNotNone(alert["stop_loss"])
+        self.assertIsNotNone(alert["take_profit"])
+
+    def test_large_positive_momentum_without_confirmation_remains_watch_buy_candidate(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(score=0.0, reasons=[], factor_contributions=[])
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 110,
+                "high": 111,
+                "low": 109,
+                "prev_close": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "急漲"][0]
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertEqual(alert["suppressed_directional_reason"], "unconfirmed_directional")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertTrue(alert["risk_geometry_valid"])
+        self.assertEqual(alert["execution_blocked_reasons"], ["not_confirmed"])
+
+    def test_bollinger_upper_breakout_with_positive_momentum_is_buy_candidate(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(
+            avg_volume=100_000,
+            score=0.8,
+            reasons=["短均線偏強", "MACD柱轉正"],
+            factor_contributions=[
+                {"category": "trend", "direction": "BUY", "score_delta": 0.4, "reason": "短均線偏強"},
+                {"category": "macd", "direction": "BUY", "score_delta": 0.1, "reason": "MACD柱轉正"},
+            ],
+        )
+        indicators.bb_upper = 105
+        indicators.bb_lower = 95
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "JPM",
+            indicators,
+            {
+                "price": 106,
+                "high": 107,
+                "low": 104,
+                "prev_close": 103,
+                "volume": 100_000,
+                "market": "US",
+                "time": "2026-06-15 15:20:00",
+                "change_pct": 2.9,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "布林上軌動量突破"][0]
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertNotEqual(alert["candidate_signal_type"], "SELL")
+        self.assertNotIn("布林上軌突破", [item["trigger"] for item in engine.alerts])
+
+    def test_bollinger_upper_without_momentum_context_remains_sell_candidate(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(
+            avg_volume=100_000,
+            score=-0.7,
+            reasons=["短均線偏弱", "RSI偏高(72)"],
+            factor_contributions=[
+                {"category": "trend", "direction": "SELL", "score_delta": -0.4, "reason": "短均線偏弱"},
+                {"category": "rsi", "direction": "SELL", "score_delta": -0.3, "reason": "RSI偏高(72)"},
+            ],
+        )
+        indicators.bb_upper = 105
+        indicators.bb_lower = 95
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "JPM",
+            indicators,
+            {
+                "price": 106,
+                "high": 107,
+                "low": 104,
+                "prev_close": 105.7,
+                "volume": 100_000,
+                "market": "US",
+                "time": "2026-06-15 15:20:00",
+                "change_pct": 0.3,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "布林上軌突破"][0]
+        self.assertEqual(alert["candidate_signal_type"], "SELL")
+        self.assertNotIn("布林上軌動量突破", [item["trigger"] for item in engine.alerts])
 
     def test_send_alert_writes_latest_file_and_append_only_queue(self):
         alerts = [

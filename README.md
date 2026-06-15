@@ -7,11 +7,13 @@ This repository is not configured for automatic real-money trading. Real broker 
 ## Current Status
 
 - `scripts/rt_signal_engine_v5.py` is the intended realtime signal source.
+- Current strategy config is `v5.1-momentum-breakout-20260616`.
 - v5 scans HK/US watchlists, polls realtime quotes, and writes alerts to `/tmp/rt_signal_alerts.jsonl`.
 - Signal scoring uses completed daily OHLCV history plus one realtime quote bar.
+- v5.1 adds guarded short-term momentum breakout handling: large positive same-session moves can become BUY candidates, and upper Bollinger-band breaks are BUY candidates only when momentum context supports breakout continuation.
 - Minute/hour data is read-only context for Hermes and quality reports; it is not the core v5 scoring authority.
 - `scripts/rt_alert_bridge.py` defaults to notify-only mode.
-- `scripts/portfolio_report.py` produces advisory `position_review` items for user and simulation holdings.
+- `scripts/portfolio_report.py` produces advisory `position_review` items for user and simulation holdings, including large unrealized losses and daily holding moves that need trailing-stop/take-profit/reduction review.
 - `scripts/rt_order_intake.py` is the gated paper/simulation intake path.
 - HK simulated orders use the QuantMind simulation API.
 - US paper orders may use Alpaca paper only when explicitly enabled.
@@ -66,6 +68,8 @@ Each v5 alert declares its timeframe basis:
 
 Executable alerts must be confirmed directional BUY/SELL candidates with valid entry, stop, take-profit, risk/reward, liquidity, and execution-candidate fields. Diagnostic `WATCH` rows may still carry candidate geometry for review, but order intake rejects them as non-executable.
 
+v5.1 does not globally loosen execution gates. A `急漲` row may now carry `candidate_signal_type=BUY`, but it remains `WATCH` unless full-score confirmation, factor confluence, risk geometry, liquidity, and execution-candidate checks pass. `布林上軌動量突破` replaces the old unconditional upper-band SELL interpretation only when same-session or recent momentum supports a breakout context; weak or overbought upper-band touches still remain SELL/WATCH diagnostics.
+
 ## Hermes Review Layer
 
 Hermes consumes compact review packets from:
@@ -94,6 +98,8 @@ Hermes judgments are advisory artifacts. Position review decisions must stay adv
 Expected secret file shape:
 
 ```bash
+export QM_USER_PORTFOLIO_IDS="3"
+export QM_SIM_PORTFOLIO_ID="8"
 export FEISHU_APP_ID="..."
 export FEISHU_APP_SECRET="..."
 export FEISHU_CHAT_ID="..."
@@ -107,6 +113,7 @@ python3 scripts/rt_alert_bridge.py
 ```
 
 The bridge marks alerts or position reviews as sent only after Feishu delivery succeeds.
+Position-review notifications include `high,medium` urgency by default and cap at 20 items, so user holdings such as `SPCX` are not hidden behind simulation-only or high-risk rows. These notifications remain advisory-only and do not submit orders.
 
 ## Recommended Server Jobs
 
@@ -120,6 +127,14 @@ cp config/rt_signal_strategy_config.json /root/rt_signal_strategy_config.json
 cp config/rt_signal_engine_v5.service /etc/systemd/system/rt_signal_engine_v5.service
 systemctl daemon-reload
 systemctl enable --now rt_signal_engine_v5
+```
+
+Cron jobs that need runtime portfolio IDs or Feishu credentials should source env files with export semantics:
+
+```cron
+* * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1"
+*/15 * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/portfolio_report.py --output /tmp/portfolio_report.json --text >> /tmp/portfolio_report.log 2>&1"
+* * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/hermes_review_packet.py --output /tmp/hermes_signal_review_packet.json >> /tmp/hermes_review_packet.log 2>&1"
 ```
 
 Readiness refresh, useful after deploy or missing cron:
@@ -187,10 +202,19 @@ Also scan for secrets before pushing. Placeholder names such as `FEISHU_APP_SECR
 
 ## Known Gaps
 
-- Dynamic target adjustment and T-trading are advisory/incomplete, not a full automated position-management engine.
+- Dynamic target adjustment, trailing-stop movement, add/reduce, and T-trading are advisory review items, not an automated position-management engine.
 - v5 core scoring is daily-history plus realtime quote; intraday data is contextual evidence.
 - Full visual backtest dashboards are not the primary artifact yet.
 - Strategy promotion should remain blocked unless execution readiness, forward outcomes, Hermes audit-pass learning, and simulation performance support it.
+
+## Production Fixes 2026-06-16
+
+- Deployed v5.1 momentum-breakout config to the live server.
+- Fixed upper Bollinger-band breakout classification so strong momentum contexts are not forced into SELL.
+- Fixed large positive moves so confirmed cases can become BUY candidates while unconfirmed cases remain WATCH.
+- Fixed position-review loss override: holdings below `-20%` now produce `exit_review`, not `hold`.
+- Fixed user portfolio coverage by sourcing `/root/.env`/`/root/.quantmind_env` with `set -a`; portfolio `3` holdings, including `SPCX`, now enter `/tmp/portfolio_report.json` and Hermes packets.
+- Installed notify-only `rt_alert_bridge.py` cron. No `alert-sim`, `legacy-sim`, or real broker execution was enabled.
 
 ## Performance Optimizations (2026-06-15)
 

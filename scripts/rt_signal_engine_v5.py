@@ -33,6 +33,11 @@ MOMENTUM_THRESHOLD_PCT = 5.0
 VOLUME_ANOMALY_RATIO = 3.0
 BUY_CONFIRMATION_MIN_SCORE = 0.45
 SELL_CONFIRMATION_MAX_SCORE = -0.45
+SESSION_MOMENTUM_THRESHOLD_PCT = 3.0
+SESSION_MOMENTUM_SCORE_DELTA = 0.4
+BOLLINGER_BREAKOUT_BUY_MIN_CHANGE_PCT = 2.0
+BOLLINGER_BREAKOUT_BUY_MIN_SCORE = 0.8
+BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS = 3
 MIN_SUPPORTING_FACTOR_COUNT = {
     "BUY": 2,
     "SELL": 2,
@@ -74,6 +79,16 @@ def default_strategy_config():
         "confirmation_requirements": {
             "BUY": {"min_supporting_factor_count": MIN_SUPPORTING_FACTOR_COUNT["BUY"]},
             "SELL": {"min_supporting_factor_count": MIN_SUPPORTING_FACTOR_COUNT["SELL"]}
+        },
+        "momentum_breakout_model": {
+            "enabled": True,
+            "large_move_buy_pct": MOMENTUM_THRESHOLD_PCT,
+            "large_move_sell_enabled": False,
+            "same_session_momentum_pct": SESSION_MOMENTUM_THRESHOLD_PCT,
+            "same_session_score_delta": SESSION_MOMENTUM_SCORE_DELTA,
+            "bollinger_buy_min_change_pct": BOLLINGER_BREAKOUT_BUY_MIN_CHANGE_PCT,
+            "bollinger_buy_min_score": BOLLINGER_BREAKOUT_BUY_MIN_SCORE,
+            "bollinger_buy_min_supporting_factors": BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS
         },
         "risk_model": {
             "atr_stop_multiple": 2.0,
@@ -277,6 +292,7 @@ def strategy_config_digest(config):
         "volume_anomaly_ratio": config.get("volume_anomaly_ratio"),
         "confirmation_thresholds": config.get("confirmation_thresholds"),
         "confirmation_requirements": config.get("confirmation_requirements"),
+        "momentum_breakout_model": config.get("momentum_breakout_model"),
         "risk_model": config.get("risk_model"),
         "liquidity_model": config.get("liquidity_model"),
         "emission": config.get("emission"),
@@ -297,6 +313,7 @@ def merge_strategy_config(base, override):
     for key in (
         "confirmation_thresholds",
         "confirmation_requirements",
+        "momentum_breakout_model",
         "risk_model",
         "liquidity_model",
         "emission",
@@ -379,6 +396,68 @@ def normalize_strategy_config(config):
             warnings.append(f"invalid_{side.lower()}_min_supporting_factor_count_using_default")
             count = default
         side_req["min_supporting_factor_count"] = count
+
+    momentum_breakout = config.setdefault("momentum_breakout_model", {})
+    momentum_breakout["enabled"] = as_bool(momentum_breakout.get("enabled"), True)
+    large_move_buy_pct = as_float(momentum_breakout.get("large_move_buy_pct"), MOMENTUM_THRESHOLD_PCT)
+    if large_move_buy_pct is None or large_move_buy_pct < MOMENTUM_THRESHOLD_PCT:
+        warnings.append("invalid_momentum_breakout_large_move_buy_pct_using_default")
+        large_move_buy_pct = MOMENTUM_THRESHOLD_PCT
+    momentum_breakout["large_move_buy_pct"] = large_move_buy_pct
+    momentum_breakout["large_move_sell_enabled"] = as_bool(
+        momentum_breakout.get("large_move_sell_enabled"),
+        False,
+    )
+    same_session_momentum_pct = as_float(
+        momentum_breakout.get("same_session_momentum_pct"),
+        SESSION_MOMENTUM_THRESHOLD_PCT,
+    )
+    if same_session_momentum_pct is None or same_session_momentum_pct < SESSION_MOMENTUM_THRESHOLD_PCT:
+        warnings.append("invalid_same_session_momentum_pct_using_default")
+        same_session_momentum_pct = SESSION_MOMENTUM_THRESHOLD_PCT
+    momentum_breakout["same_session_momentum_pct"] = same_session_momentum_pct
+    same_session_score_delta = as_float(
+        momentum_breakout.get("same_session_score_delta"),
+        SESSION_MOMENTUM_SCORE_DELTA,
+    )
+    if (
+        same_session_score_delta is None
+        or same_session_score_delta < 0
+        or same_session_score_delta > SESSION_MOMENTUM_SCORE_DELTA
+    ):
+        warnings.append("invalid_same_session_score_delta_using_default")
+        same_session_score_delta = SESSION_MOMENTUM_SCORE_DELTA
+    momentum_breakout["same_session_score_delta"] = same_session_score_delta
+    bollinger_buy_min_change_pct = as_float(
+        momentum_breakout.get("bollinger_buy_min_change_pct"),
+        BOLLINGER_BREAKOUT_BUY_MIN_CHANGE_PCT,
+    )
+    if (
+        bollinger_buy_min_change_pct is None
+        or bollinger_buy_min_change_pct < BOLLINGER_BREAKOUT_BUY_MIN_CHANGE_PCT
+    ):
+        warnings.append("invalid_bollinger_buy_min_change_pct_using_default")
+        bollinger_buy_min_change_pct = BOLLINGER_BREAKOUT_BUY_MIN_CHANGE_PCT
+    momentum_breakout["bollinger_buy_min_change_pct"] = bollinger_buy_min_change_pct
+    bollinger_buy_min_score = as_float(
+        momentum_breakout.get("bollinger_buy_min_score"),
+        BOLLINGER_BREAKOUT_BUY_MIN_SCORE,
+    )
+    if bollinger_buy_min_score is None or bollinger_buy_min_score < BUY_CONFIRMATION_MIN_SCORE:
+        warnings.append("invalid_bollinger_buy_min_score_using_default")
+        bollinger_buy_min_score = BOLLINGER_BREAKOUT_BUY_MIN_SCORE
+    momentum_breakout["bollinger_buy_min_score"] = bollinger_buy_min_score
+    bollinger_buy_min_supporting_factors = as_int(
+        momentum_breakout.get("bollinger_buy_min_supporting_factors"),
+        BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS,
+    )
+    if (
+        bollinger_buy_min_supporting_factors is None
+        or bollinger_buy_min_supporting_factors < BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS
+    ):
+        warnings.append("invalid_bollinger_buy_min_supporting_factors_using_default")
+        bollinger_buy_min_supporting_factors = BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS
+    momentum_breakout["bollinger_buy_min_supporting_factors"] = bollinger_buy_min_supporting_factors
 
     risk = config.setdefault("risk_model", {})
     risk["atr_stop_multiple"] = as_float(risk.get("atr_stop_multiple"), 2.0)
@@ -1016,6 +1095,88 @@ def lookback_close(closes, bars):
         return None
     return closes[-(bars + 1)]
 
+def quote_change_pct(quote_context):
+    if not isinstance(quote_context, dict):
+        return None
+    return as_float(quote_context.get("change_pct"))
+
+def quote_momentum_breakout_model(quote_context):
+    if not isinstance(quote_context, dict):
+        return {}
+    model = quote_context.get("momentum_breakout_model")
+    return model if isinstance(model, dict) else {}
+
+def momentum_breakout_enabled(quote_context):
+    return as_bool(quote_momentum_breakout_model(quote_context).get("enabled"), True)
+
+def same_session_momentum_threshold(quote_context):
+    model = quote_momentum_breakout_model(quote_context)
+    return (
+        as_float(model.get("same_session_momentum_pct"), SESSION_MOMENTUM_THRESHOLD_PCT)
+        or SESSION_MOMENTUM_THRESHOLD_PCT
+    )
+
+def same_session_momentum_score_delta(quote_context):
+    model = quote_momentum_breakout_model(quote_context)
+    return (
+        as_float(model.get("same_session_score_delta"), SESSION_MOMENTUM_SCORE_DELTA)
+        or SESSION_MOMENTUM_SCORE_DELTA
+    )
+
+def bollinger_buy_min_change_pct(quote_context):
+    model = quote_momentum_breakout_model(quote_context)
+    return (
+        as_float(model.get("bollinger_buy_min_change_pct"), BOLLINGER_BREAKOUT_BUY_MIN_CHANGE_PCT)
+        or BOLLINGER_BREAKOUT_BUY_MIN_CHANGE_PCT
+    )
+
+def bollinger_buy_min_score(quote_context):
+    model = quote_momentum_breakout_model(quote_context)
+    return (
+        as_float(model.get("bollinger_buy_min_score"), BOLLINGER_BREAKOUT_BUY_MIN_SCORE)
+        or BOLLINGER_BREAKOUT_BUY_MIN_SCORE
+    )
+
+def bollinger_buy_min_supporting_factors(quote_context):
+    model = quote_momentum_breakout_model(quote_context)
+    return (
+        as_int(
+            model.get("bollinger_buy_min_supporting_factors"),
+            BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS,
+        )
+        or BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS
+    )
+
+def strong_upper_band_buy_context(
+    quote_context,
+    provisional_score,
+    buy_categories,
+    five_day_momentum_pct=None,
+):
+    if not momentum_breakout_enabled(quote_context):
+        return False
+    buy_category_count = len(set(buy_categories or []))
+    change_pct = quote_change_pct(quote_context)
+    if (
+        change_pct is not None
+        and change_pct >= bollinger_buy_min_change_pct(quote_context)
+        and buy_category_count >= 1
+    ):
+        return True
+    if (
+        five_day_momentum_pct is not None
+        and five_day_momentum_pct >= MOMENTUM_THRESHOLD_PCT
+        and buy_category_count >= 1
+    ):
+        return True
+    if (
+        provisional_score is not None
+        and provisional_score >= bollinger_buy_min_score(quote_context)
+        and buy_category_count >= bollinger_buy_min_supporting_factors(quote_context)
+    ):
+        return True
+    return False
+
 def signal_bollinger_bands(indicators):
     if getattr(indicators, "rt_close", None) is not None:
         upper, lower = completed_bollinger_bands(getattr(indicators, "closes", []))
@@ -1380,7 +1541,20 @@ class IncrementalIndicators:
             if c <= bb_lower * 1.02:
                 add(0.3, "bollinger", "BUY", "觸及布林下軌")
             elif c >= bb_upper * 0.98:
-                add(-0.2, "bollinger", "SELL", "觸及布林上軌")
+                buy_categories = contribution_categories("BUY", contributions)
+                five_day_momentum_pct = None
+                base_close = lookback_close(closes, 5)
+                if base_close is not None and base_close > 0:
+                    five_day_momentum_pct = (c / base_close - 1) * 100
+                if strong_upper_band_buy_context(
+                    quote_context,
+                    score,
+                    buy_categories,
+                    five_day_momentum_pct=five_day_momentum_pct,
+                ):
+                    add(0.2, "bollinger", "BUY", "布林上軌動量突破")
+                else:
+                    add(-0.2, "bollinger", "SELL", "觸及布林上軌")
 
         # 成交量
         vr = self.score_volume_ratio(volumes, quote_context=quote_context)
@@ -1392,6 +1566,20 @@ class IncrementalIndicators:
                 add(-0.2, "volume", "SELL", f"放量下跌{vr:.1f}倍")
             elif vr > 1.5 and prior_close is not None and c > prior_close:
                 add(0.1, "volume", "BUY", f"溫和放量上漲{vr:.1f}倍")
+
+        # 當日/日內動量反轉。這是獨立於長線技術分的短週期確認，不污染日線歷史。
+        change_pct = quote_change_pct(quote_context)
+        if (
+            momentum_breakout_enabled(quote_context)
+            and change_pct is not None
+            and change_pct >= same_session_momentum_threshold(quote_context)
+        ):
+            add(
+                same_session_momentum_score_delta(quote_context),
+                "same_session_momentum",
+                "BUY",
+                f"當日動量{change_pct:+.1f}%",
+            )
 
         # 動量
         base_close = lookback_close(closes, 5)
@@ -1464,11 +1652,11 @@ def legacy_reason_factor_categories(signal_type, reasons):
                 categories.add("rsi")
             elif text.startswith(("MACD金叉", "MACD柱轉正")):
                 categories.add("macd")
-            elif text.startswith("觸及布林下軌"):
+            elif text.startswith(("觸及布林下軌", "布林上軌動量突破")):
                 categories.add("bollinger")
             elif text.startswith(("放量上漲", "溫和放量上漲")):
                 categories.add("volume")
-            elif text.startswith("5日動量+"):
+            elif text.startswith(("5日動量+", "當日動量+")):
                 categories.add("momentum")
         elif signal_type == "SELL":
             if text.startswith(("空頭排列", "短均線偏弱")):
@@ -1563,6 +1751,27 @@ class TriggerEngine:
 
     def volume_anomaly_ratio(self):
         return as_float(self.strategy_config.get("volume_anomaly_ratio"), VOLUME_ANOMALY_RATIO) or VOLUME_ANOMALY_RATIO
+
+    def momentum_breakout_model(self):
+        model = self.strategy_config.get("momentum_breakout_model")
+        return model if isinstance(model, dict) else {}
+
+    def momentum_breakout_enabled(self):
+        return as_bool(self.momentum_breakout_model().get("enabled"), True)
+
+    def large_move_buy_pct(self):
+        return (
+            as_float(self.momentum_breakout_model().get("large_move_buy_pct"), MOMENTUM_THRESHOLD_PCT)
+            or MOMENTUM_THRESHOLD_PCT
+        )
+
+    def large_move_sell_enabled(self):
+        return as_bool(self.momentum_breakout_model().get("large_move_sell_enabled"), False)
+
+    def quote_scoring_context(self, quote):
+        context = dict(quote or {})
+        context["momentum_breakout_model"] = self.momentum_breakout_model()
+        return context
 
     def risk_multiple(self, key, default):
         return as_float((self.strategy_config.get("risk_model") or {}).get(key), default) or default
@@ -1695,7 +1904,8 @@ class TriggerEngine:
         now = time.time()
         triggered = []
         score_getter = getattr(indicators, "get_score_evidence", None)
-        raw_score_result = score_getter(quote) if callable(score_getter) else indicators.get_score(quote)
+        scoring_context = self.quote_scoring_context(quote)
+        raw_score_result = score_getter(scoring_context) if callable(score_getter) else indicators.get_score(scoring_context)
         full_score, full_reasons, factor_contributions = unpack_score_result(raw_score_result)
         full_score = as_float(full_score)
         full_reasons = full_reasons if isinstance(full_reasons, list) else []
@@ -1713,7 +1923,19 @@ class TriggerEngine:
             if c <= bb_lower:
                 triggered.append(("布林下軌突破", f"價格${c} < 下軌${bb_lower:.2f}", "BUY"))
             elif c >= bb_upper:
-                triggered.append(("布林上軌突破", f"價格${c} > 上軌${bb_upper:.2f}", "SELL"))
+                buy_categories = supporting_factor_categories(
+                    "BUY",
+                    factor_contributions,
+                    reasons=full_reasons,
+                )
+                if strong_upper_band_buy_context(
+                    scoring_context,
+                    full_score,
+                    buy_categories,
+                ):
+                    triggered.append(("布林上軌動量突破", f"價格${c} > 上軌${bb_upper:.2f}", "BUY"))
+                else:
+                    triggered.append(("布林上軌突破", f"價格${c} > 上軌${bb_upper:.2f}", "SELL"))
 
         # 3. 均線金叉/死叉
         if indicators.ma5 and indicators.ma10 and len(indicators.closes) >= 5:
@@ -1750,9 +1972,20 @@ class TriggerEngine:
                     triggered.append(("成交量異動", f"量比={vol_ratio:.1f}", "WATCH"))
 
         # 5. 大幅波動
-        if abs(quote.get("change_pct", 0)) >= 5:
-            direction = "急漲" if quote["change_pct"] > 0 else "急跌"
-            triggered.append((direction, f"{quote['change_pct']:+.1f}%", "WATCH"))
+        change_pct = as_float(quote.get("change_pct"), 0) or 0
+        if (
+            self.momentum_breakout_enabled()
+            and change_pct >= self.large_move_buy_pct()
+        ):
+            triggered.append(("急漲", f"{change_pct:+.1f}%", "BUY"))
+        elif (
+            change_pct <= -MOMENTUM_THRESHOLD_PCT
+            and self.large_move_sell_enabled()
+        ):
+            triggered.append(("急跌", f"{change_pct:+.1f}%", "SELL"))
+        elif abs(change_pct) >= MOMENTUM_THRESHOLD_PCT:
+            direction = "急漲" if change_pct > 0 else "急跌"
+            triggered.append((direction, f"{change_pct:+.1f}%", "WATCH"))
 
         # 冷卻期檢查 + 觸發
         emitted_directional_candidates = set()

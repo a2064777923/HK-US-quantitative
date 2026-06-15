@@ -318,6 +318,46 @@ class RtAlertBridgeTests(unittest.TestCase):
             )
             self.assertIn("Hermes持倉風險審核", printed.call_args.args[0])
 
+    def test_position_review_includes_medium_urgency_by_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            alert_sent = Path(td) / "alert_sent.json"
+            review_sent = Path(td) / "position_sent.json"
+            packet_file = Path(td) / "packet.json"
+            packet = self.packet_with_position_review()
+            packet["position_judgment_audit"]["coverage"]["unjudged_high_urgency_review_count"] = 0
+            packet["position_review"]["items"][0].update(
+                {
+                    "review_id": "user:3:SPCX:no_signal_date:take_profit_or_trailing_stop_review",
+                    "portfolio_id": 3,
+                    "role": "user",
+                    "symbol": "SPCX",
+                    "urgency": "medium",
+                    "recommended_action": "take_profit_or_trailing_stop_review",
+                }
+            )
+            packet["position_review"]["items"][0]["position"]["unrealized_pnl_pct"] = 1.19
+            packet["position_review"]["items"][0]["position"]["latest_daily_change_pct"] = 3.5
+            queue.write_text("", encoding="utf-8")
+            packet_file.write_text(json.dumps(packet), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(alert_sent),
+                RT_POSITION_REVIEW_SENT_FILE=str(review_sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="notify",
+            )
+
+            with patch("builtins.print") as printed:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            text = printed.call_args.args[0]
+            self.assertIn("SPCX", text)
+            self.assertIn("urgency=medium", text)
+            self.assertIn("take_profit_or_trailing_stop_review", text)
+
     def test_feishu_failure_with_position_review_does_not_mark_watch_alert_sent(self):
         with tempfile.TemporaryDirectory() as td:
             queue = Path(td) / "alerts.jsonl"

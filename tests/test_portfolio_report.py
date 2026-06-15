@@ -20,10 +20,48 @@ class PortfolioReportTests(unittest.TestCase):
 
         sql = captured["sql"]
         normalized = " ".join(sql.split())
-        self.assertEqual(klines["AAPL"], {"close": 100.0, "date": "2026-06-12"})
+        self.assertEqual(klines["AAPL"], {"close": 100.0, "change_pct": None, "date": "2026-06-12"})
         self.assertIn("WITH daily_bar AS", sql)
         self.assertIn("SELECT DISTINCT ON (symbol, timestamp::date)", sql)
+        self.assertIn("change_percent", sql)
         self.assertIn("ORDER BY symbol, timestamp::date, timestamp DESC", normalized)
+
+    def test_position_review_catches_user_holding_daily_surge_without_v4_signal(self):
+        position = {
+            "symbol": "SPCX",
+            "name": "Space Exploration Technologies",
+            "quantity": 7,
+            "avg_cost": 169.59,
+            "current_price": 171.60,
+            "status": "holding",
+            "exchange": "NASDAQ",
+            "updated_at": "2026-06-15",
+        }
+
+        enriched = report.enrich_position(
+            position,
+            {},
+            {"close": 177.75, "change_pct": 3.5, "date": "2026-06-15"},
+        )
+        payload = {
+            "portfolio_id": 3,
+            "role": "user",
+            "cash_hkd": 91,
+            "positions_value_hkd": enriched["market_value_hkd"],
+            "total_value_hkd": enriched["market_value_hkd"] + 91,
+            "position_count": 1,
+            "positions": [enriched],
+        }
+        review = report.build_position_review_item(payload, enriched)
+
+        self.assertEqual(enriched["recommendation"], "trail_or_hold_review")
+        self.assertEqual(enriched["priority"], "medium")
+        self.assertEqual(enriched["latest_daily_change_pct"], 3.5)
+        self.assertIn("latest_daily_gain_above_3pct", enriched["recommendation_reasons"])
+        self.assertEqual(review["recommended_action"], "take_profit_or_trailing_stop_review")
+        self.assertEqual(review["urgency"], "medium")
+        self.assertTrue(review["execution_policy"]["advice_only"])
+        self.assertFalse(review["execution_policy"]["submits_orders"])
 
     def test_build_portfolio_report_separates_user_and_simulation_roles(self):
         position = {
@@ -319,6 +357,60 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertEqual(payload["counts_by_urgency"]["high"], 1)
         self.assertEqual(payload["items"][0]["recommended_action"], "exit_review")
         self.assertTrue(payload["items"][0]["execution_policy"]["requires_separate_order_path"])
+
+    def test_large_unrealized_loss_overrides_hold_signal_for_position_review(self):
+        position = {
+            "symbol": "00929",
+            "name": "International Precision",
+            "quantity": 10_000,
+            "avg_cost": 1.2106,
+            "current_price": 0.73,
+            "status": "holding",
+            "exchange": "HKEX",
+            "updated_at": "2026-06-15",
+        }
+        signal = {
+            "trade_date": "2026-06-15",
+            "side": "HOLD",
+            "score": 0.4562,
+            "expected_price": 0.73,
+            "quality": {"reasons": ["跌破5日線"], "risk_flags": [], "order_prices": {}},
+        }
+
+        enriched = report.enrich_position(position, signal, {"close": 0.73, "date": "2026-06-15"})
+        payload = {
+            "portfolio_id": 8,
+            "role": "simulation",
+            "cash_hkd": 10_000,
+            "positions_value_hkd": enriched["market_value_hkd"],
+            "total_value_hkd": 17_300,
+            "position_count": 1,
+            "positions": [enriched],
+        }
+        review = report.build_position_review_item(payload, enriched)
+        text = report.build_text_report(
+            {
+                "schema": "portfolio_context_report_v1",
+                "generated_at": "2026-06-16T07:00:00",
+                "portfolio_reports": [
+                    {
+                        **payload,
+                        "return_pct_vs_initial": -6.5,
+                        "high_priority_count": 1,
+                        "risk_summary": {"risk_level": "high", "risk_flags": ["exit_pressure_above_30pct"]},
+                        "position_review_items": [review],
+                        "top_opportunities": [],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(enriched["recommendation"], "exit_or_reduce_review")
+        self.assertIn("position_loss_below_minus_20pct", enriched["recommendation_reasons"])
+        self.assertEqual(review["recommended_action"], "exit_review")
+        self.assertEqual(review["urgency"], "high")
+        self.assertIn("HIGH 00929 pnl=-39.7%", text)
+        self.assertIn("action=exit_review recommendation=exit_or_reduce_review", text)
 
     def test_buy_signal_risk_flag_is_review_but_not_exit_pressure(self):
         position = {

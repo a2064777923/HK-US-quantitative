@@ -1,7 +1,7 @@
 {
   "schema": "rt_signal_strategy_config_v1",
-  "version": "v5-compatible-default-20260612",
-  "description": "Default realtime v5 strategy config. Values match the previous hard-coded behavior.",
+  "version": "v5.1-momentum-breakout-20260616",
+  "description": "Realtime v5.1 strategy config. Adds guarded momentum-breakout BUY candidates while keeping execution, liquidity, RR, and Hermes review gates unchanged.",
   "signal_cooldown_seconds": 1800,
   "volume_anomaly_ratio": 3.0,
   "confirmation_thresholds": {
@@ -11,6 +11,24 @@
     "SELL": {
       "max_full_score": -0.45
     }
+  },
+  "confirmation_requirements": {
+    "BUY": {
+      "min_supporting_factor_count": 2
+    },
+    "SELL": {
+      "min_supporting_factor_count": 2
+    }
+  },
+  "momentum_breakout_model": {
+    "enabled": true,
+    "large_move_buy_pct": 5.0,
+    "large_move_sell_enabled": false,
+    "same_session_momentum_pct": 3.0,
+    "same_session_score_delta": 0.4,
+    "bollinger_buy_min_change_pct": 2.0,
+    "bollinger_buy_min_score": 0.8,
+    "bollinger_buy_min_supporting_factors": 3
   },
   "risk_model": {
     "atr_stop_multiple": 2.0,

@@ -275,21 +275,27 @@ def get_latest_klines(symbols):
         f"""
         WITH daily_bar AS (
             SELECT DISTINCT ON (symbol, timestamp::date)
-                   symbol, close_price, timestamp::date AS trade_date
+                   symbol, close_price, change_percent, timestamp::date AS trade_date
             FROM klines
             WHERE interval = 'day'
               AND symbol IN ({sql_in(symbols)})
             ORDER BY symbol, timestamp::date, timestamp DESC
         )
-        SELECT DISTINCT ON (symbol) symbol, close_price, trade_date
+        SELECT DISTINCT ON (symbol) symbol, close_price, change_percent, trade_date
         FROM daily_bar
         ORDER BY symbol, trade_date DESC
         """
     )
     result = {}
     for row in rows(r.stdout) if r.returncode == 0 else []:
-        if len(row) >= 3:
-            result[row[0]] = {"close": as_float(row[1]), "date": row[2]}
+        if len(row) >= 4:
+            result[row[0]] = {
+                "close": as_float(row[1]),
+                "change_pct": as_float(row[2], None),
+                "date": row[3],
+            }
+        elif len(row) >= 3:
+            result[row[0]] = {"close": as_float(row[1]), "change_pct": None, "date": row[2]}
     return result
 
 
@@ -362,6 +368,7 @@ def enrich_position(position, signal, kline):
     symbol = position["symbol"]
     db_price = as_float(position.get("current_price"))
     kline_close = as_float(kline.get("close"))
+    kline_change_pct = as_float(kline.get("change_pct"), None)
     signal_price = as_float(signal.get("expected_price"))
     price_source = "missing"
     if db_price and db_price > 0:
@@ -422,12 +429,28 @@ def enrich_position(position, signal, kline):
     if take_profit > 0 and price > 0 and price >= take_profit:
         priority = raise_priority(priority, "medium")
         reasons.append("price_reached_signal_take_profit")
+    if pnl_pct <= -20:
+        recommendation = "exit_or_reduce_review"
+        priority = raise_priority(priority, "high")
+        reasons.append("position_loss_below_minus_20pct")
     if pnl_pct <= -8:
+        if recommendation == "hold":
+            recommendation = "reduce_or_exit_review"
         priority = raise_priority(priority, "high")
         reasons.append("position_loss_below_minus_8pct")
     if pnl_pct >= 15:
         priority = raise_priority(priority, "medium")
         reasons.append("position_gain_above_15pct")
+    if kline_change_pct is not None and kline_change_pct >= 3:
+        priority = raise_priority(priority, "medium")
+        if recommendation == "hold":
+            recommendation = "trail_or_hold_review"
+        reasons.append("latest_daily_gain_above_3pct")
+    if kline_change_pct is not None and kline_change_pct <= -3:
+        priority = raise_priority(priority, "medium")
+        if recommendation == "hold":
+            recommendation = "reduce_or_exit_review"
+        reasons.append("latest_daily_loss_below_minus_3pct")
     if risk_flags:
         priority = raise_priority(priority, "high" if priority == "normal" else priority)
         reasons.extend([f"risk:{flag}" for flag in risk_flags[:3]])
@@ -448,6 +471,7 @@ def enrich_position(position, signal, kline):
         "market_value_hkd": round(value_hkd, 2),
         "unrealized_pnl_hkd": round(pnl_hkd, 2),
         "unrealized_pnl_pct": round(pnl_pct, 2),
+        "latest_daily_change_pct": round_or_none(kline_change_pct),
         "stop_distance_pct": round_or_none(stop_distance_pct),
         "signal": {
             "trade_date": signal.get("trade_date", ""),
@@ -554,10 +578,16 @@ def has_position_exit_pressure(position):
     side = (position.get("signal") or {}).get("side")
     reasons = set(position.get("recommendation_reasons") or [])
     return (
-        position.get("recommendation") in ("stop_loss_review", "review_reduce_or_exit")
+        position.get("recommendation") in (
+            "stop_loss_review",
+            "review_reduce_or_exit",
+            "reduce_or_exit_review",
+            "exit_or_reduce_review",
+        )
         or side == "SELL"
         or (position.get("stop_distance_pct") is not None and position.get("stop_distance_pct") <= 0)
         or position.get("unrealized_pnl_pct", 0) <= -8
+        or "position_loss_below_minus_20pct" in reasons
         or "position_loss_below_minus_8pct" in reasons
         or "price_below_signal_stop_loss" in reasons
     )
@@ -774,6 +804,8 @@ def position_review_action(position):
         position.get("stop_distance_pct") is not None and position.get("stop_distance_pct") <= 0
     ):
         return "exit_review"
+    if pnl_pct <= -20 or "position_loss_below_minus_20pct" in reasons:
+        return "exit_review"
     if side == "SELL" and pnl_pct <= 0:
         return "exit_review"
     if side == "SELL":
@@ -782,6 +814,10 @@ def position_review_action(position):
         return "reduce_or_exit_review"
     if "price_reached_signal_take_profit" in reasons or pnl_pct >= 15:
         return "take_profit_or_trailing_stop_review"
+    if "latest_daily_gain_above_3pct" in reasons:
+        return "take_profit_or_trailing_stop_review"
+    if "latest_daily_loss_below_minus_3pct" in reasons:
+        return "reduce_or_exit_review"
     if position.get("priority") == "high" or (position.get("signal") or {}).get("risk_flags"):
         return "risk_review"
     return "hold_watch_review"
@@ -822,6 +858,7 @@ def build_position_review_item(report, position):
             "market_value_hkd": position.get("market_value_hkd"),
             "unrealized_pnl_hkd": position.get("unrealized_pnl_hkd"),
             "unrealized_pnl_pct": position.get("unrealized_pnl_pct"),
+            "latest_daily_change_pct": position.get("latest_daily_change_pct"),
             "stop_distance_pct": position.get("stop_distance_pct"),
             "valuation_price_source": position.get("valuation_price_source"),
             "kline_date": position.get("kline_date"),
@@ -1232,10 +1269,11 @@ def build_text_report(payload):
             )
         for pos in report["positions"]:
             if pos["priority"] == "high":
+                review_action = position_review_action(pos)
                 lines.append(
                     f"  HIGH {pos['symbol']} pnl={pos['unrealized_pnl_pct']:+.1f}% "
                     f"signal={pos['signal']['side']} score={pos['signal']['score']} "
-                    f"action={pos['recommendation']}"
+                    f"action={review_action} recommendation={pos['recommendation']}"
                 )
         if report["role"] == "simulation" and report["top_opportunities"]:
             top = report["top_opportunities"][:3]

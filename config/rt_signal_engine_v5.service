@@ -10,6 +10,8 @@ ExecStart=/usr/bin/python3 -u /root/rt_signal_engine_v5.py
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/root/.quantmind_env
+EnvironmentFile=-/root/.env
 Environment=RT_SIGNAL_WATCHLIST_FILE=/root/rt_signal_watchlist.json
 Environment=RT_SIGNAL_STRATEGY_CONFIG_FILE=/root/rt_signal_strategy_config.json
 

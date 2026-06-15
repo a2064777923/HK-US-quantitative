@@ -1,10 +1,18 @@
 # Hermes v5 Integration
 
-**Updated:** 2026-06-14
+**Updated:** 2026-06-16
 
 This document explains how to connect the realtime v5 signal path without breaking the existing QuantMind jobs or the separate simulation trading system.
 
 ## What Changed
+
+### 2026-06-16 live-server fix
+
+- v5.1 `momentum_breakout_model` fixes the missed-US-rally failure mode: strong positive same-session moves can be BUY candidates, same-session momentum contributes structured BUY evidence, and upper Bollinger-band breaks become `布林上軌動量突破` BUY candidates only when breakout context is present.
+- Execution safety is unchanged. Unconfirmed or one-factor momentum candidates still downgrade to WATCH, and `rt_order_intake.py` still requires `execution_candidate=true`, risk geometry, liquidity, Hermes judgment, readiness, and pilot execution flags before simulation/paper execution.
+- Position review now treats large losses and large holding moves as advisory tasks: `<= -20%` unrealized loss maps to `exit_review`, `+3%` daily holding gains map to trailing-stop/take-profit review, and `-3%` daily holding losses map to reduce/exit review.
+- Runtime env sourcing now uses `set -a` in cron so `/root/.env` or `/root/.quantmind_env` values such as `QM_USER_PORTFOLIO_IDS=3` are exported to Python. This fixes user holdings, including `SPCX`, being absent from `/tmp/portfolio_report.json` and Hermes packets even though they existed in the database.
+- The server-side bridge cron remains notify-only. It does not enable `alert-sim`, `legacy-sim`, Alpaca paper execution, or any real broker execution.
 
 ### Reliability hardening
 
@@ -39,10 +47,13 @@ Improvements:
 - Bollinger trigger checks and `full_score` Bollinger reasons compare the realtime quote against the latest completed 20-day daily Bollinger bands instead of bands recalculated with the same temporary quote. This prevents an extreme intraday quote from widening the band before the breach is tested. It does not change alert fields, order intake, simulation state, or execution mode.
 - v5 only scans symbols with at least 30 completed valid and aligned daily OHLCV bars, matching the multi-factor `full_score` lookback requirement. Symbols with shorter, failed, or misaligned history loads are skipped with a startup log entry instead of emitting partial-history WATCH/BUY/SELL alerts. This does not change watchlists, strategy thresholds, order intake, simulation state, or intraday context reports.
 - BUY/SELL candidates carry a full-score confirmation flag. The default confirmation floor is now deliberately multi-factor: BUY requires `full_score >= 0.45` and SELL requires `full_score <= -0.45`, so a single weak trigger contribution such as standalone RSI/布林 evidence is not enough to enter the confirmed directional queue. Unconfirmed directional candidates are downgraded to `WATCH` by default, with `candidate_signal_type` and candidate risk fields retained for diagnostics.
+- v5.1 adds a guarded `momentum_breakout_model`. Positive `急漲` triggers at or above `large_move_buy_pct` now become BUY candidates instead of non-directional WATCH rows, but they still downgrade to WATCH unless full-score confirmation, factor confluence, risk geometry, liquidity, and `execution_candidate` all pass. Negative large moves remain observation-only by default unless `large_move_sell_enabled=true`.
+- Same-session momentum at or above `same_session_momentum_pct` adds structured `same_session_momentum` BUY evidence. This catches short-term reversal/breakout sessions that a longer bearish technical backdrop can suppress, without changing the completed-daily history contract or making stored minute bars the core scoring source.
+- Upper Bollinger-band breaches are now context-sensitive. With same-session momentum, 5-day momentum, or sufficiently broad BUY factor support, v5 emits `布林上軌動量突破` as a BUY candidate. Without that breakout context, the legacy `布林上軌突破` SELL candidate remains. Hermes should inspect `trigger`, `candidate_signal_type`, `factor_contributions`, and `execution_blocked_reasons` instead of assuming every upper-band breach is mean-reversion SELL.
 - Confirmed BUY/SELL candidates must also have factor confluence before they can remain executable. By default, v5 requires at least two supporting factor categories for each side, derived from `full_reasons` categories such as trend, RSI, MACD, Bollinger, volume, and momentum. A high score backed by only one category is downgraded to diagnostic `WATCH` with `factor_confluence_valid=false`, `factor_confluence_categories`, `factor_confluence_supporting_count`, and `factor_confluence_reason=supporting_factor_count_below_minimum`. Operators may raise `confirmation_requirements.*.min_supporting_factor_count` or use `RT_SIGNAL_BUY_MIN_SUPPORTING_FACTOR_COUNT` / `RT_SIGNAL_SELL_MIN_SUPPORTING_FACTOR_COUNT`, but v5 will not accept requirements below the default of 2.
 - v5 now also emits `factor_contributions`, a structured list of signed factor evidence objects (`category`, `direction`, `score_delta`, `reason`). Hermes should treat this as the machine-readable source for factor confluence and future strategy analysis. The existing `full_reasons` field stays in place for human-readable explanation, backward compatibility, and event traces; it is no longer the primary source for factor categorization inside v5.
-- Native observation-only `WATCH` triggers such as volume anomaly and large-move alerts now carry `confirmed=false`. The `confirmed` field is reserved for BUY/SELL candidates that pass the full-score threshold, including confirmed directionals later emitted as `WATCH` because of shadow-only review mode or invalid risk geometry. This keeps Hermes from reading a non-directional WATCH row as a confirmed trade thesis.
-- Native observation-only `WATCH` triggers also carry `risk_geometry_valid=false` with `risk_geometry_reason=not_directional_candidate`. This distinguishes non-directional diagnostics from BUY/SELL candidates whose risk geometry was actually evaluated, so Hermes should not treat volume or large-move WATCH rows as having executable stop/take-profit geometry.
+- Native observation-only `WATCH` triggers such as volume anomaly and negative large-move alerts now carry `confirmed=false`. The `confirmed` field is reserved for BUY/SELL candidates that pass the full-score threshold, including confirmed directionals later emitted as `WATCH` because of shadow-only review mode or invalid risk geometry. In v5.1, a positive `急漲` can be a BUY candidate; use `candidate_signal_type` and `execution_candidate` instead of the trigger name alone.
+- Native observation-only `WATCH` triggers also carry `risk_geometry_valid=false` with `risk_geometry_reason=not_directional_candidate`. This distinguishes non-directional diagnostics from BUY/SELL candidates whose risk geometry was actually evaluated, so Hermes should not treat volume or native observation-only WATCH rows as having executable stop/take-profit geometry.
 - Confirmed BUY/SELL candidates must also satisfy the v5 risk model's minimum risk/reward ratio. The default `risk_model.min_rr_ratio=1.2` matches the order-intake minimum, and v5 refuses strategy config values below 1.2 while allowing stricter values above it. v5 calculates `rr_ratio` from the rounded entry/stop/take-profit prices that downstream intake will actually see. Lower-RR directional triggers are emitted as diagnostic `WATCH` rows with candidate risk fields, not trade candidates.
 - Directional candidates require a finite positive ATR before v5 can calculate executable stop/take-profit geometry. Missing, non-finite, or non-positive ATR now downgrades the candidate to `WATCH` with `risk_geometry_reason=missing_or_invalid_atr`; v5 does not synthesize a default ATR or fabricated risk prices.
 - Within one v5 scan for one symbol, only the first confirmed and risk-valid candidate for each direction can remain executable. Later same-direction technical triggers in the same scan are emitted as diagnostic `WATCH` rows with `candidate_signal_type`, candidate risk fields, and `execution_blocked_reasons=["same_scan_directional_duplicate"]` added. This is a no-loss integration change: Hermes still sees the duplicate evidence for critique, but order intake and the simulation portfolio receive at most one BUY and one SELL executable candidate per symbol scan.
@@ -87,7 +98,7 @@ By default, the bridge also reads the latest `/tmp/hermes_signal_review_packet.j
 When the bridge runs from cron on the same server that produces `/tmp/rt_signal_alerts.jsonl` and `/tmp/hermes_signal_review_packet.json`, set `RT_ALERT_REMOTE=local`. In local mode the bridge reads alert, packet, and sent-state files directly instead of self-SSHing to `root@38.76.164.106`. This preserves the same notify-only behavior while removing a fragile dependency on server SSH key setup. The recommended read-only notification cron is:
 
 ```cron
-* * * * * RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1
+* * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1"
 ```
 
 To deliver the same notify-only text to Feishu, explicitly add `RT_ALERT_SEND_FEISHU=1` after Feishu app credentials have been verified in the runtime environment. The production server may keep your default Feishu bot in `/root/.quantmind_env` so cron can send without repeating secrets on every command, but `feishu_notify.py` intentionally has no code-level credential fallback in the GitHub repo. It reads `FEISHU_APP_ID`, `FEISHU_APP_SECRET`, and `FEISHU_CHAT_ID` from the environment or from `FEISHU_ENV_FILE`, defaulting to `/root/.quantmind_env`. This remains advisory notification only: it does not change `RT_ALERT_EXECUTION_MODE`, call order intake in notify mode, submit simulation orders, write judgments, or mutate portfolios. When Feishu delivery is enabled, `rt_alert_bridge.py` updates `/tmp/rt_signal_sent.json` and `/tmp/rt_position_review_sent.json` only after `feishu_notify.send_feishu_message()` returns success. If Feishu credentials are missing, token/message delivery fails, or the sender raises, the bridge logs the failure, returns non-zero, and leaves sent-state unchanged so the alert or high-urgency position review can retry on the next cron run.
@@ -95,6 +106,8 @@ To deliver the same notify-only text to Feishu, explicitly add `RT_ALERT_SEND_FE
 Recommended secret file shape:
 
 ```bash
+export QM_USER_PORTFOLIO_IDS="3"
+export QM_SIM_PORTFOLIO_ID="8"
 export FEISHU_APP_ID="..."
 export FEISHU_APP_SECRET="..."
 export FEISHU_CHAT_ID="..."
@@ -102,7 +115,7 @@ export FEISHU_CHAT_ID="..."
 
 ```cron
 # Optional Feishu delivery; keep disabled until credentials and chat routing are verified.
-# * * * * * /bin/bash -lc "cd /root && [ -f /root/.quantmind_env ] && . /root/.quantmind_env; RT_ALERT_REMOTE=local RT_ALERT_SEND_FEISHU=1 RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1"
+# * * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; RT_ALERT_REMOTE=local RT_ALERT_SEND_FEISHU=1 RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1"
 ```
 
 The bridge treats packet freshness as display-critical context. `RT_ALERT_MAX_PACKET_CONTEXT_AGE_MINUTES=10` by default. If the packet is stale, the alert is still emitted, but the notification includes a global `Hermes審核狀態：STALE` warning and a per-alert `Hermes上下文：STALE` line before any digest summary. If the packet is missing or has an invalid `generated_at`, the notification says `Hermes審核狀態：MISSING` or `Hermes審核狀態：INVALID` and does not summarize review items from that packet. Packet files generated by the server often use local naive timestamps such as `2026-06-13T20:57:31`; the bridge now interprets those naive timestamps in the server's local timezone before converting to UTC, instead of assuming UTC and falsely marking HKT packets as future-dated. If the bridge runs on a host whose local timezone differs from the report producer, set `RT_ALERT_NAIVE_TIMESTAMP_UTC_OFFSET=+08:00` or another explicit offset. If a fresh or stale packet exists but the alert's `signal_id` is not in it, the notification says `Hermes審核：NO_MATCH` and marks the alert as a technical signal that has not completed comprehensive review. These warnings are display-only: they do not block alert emission, submit orders, change simulation state, or mutate any DB rows. They prevent stale, missing, invalid, or unmatched packet context from looking like Hermes-approved market/news/intraday evidence while preserving notify-only behavior.
@@ -619,7 +632,7 @@ It reads:
 
 - `positions` and `portfolios` for cash, exposure, unrealized P&L, and high-priority holdings;
 - latest `signal_v4/v4_full` rows for each holding;
-- latest K-line close as a price fallback;
+- latest K-line close as a price fallback, plus latest daily `change_percent` for holding-move review;
 - recent `sim_trades` for FIFO-style closed trade review, preserving available `id`, `trade_id`, and `order_id` lineage;
 - all available simulation `sim_trades` for a read-only position reconciliation check.
 
@@ -644,6 +657,8 @@ Important behavior:
 - `portfolio_risk` covers cash/exposure, market and quote-currency exposure, max and top-3 concentration, unrealized P&L, latest v4 signal pressure, stop-loss distance, stale price/K-line flags, and backend valuation discrepancy.
 - The payload also includes `position_review` with `schema=portfolio_position_review_v1`. These items ask Hermes to review existing holdings for exit, reduction, trailing stop, or hold/watch decisions.
 - `position_review` is advisory and `submits_orders=false`. It is not a SELL order and does not call the simulation API.
+- Large unrealized losses now override a passive HOLD recommendation: `unrealized_pnl_pct <= -20` becomes `exit_review`, and `<= -8` becomes at least `reduce_or_exit_review`. This prevents a deeply losing holding from being printed as `action=hold`.
+- Holdings with latest daily moves also create advisory review tasks even when no v4 signal exists. A daily gain at or above `+3%` becomes `take_profit_or_trailing_stop_review`; a daily loss at or below `-3%` becomes `reduce_or_exit_review`. This is how user holdings such as `SPCX` can be surfaced for trailing-stop/target adjustment even when `engine_signal_scores` has no row for that symbol.
 - If DB position prices are zero or missing, the report can still value positions from latest daily K-lines, but it flags `fallback_valuation_used` and keeps Hermes confidence reduced.
 - If trade-ledger open positions differ from the `positions` table, the simulation report is marked `critical` with `positions_table_conflicts_with_trade_ledger`.
 - Portfolio risk is read-only. It does not repair `positions`, change cash, write judgments, or submit orders.
@@ -662,6 +677,8 @@ New v5 path:
 
 - `rt_signal_engine_v5.py` should run as one long-running process.
 - Hermes should run `rt_alert_bridge.py` every minute.
+- `portfolio_report.py` and `hermes_review_packet.py` cron lines must source `/root/.quantmind_env` and `/root/.env` with `set -a` so values such as `QM_USER_PORTFOLIO_IDS=3` are exported to Python child processes. Without this, user holdings can be present in the database but missing from `/tmp/portfolio_report.json` and Hermes packets.
+- `rt_alert_bridge.py` includes high and medium urgency position reviews by default and caps the queue at 20 items. This keeps high-risk rows first while still allowing medium trailing-stop/take-profit reviews such as `SPCX` to reach the operator.
 
 Do not start `rt_signal_engine_v5.py` from cron every minute. It is an infinite loop and should be supervised by systemd, Hermes worker management, pm2, supervisord, or one equivalent long-running process manager.
 
