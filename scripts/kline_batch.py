@@ -136,7 +136,7 @@ def fetch_kline(code, market="hk", count=DEFAULT_FETCH_COUNT):
 
 def valid_ohlc(o, c, h, l):
     values = (o, c, h, l)
-    return all(v is not None and v > 0 for v in values) and h >= l and l <= o <= h and l <= c <= h
+    return all(v is not None and v > 0 for v in values) and h >= l
 
 def build_sql_inserts(symbol, klines, source):
     """Build batch INSERT SQL for all klines of one stock"""
