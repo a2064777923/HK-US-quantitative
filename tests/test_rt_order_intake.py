@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from datetime import datetime
@@ -84,8 +85,23 @@ class RtOrderIntakeTests(unittest.TestCase):
         market_gate=(True, {"status": "PASS"}),
         readiness_gate=(True, {"status": "PASS"}),
         context_result=None,
+        pilot_enabled=None,
+        pilot_notional_cap=None,
+        pilot_risk_cap=None,
+        pilot_daily_cap=None,
+        pilot_markets=None,
     ):
         context_result = context_result or ("token", self.context, [])
+        if pilot_enabled is not None:
+            intake.PILOT_EXECUTION_ENABLED = pilot_enabled
+        if pilot_notional_cap is not None:
+            intake.PILOT_MAX_ORDER_NOTIONAL_HKD = pilot_notional_cap
+        if pilot_risk_cap is not None:
+            intake.PILOT_MAX_ORDER_RISK_HKD = pilot_risk_cap
+        if pilot_daily_cap is not None:
+            intake.PILOT_MAX_DAILY_SUBMITTED_ORDERS = pilot_daily_cap
+        if pilot_markets is not None:
+            intake.PILOT_ALLOWED_MARKETS = set(pilot_markets)
         patches = [
             patch.object(intake, "health_gate", return_value=(True, {"status": "OK"})),
             patch.object(intake, "execution_readiness_gate", return_value=readiness_gate),
@@ -720,7 +736,7 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertIn("pilot_execution_not_enabled", result["pilot_execution"]["reasons"])
             submit.assert_not_called()
 
-    def test_execute_rejects_pilot_order_above_notional_cap(self):
+    def test_execute_shrinks_pilot_order_above_notional_cap(self):
         intake.PILOT_MAX_ORDER_NOTIONAL_HKD = 50_000
         with tempfile.TemporaryDirectory() as td:
             state_file = str(Path(td) / "state.json")
@@ -735,13 +751,47 @@ class RtOrderIntakeTests(unittest.TestCase):
                 state,
                 state_file,
                 judgment_file,
-                submit_result={"order_id": "should-not-submit"},
+                submit_result={"order_id": "pilot-order"},
             )
 
-            self.assertEqual(result["status"], "rejected")
-            self.assertIn("pilot_execution_gate_failed", result["reasons"])
-            self.assertIn("pilot_order_notional_above_cap", result["pilot_execution"]["reasons"])
-            submit.assert_not_called()
+            self.assertEqual(result["status"], "submitted")
+            self.assertLessEqual(result["plan"]["notional_hkd"], 50_000)
+            self.assertLess(result["plan"]["quantity"], result["original_plan"]["quantity"])
+            self.assertEqual(result["pilot_cap"]["status"], "CAPPED")
+            self.assertEqual(result["pilot_execution"]["status"], "PASS")
+            submit.assert_called_once()
+
+    def test_pilot_caps_shrink_buy_plan_before_execute(self):
+        intake.PILOT_MAX_ORDER_NOTIONAL_HKD = 10_000
+        intake.PILOT_MAX_ORDER_RISK_HKD = 1_000
+        intake.PILOT_ALLOWED_MARKETS = {"US"}
+        intake.PILOT_EXECUTION_ENABLED = True
+        alert = fresh_alert("sig-pilot-cap-shrink", "AAPL")
+        alert.update({"market": "US", "entry_price": 100, "stop_loss": 95, "take_profit": 112})
+        plan = {"symbol": "AAPL", "side": "buy", "quantity": 300, "notional_hkd": 234000, "risk_hkd": 11700}
+
+        capped, cap_gate = intake.apply_pilot_caps_to_plan(alert, plan)
+
+        self.assertIsNotNone(capped)
+        self.assertEqual(cap_gate["status"], "CAPPED")
+        self.assertLessEqual(capped["notional_hkd"], 10_000)
+        self.assertLessEqual(capped["risk_hkd"], 1_000)
+        self.assertIn("pilot_capped_from", capped)
+
+    def test_pilot_caps_reject_when_rounding_to_zero(self):
+        intake.PILOT_MAX_ORDER_NOTIONAL_HKD = 1
+        intake.PILOT_MAX_ORDER_RISK_HKD = 1
+        intake.PILOT_ALLOWED_MARKETS = {"US"}
+        intake.PILOT_EXECUTION_ENABLED = True
+        alert = fresh_alert("sig-pilot-cap-zero", "AAPL")
+        alert.update({"market": "US", "entry_price": 100, "stop_loss": 95, "take_profit": 112})
+        plan = {"symbol": "AAPL", "side": "buy", "quantity": 1, "notional_hkd": 100, "risk_hkd": 5}
+
+        capped, cap_gate = intake.apply_pilot_caps_to_plan(alert, plan)
+
+        self.assertIsNotNone(cap_gate)
+        self.assertEqual(cap_gate["reason"], "pilot_cap_quantity_zero")
+        self.assertEqual(capped, plan)
 
     def test_execute_rejects_pilot_daily_submitted_order_cap(self):
         intake.PILOT_MAX_DAILY_SUBMITTED_ORDERS = 1
@@ -826,6 +876,45 @@ class RtOrderIntakeTests(unittest.TestCase):
             alpaca_submit.assert_called_once_with("AAPL", "buy", result["plan"]["quantity"])
             qm_submit.assert_not_called()
 
+    def test_alpaca_paper_submit_uses_pilot_capped_quantity(self):
+        intake.US_ORDER_BROKER = "alpaca-paper"
+        intake.ALPACA_API_KEY_ID = "paper-key"
+        intake.ALPACA_API_SECRET_KEY = "paper-secret"
+        intake.PILOT_MAX_ORDER_NOTIONAL_HKD = 1_500
+        intake.PILOT_MAX_ORDER_RISK_HKD = 150
+        intake.PILOT_ALLOWED_MARKETS = {"US"}
+        alert = fresh_alert("sig-alpaca-capped", "BAC")
+        alert.update({"market": "US", "entry_price": 57.08, "stop_loss": 54.68, "take_profit": 60.69})
+        self.context = {
+            "cash_hkd": 780_000,
+            "equity_hkd": 780_000,
+            "positions": {},
+            "broker_context": {"backend": "alpaca-paper", "account_ok": True, "positions_ok": True},
+        }
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            with patch.object(
+                intake,
+                "submit_alpaca_paper_order",
+                return_value={"id": "alpaca-capped", "broker": "alpaca-paper"},
+            ) as alpaca_submit:
+                result, _submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                )
+
+        self.assertEqual(result["status"], "submitted")
+        self.assertEqual(result["plan"]["quantity"], 3)
+        self.assertEqual(result["original_plan"]["quantity"], 175)
+        alpaca_submit.assert_called_once_with("BAC", "buy", 3)
+
     def test_us_alpaca_paper_requires_credentials(self):
         intake.US_ORDER_BROKER = "alpaca-paper"
         alert = fresh_alert("sig-alpaca-missing", "AAPL")
@@ -885,6 +974,47 @@ class RtOrderIntakeTests(unittest.TestCase):
         self.assertEqual(context["positions"]["AAPL"]["quantity"], 3)
         self.assertTrue(context["broker_context"]["account_ok"])
         self.assertTrue(context["broker_context"]["positions_ok"])
+
+    def test_loads_existing_alpaca_env_aliases(self):
+        env = {
+            "APCA_API_KEY_ID": None,
+            "APCA_API_SECRET_KEY": None,
+            "ALPACA_API_KEY_ID": None,
+            "ALPACA_API_SECRET_KEY": None,
+            "ALPACA_KEY_ID": None,
+            "ALPACA_API_KEY": "alias-key",
+            "ALPACA_SECRET_KEY": "alias-secret",
+            "ALPACA_TRADING_BASE_URL": None,
+            "ALPACA_BASE_URL": "https://paper-api.alpaca.markets/v2",
+        }
+        old = {key: os.environ.get(key) for key in env}
+        try:
+            for key, value in env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            import importlib
+
+            loaded = importlib.reload(intake)
+            loaded_values = (
+                loaded.ALPACA_API_KEY_ID,
+                loaded.ALPACA_API_SECRET_KEY,
+                loaded.ALPACA_TRADING_BASE_URL,
+            )
+        finally:
+            for key, value in old.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            import importlib
+
+            importlib.reload(intake)
+
+        self.assertEqual(loaded_values[0], "alias-key")
+        self.assertEqual(loaded_values[1], "alias-secret")
+        self.assertEqual(loaded_values[2], "https://paper-api.alpaca.markets/v2")
 
     def test_alpaca_context_gate_blocks_execute_when_account_query_failed(self):
         context = {

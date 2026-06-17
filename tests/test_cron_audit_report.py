@@ -346,6 +346,39 @@ class CronAuditReportTests(unittest.TestCase):
         self.assertEqual(payload["limited_pilot_execution_jobs"][0]["broker"], "alpaca-paper")
         self.assertIn("Limited pilot execution jobs:", report.build_text_report(payload))
 
+    def test_limited_pilot_alert_sim_satisfies_bridge_delivery_job(self):
+        base_without_bridge = "\n".join(
+            line for line in FULL_CRON.splitlines() if "rt_alert_bridge.py" not in line
+        )
+        pilot_line = (
+            '* * * * * /bin/bash -lc "cd /root && [ -f /root/.quantmind_env ] && . /root/.quantmind_env; '
+            "RT_ALERT_REMOTE=local RT_ALERT_SEND_FEISHU=1 RT_ALERT_EXECUTION_MODE=alert-sim "
+            "RT_ALERT_REQUIRE_CONFIRMED=1 RT_ORDER_EXECUTE_PILOT_ENABLED=1 "
+            "RT_ORDER_PILOT_ALLOWED_MARKETS=US RT_ORDER_PILOT_MAX_ORDER_NOTIONAL_HKD=1500 "
+            "RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=150 RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=1 "
+            'RT_ORDER_US_BROKER=alpaca-paper /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1"'
+        )
+        env_file = "\n".join(
+            [
+                "FEISHU_APP_ID=app-id",
+                "FEISHU_APP_SECRET=app-secret",
+                "FEISHU_CHAT_ID=chat-id",
+            ]
+        )
+
+        payload = report.build_report(
+            base_without_bridge + "\n" + pilot_line + "\n",
+            env={},
+            env_file_text=env_file,
+            sent_file_texts={"alert_sent": "[]", "position_review_sent": "[]"},
+        )
+
+        self.assertEqual(payload["status"], "OK")
+        missing = {job["name"] for job in payload["missing_required_jobs"]}
+        self.assertNotIn("rt_alert_bridge_notify", missing)
+        self.assertEqual(payload["alert_delivery"]["bridge_delivery_mode"], "limited_pilot_alert_sim")
+        self.assertTrue(payload["alert_delivery"]["feishu_delivery_enabled"])
+
     def test_commented_dangerous_cron_is_ignored(self):
         payload = report.build_report(
             FULL_CRON + "\n# * * * * * RT_ALERT_EXECUTION_MODE=alert-sim /usr/bin/python3 /root/rt_alert_bridge.py\n"

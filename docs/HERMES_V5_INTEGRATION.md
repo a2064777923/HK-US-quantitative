@@ -172,8 +172,9 @@ Alpaca paper environment keys accepted by `rt_order_intake.py`:
 
 - `RT_ORDER_US_BROKER=alpaca-paper`
 - `ALPACA_TRADING_BASE_URL=https://paper-api.alpaca.markets/v2`
-- `APCA_API_KEY_ID` or `ALPACA_API_KEY_ID`
-- `APCA_API_SECRET_KEY` or `ALPACA_API_SECRET_KEY`
+- `APCA_API_KEY_ID`, `ALPACA_API_KEY_ID`, or `ALPACA_API_KEY`
+- `APCA_API_SECRET_KEY`, `ALPACA_API_SECRET_KEY`, or `ALPACA_SECRET_KEY`
+- `ALPACA_BASE_URL` as a legacy alias for `ALPACA_TRADING_BASE_URL`
 
 When `RT_ORDER_US_BROKER=alpaca-paper`, intake reads Alpaca paper `/account` and `/positions` before sizing. Execute mode rejects with `broker_context_gate_failed` if either account or positions context is unavailable, because using default cash or assuming an empty position book would make paper sizing and duplicate-position checks unreliable. Dry-run keeps running and exposes `broker_context.would_block_execute=true` for Hermes/operator review.
 

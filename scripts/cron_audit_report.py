@@ -440,6 +440,10 @@ def limited_pilot_execution_lines(lines):
     return rows
 
 
+def limited_pilot_alert_sim_lines(lines):
+    return [line for line in lines if is_limited_pilot_alert_sim_line(line)]
+
+
 def stable_hash(payload):
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -526,7 +530,9 @@ def sent_state_file_status(name, path, raw):
 def alert_delivery_audit(lines, env=None, env_file_text=None, sent_file_texts=None, env_file_error=None):
     env = dict(os.environ if env is None else env)
     sent_file_texts = dict(sent_file_texts or {})
-    bridge_lines = active_line_with_tokens(lines, ["rt_alert_bridge.py", "RT_ALERT_EXECUTION_MODE=notify"])
+    notify_bridge_lines = active_line_with_tokens(lines, ["rt_alert_bridge.py", "RT_ALERT_EXECUTION_MODE=notify"])
+    pilot_bridge_lines = limited_pilot_alert_sim_lines(active_line_with_tokens(lines, ["rt_alert_bridge.py"]))
+    bridge_lines = notify_bridge_lines + pilot_bridge_lines
     local_bridge_lines = [line for line in bridge_lines if "RT_ALERT_REMOTE=local" in line]
     feishu_lines = [line for line in bridge_lines if "RT_ALERT_SEND_FEISHU=1" in line]
     dangerous_bridge_lines = active_line_with_tokens(lines, ["rt_alert_bridge.py"])
@@ -596,6 +602,7 @@ def alert_delivery_audit(lines, env=None, env_file_text=None, sent_file_texts=No
         "schema": "alert_delivery_audit_v1",
         "status": status,
         "bridge_notify_present": bool(bridge_lines),
+        "bridge_delivery_mode": "limited_pilot_alert_sim" if pilot_bridge_lines and not notify_bridge_lines else "notify",
         "bridge_notify_local_mode": bool(local_bridge_lines),
         "bridge_notify_line_count": len(bridge_lines),
         "feishu_delivery_enabled": bool(feishu_lines),
@@ -702,6 +709,8 @@ def build_report(
     missing = []
     for job in REQUIRED_READ_ONLY_JOBS:
         present = job_present(lines, job["tokens"])
+        if job.get("name") == "rt_alert_bridge_notify" and not present:
+            present = bool(limited_pilot_alert_sim_lines(active_line_with_tokens(lines, ["rt_alert_bridge.py"])))
         row = {
             "name": job["name"],
             "present": present,

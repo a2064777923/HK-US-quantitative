@@ -54,6 +54,9 @@ APCA_API_KEY_ID=...
 APCA_API_SECRET_KEY=...
 ```
 
+The runtime also accepts existing Alpaca env aliases: `ALPACA_API_KEY`,
+`ALPACA_SECRET_KEY`, and `ALPACA_BASE_URL`.
+
 Put runtime secrets in the server environment or `/root/.quantmind_env`; do not commit them.
 
 ## Realtime v5 Contract

@@ -20,9 +20,14 @@ API_PASSWORD = os.environ.get("QM_API_PASSWORD", "")
 PORTFOLIO_ID = int(os.environ.get("QM_PORTFOLIO_ID", "8"))
 ALPACA_TRADING_BASE_URL = os.environ.get(
     "ALPACA_TRADING_BASE_URL",
-    "https://paper-api.alpaca.markets/v2",
+    os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets/v2"),
 ).rstrip("/")
-ALPACA_API_KEY_ID = os.environ.get("APCA_API_KEY_ID") or os.environ.get("ALPACA_API_KEY_ID") or os.environ.get("ALPACA_KEY_ID", "")
+ALPACA_API_KEY_ID = (
+    os.environ.get("APCA_API_KEY_ID")
+    or os.environ.get("ALPACA_API_KEY_ID")
+    or os.environ.get("ALPACA_API_KEY")
+    or os.environ.get("ALPACA_KEY_ID", "")
+)
 ALPACA_API_SECRET_KEY = (
     os.environ.get("APCA_API_SECRET_KEY")
     or os.environ.get("ALPACA_API_SECRET_KEY")
@@ -1175,6 +1180,63 @@ def build_order_plan(alert, context):
     }, []
 
 
+def apply_pilot_caps_to_plan(alert, plan):
+    """Shrink probe orders to pilot caps before the final execute gate."""
+    if not PILOT_EXECUTION_ENABLED or not isinstance(plan, dict):
+        return plan, None
+    market = alert_market(alert)
+    if market not in PILOT_ALLOWED_MARKETS:
+        return plan, None
+    if str(plan.get("side", "")).lower() != "buy":
+        return plan, None
+
+    try:
+        quantity = int(float(plan.get("quantity") or 0))
+        notional_hkd = float(plan.get("notional_hkd") or 0)
+        risk_hkd = float(plan.get("risk_hkd") or 0)
+    except (TypeError, ValueError):
+        return plan, None
+    if quantity <= 0 or notional_hkd <= 0:
+        return plan, None
+
+    ratio = 1.0
+    if PILOT_MAX_ORDER_NOTIONAL_HKD > 0 and notional_hkd > PILOT_MAX_ORDER_NOTIONAL_HKD:
+        ratio = min(ratio, PILOT_MAX_ORDER_NOTIONAL_HKD / notional_hkd)
+    if PILOT_MAX_ORDER_RISK_HKD > 0 and risk_hkd > PILOT_MAX_ORDER_RISK_HKD:
+        ratio = min(ratio, PILOT_MAX_ORDER_RISK_HKD / risk_hkd)
+    if ratio >= 1.0:
+        return plan, None
+
+    capped_quantity = round_down_lot(quantity * ratio, plan["symbol"])
+    if capped_quantity <= 0:
+        return plan, {
+            "status": "REJECTED",
+            "reason": "pilot_cap_quantity_zero",
+            "original_quantity": quantity,
+            "notional_cap_hkd": PILOT_MAX_ORDER_NOTIONAL_HKD,
+            "risk_cap_hkd": PILOT_MAX_ORDER_RISK_HKD,
+        }
+
+    capped = dict(plan)
+    scale = capped_quantity / quantity
+    capped["quantity"] = capped_quantity
+    capped["notional_hkd"] = notional_hkd * scale
+    capped["risk_hkd"] = risk_hkd * scale
+    capped["pilot_capped_from"] = {
+        "quantity": quantity,
+        "notional_hkd": notional_hkd,
+        "risk_hkd": risk_hkd,
+    }
+    capped["pilot_cap_reason"] = "pilot_notional_or_risk_cap"
+    return capped, {
+        "status": "CAPPED",
+        "original_quantity": quantity,
+        "capped_quantity": capped_quantity,
+        "notional_cap_hkd": PILOT_MAX_ORDER_NOTIONAL_HKD,
+        "risk_cap_hkd": PILOT_MAX_ORDER_RISK_HKD,
+    }
+
+
 def daily_submitted_order_count(state, now=None):
     now = now or datetime.now()
     count = 0
@@ -1430,14 +1492,22 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
         record_decision(state, sid, decision, state_file, mode)
         return decision
 
-    pilot_ok, pilot_gate = pilot_execution_gate(alert, plan, state, mode)
+    pilot_plan = plan
+    pilot_cap = None
+    pilot_capped_plan, pilot_cap_gate = apply_pilot_caps_to_plan(alert, plan)
+    if pilot_cap_gate:
+        pilot_cap = pilot_cap_gate
+    if pilot_capped_plan is not None:
+        pilot_plan = pilot_capped_plan
+    pilot_ok, pilot_gate = pilot_execution_gate(alert, pilot_plan, state, mode)
 
     base = {
         "signal_id": sid,
         "status": "dry_run" if mode != "execute" else "inflight",
         "mode": mode,
         "order_backend": backend,
-        "plan": plan,
+        "plan": pilot_plan,
+        "original_plan": plan,
         "warnings": context_warnings,
         "broker_context": broker_context,
         "context": {
@@ -1450,6 +1520,7 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
         "symbol_conflict": conflict_gate,
         "market_context": market_gate,
         "pilot_execution": pilot_gate,
+        "pilot_cap": pilot_cap,
         "hermes": hermes_gate,
         "alert": {
             "symbol": alert.get("symbol"),
@@ -1480,7 +1551,7 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
 
     record_processed(state, sid, base, state_file)
     try:
-        result = submit_order_to_backend(token, backend, plan)
+        result = submit_order_to_backend(token, backend, pilot_plan)
         final = dict(base)
         final.update({"status": "submitted", "order_result": result, "submitted_at": now_iso()})
         record_processed(state, sid, final, state_file)

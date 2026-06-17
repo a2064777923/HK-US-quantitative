@@ -21,6 +21,14 @@ class RtAlertBridgeTests(unittest.TestCase):
             "HERMES_REVIEW_PACKET_FILE",
             "RT_ORDER_EXECUTE_PILOT_ENABLED",
             "RT_ORDER_US_BROKER",
+            "RT_ORDER_REQUIRE_EXECUTION_READINESS",
+            "RT_ORDER_REQUIRE_STRATEGY_EVIDENCE",
+            "RT_ORDER_REQUIRE_HERMES_JUDGMENT",
+            "RT_ORDER_REQUIRE_MARKET_CONTEXT",
+            "RT_ORDER_REQUIRE_NO_SYMBOL_CONFLICT",
+            "ALPACA_API_KEY",
+            "ALPACA_SECRET_KEY",
+            "ALPACA_BASE_URL",
         }
         old = {key: os.environ.get(key) for key in keys}
         try:
@@ -185,7 +193,16 @@ class RtAlertBridgeTests(unittest.TestCase):
 
             with patch.dict(
                 os.environ,
-                {"RT_ORDER_EXECUTE_PILOT_ENABLED": "1", "RT_ORDER_US_BROKER": "alpaca-paper"},
+                {
+                    "RT_ORDER_EXECUTE_PILOT_ENABLED": "1",
+                    "RT_ORDER_US_BROKER": "alpaca-paper",
+                    "RT_ORDER_REQUIRE_EXECUTION_READINESS": "0",
+                    "RT_ORDER_REQUIRE_STRATEGY_EVIDENCE": "0",
+                    "RT_ORDER_REQUIRE_HERMES_JUDGMENT": "0",
+                    "ALPACA_API_KEY": "paper-key",
+                    "ALPACA_SECRET_KEY": "paper-secret",
+                    "ALPACA_BASE_URL": "https://paper-api.alpaca.markets/v2",
+                },
                 clear=False,
             ), patch.object(bridge, "run_cmd", return_value='{"results":[{"status":"submitted"}]}') as run_cmd, patch(
                 "builtins.print"
@@ -195,6 +212,12 @@ class RtAlertBridgeTests(unittest.TestCase):
             command = run_cmd.call_args.args[0]
             self.assertIn("RT_ORDER_EXECUTE_PILOT_ENABLED=1", command)
             self.assertIn("RT_ORDER_US_BROKER=alpaca-paper", command)
+            self.assertIn("RT_ORDER_REQUIRE_EXECUTION_READINESS=0", command)
+            self.assertIn("RT_ORDER_REQUIRE_STRATEGY_EVIDENCE=0", command)
+            self.assertIn("RT_ORDER_REQUIRE_HERMES_JUDGMENT=0", command)
+            self.assertIn("ALPACA_API_KEY=paper-key", command)
+            self.assertIn("ALPACA_SECRET_KEY=paper-secret", command)
+            self.assertIn("ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2", command)
             self.assertIn("RT_ORDER_EXECUTION_MODE=execute", command)
 
     def test_signal_notification_includes_compact_hermes_context(self):
