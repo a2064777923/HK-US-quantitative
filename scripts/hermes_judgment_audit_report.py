@@ -1418,10 +1418,32 @@ def duplicate_signal_counts(judgments):
     return {sid: count for sid, count in counts.items() if count > 1}
 
 
+def row_in_current_packet_scope(row, latest_packet_id):
+    """Only the current packet should decide current readiness.
+
+    Older packet judgments remain visible for audit/history, but they should
+    not permanently fail the live readiness gate after the packet rolls.
+    Missing packet_id stays in current scope because it cannot be traced.
+    """
+    latest_packet_id = str(latest_packet_id or "").strip()
+    packet_id = str((row or {}).get("packet_id") or "").strip()
+    if not latest_packet_id:
+        return True
+    if not packet_id:
+        return True
+    return packet_id == latest_packet_id
+
+
+def duplicate_signal_counts_from_rows(rows):
+    counts = Counter(str(row.get("signal_id", "")).strip() for row in rows if row.get("signal_id"))
+    return {sid: count for sid, count in counts.items() if count > 1}
+
+
 def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKET_ARCHIVE_DIR):
     now = now or datetime.now()
     judgments = intake.load_judgments(JUDGMENT_FILE) if judgments is None else judgments
     latest_packet = load_json_file(PACKET_FILE, {}) if packet is None else packet
+    latest_packet_id = latest_packet.get("packet_id") if isinstance(latest_packet, dict) else None
     latest_review_by_id, latest_eligible_ids = packet_review_maps(latest_packet)
     rows = []
     packet_source_counts = Counter()
@@ -1444,19 +1466,42 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
                 packet_reasons=packet_reasons,
             )
         )
+    current_rows = []
+    historical_rows = []
+    for row in rows:
+        if row_in_current_packet_scope(row, latest_packet_id):
+            row["audit_scope"] = "current_packet"
+            current_rows.append(row)
+        else:
+            row["audit_scope"] = "historical_packet"
+            historical_rows.append(row)
+
     reason_counts = Counter()
+    current_reason_counts = Counter()
     decision_counts = Counter()
     status_counts = Counter()
+    current_status_counts = Counter()
+    historical_status_counts = Counter()
     for row in rows:
         status_counts[row["status"]] += 1
         decision_counts[row["decision"] or "missing"] += 1
         for reason in row["reasons"]:
             reason_counts[reason] += 1
+    for row in current_rows:
+        current_status_counts[row["status"]] += 1
+        for reason in row["reasons"]:
+            current_reason_counts[reason] += 1
+    for row in historical_rows:
+        historical_status_counts[row["status"]] += 1
 
-    duplicates = duplicate_signal_counts(judgments)
+    duplicates = duplicate_signal_counts_from_rows(current_rows)
     for sid, count in duplicates.items():
         reason_counts["duplicate_judgments_for_signal"] += count - 1
-    status = "FAIL" if status_counts.get("FAIL") or duplicates else "OK"
+        current_reason_counts["duplicate_judgments_for_signal"] += count - 1
+    historical_duplicates = duplicate_signal_counts_from_rows(historical_rows)
+    status = "FAIL" if current_status_counts.get("FAIL") or duplicates else "OK"
+    if status == "OK" and (historical_status_counts.get("FAIL") or historical_duplicates):
+        status = "WARN"
 
     payload = {
         "schema": "hermes_judgment_audit_report_v1",
@@ -1474,10 +1519,16 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
             "review_item_count": len(latest_review_by_id),
             "eligible_review_item_count": len(latest_eligible_ids),
             "status_counts": dict(status_counts),
+            "current_status_counts": dict(current_status_counts),
+            "historical_status_counts": dict(historical_status_counts),
             "decision_counts": dict(decision_counts),
             "reason_counts": dict(reason_counts),
+            "current_reason_counts": dict(current_reason_counts),
             "duplicate_signal_ids": duplicates,
+            "historical_duplicate_signal_ids": historical_duplicates,
             "packet_source_counts": dict(packet_source_counts),
+            "current_packet_scope_count": len(current_rows),
+            "historical_packet_scope_count": len(historical_rows),
         },
         "judgments": rows[-100:],
         "recommendations": build_recommendations(rows, reason_counts),

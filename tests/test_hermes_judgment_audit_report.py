@@ -1724,6 +1724,32 @@ class HermesJudgmentAuditReportTests(unittest.TestCase):
         self.assertEqual(row["status"], "PASS")
         self.assertEqual(row["packet_source"], "packet_archive")
         self.assertEqual(row["reasons"], [])
+        self.assertEqual(row["audit_scope"], "historical_packet")
+        self.assertEqual(payload["status"], "OK")
+
+    def test_historical_packet_failures_warn_without_blocking_current_packet_scope(self):
+        latest_packet = packet(items=[review_item("current-sig")], market_regime="risk_on", outcome_ok=True)
+        latest_packet["packet_id"] = "latest-packet"
+        old = judgment(
+            "old-sig",
+            packet_id="missing-old-packet",
+            decision="approve",
+            reviewed_at="2026-06-01T10:00:00",
+        )
+
+        payload = audit.build_report(
+            [old],
+            latest_packet,
+            now=datetime(2026, 6, 18, 10, 0),
+            packet_archive_dir="/tmp/does-not-exist-for-test",
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(row["audit_scope"], "historical_packet")
+        self.assertEqual(row["status"], "FAIL")
+        self.assertEqual(payload["status"], "WARN")
+        self.assertEqual(payload["counts"]["current_status_counts"], {})
+        self.assertEqual(payload["counts"]["historical_status_counts"]["FAIL"], 1)
 
     def test_missing_packet_id_is_flagged(self):
         item = judgment("sig-1")

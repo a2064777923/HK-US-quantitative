@@ -300,6 +300,21 @@ def duplicate_review_counts(judgments):
     return {rid: count for rid, count in counts.items() if count > 1}
 
 
+def row_in_current_packet_scope(row, latest_packet_id):
+    latest_packet_id = str(latest_packet_id or "").strip()
+    packet_id = str((row or {}).get("packet_id") or "").strip()
+    if not latest_packet_id:
+        return True
+    if not packet_id:
+        return True
+    return packet_id == latest_packet_id
+
+
+def duplicate_review_counts_from_rows(rows):
+    counts = Counter(str(row.get("review_id", "")).strip() for row in rows if row.get("review_id"))
+    return {rid: count for rid, count in counts.items() if count > 1}
+
+
 def build_recommendations(rows, reason_counts):
     if not rows:
         return ["no_position_judgments_observed_yet"]
@@ -393,6 +408,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
     now = now or datetime.now()
     judgments = load_jsonl_or_json(JUDGMENT_FILE) if judgments is None else judgments
     latest_packet = load_json_file(PACKET_FILE, {}) if packet is None else packet
+    latest_packet_id = latest_packet.get("packet_id") if isinstance(latest_packet, dict) else None
     latest_review_by_id = packet_position_review_maps(latest_packet)
     rows = []
     packet_source_counts = Counter()
@@ -414,17 +430,36 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
                 packet_reasons=packet_reasons,
             )
         )
+    current_rows = []
+    historical_rows = []
+    for row in rows:
+        if row_in_current_packet_scope(row, latest_packet_id):
+            row["audit_scope"] = "current_packet"
+            current_rows.append(row)
+        else:
+            row["audit_scope"] = "historical_packet"
+            historical_rows.append(row)
 
     reason_counts = Counter()
+    current_reason_counts = Counter()
     decision_counts = Counter()
     status_counts = Counter()
+    current_status_counts = Counter()
+    historical_status_counts = Counter()
     for row in rows:
         status_counts[row["status"]] += 1
         decision_counts[row["decision"] or "missing"] += 1
         for reason in row["reasons"]:
             reason_counts[reason] += 1
+    for row in current_rows:
+        current_status_counts[row["status"]] += 1
+        for reason in row["reasons"]:
+            current_reason_counts[reason] += 1
+    for row in historical_rows:
+        historical_status_counts[row["status"]] += 1
 
-    duplicates = duplicate_review_counts(judgments)
+    duplicates = duplicate_review_counts_from_rows(current_rows)
+    historical_duplicates = duplicate_review_counts_from_rows(historical_rows)
     if duplicates:
         for row in rows:
             if row.get("review_id") in duplicates:
@@ -433,15 +468,26 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
                     set((row.get("reasons") or []) + ["duplicate_position_judgments_for_review"])
                 )
         reason_counts = Counter()
+        current_reason_counts = Counter()
         status_counts = Counter()
+        current_status_counts = Counter()
+        historical_status_counts = Counter()
         for row in rows:
             status_counts[row["status"]] += 1
             for reason in row["reasons"]:
                 reason_counts[reason] += 1
+            if row.get("audit_scope") == "current_packet":
+                current_status_counts[row["status"]] += 1
+                for reason in row["reasons"]:
+                    current_reason_counts[reason] += 1
+            else:
+                historical_status_counts[row["status"]] += 1
 
     coverage = coverage_summary(latest_review_by_id, rows)
-    status = "FAIL" if status_counts.get("FAIL") or duplicates else "OK"
+    status = "FAIL" if current_status_counts.get("FAIL") or duplicates else "OK"
     if status == "OK" and coverage.get("unjudged_high_urgency_review_count"):
+        status = "WARN"
+    if status == "OK" and (historical_status_counts.get("FAIL") or historical_duplicates):
         status = "WARN"
     recommendations = append_coverage_recommendations(build_recommendations(rows, reason_counts), coverage)
 
@@ -460,10 +506,16 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
             "judgment_count": len(judgments),
             "position_review_item_count": len(latest_review_by_id),
             "status_counts": dict(status_counts),
+            "current_status_counts": dict(current_status_counts),
+            "historical_status_counts": dict(historical_status_counts),
             "decision_counts": dict(decision_counts),
             "reason_counts": dict(reason_counts),
+            "current_reason_counts": dict(current_reason_counts),
             "duplicate_review_ids": duplicates,
+            "historical_duplicate_review_ids": historical_duplicates,
             "packet_source_counts": dict(packet_source_counts),
+            "current_packet_scope_count": len(current_rows),
+            "historical_packet_scope_count": len(historical_rows),
         },
         "coverage": coverage,
         "judgments": rows[-100:],
