@@ -3,6 +3,11 @@
 import json, subprocess, time, requests
 from datetime import datetime
 
+try:
+    from us_universe_filter import is_supported_us_equity, normalize_us_symbol
+except ImportError:  # pragma: no cover - package import path used by local tests
+    from scripts.us_universe_filter import is_supported_us_equity, normalize_us_symbol
+
 def db(sql, timeout=30):
     r = subprocess.run(
         ["docker", "exec", "quantmind-db", "psql", "-U", "quantmind", "-d", "quantmind", "-t", "-A", "-c", sql],
@@ -44,6 +49,7 @@ def insert_batch(rows):
     )
     r = db(sql, timeout=60)
     return len(rows)
+
 
 def main():
     log("=" * 60)
@@ -95,11 +101,10 @@ def main():
 
         batch = []
         for item in rows:
-            symbol = item.get("symbol", "").strip()
-            name = item.get("name", "").strip().replace("'", "''")
-            if not symbol:
+            if not is_supported_us_equity(item):
                 continue
-            symbol = symbol.replace(".", "-")
+            symbol = normalize_us_symbol(item.get("symbol", ""))
+            name = item.get("name", "").strip().replace("'", "''")
             batch.append((symbol, name, exchange, "USD"))
             if len(batch) >= 50:
                 us_inserted += insert_batch(batch)

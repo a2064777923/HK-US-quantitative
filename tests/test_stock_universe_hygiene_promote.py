@@ -215,6 +215,42 @@ class StockUniverseHygienePromoteTests(unittest.TestCase):
         self.assertEqual(payload["protected_positions"], protected)
         apply_mock.assert_not_called()
 
+    def test_apply_blocks_selected_symbol_in_watchlist(self):
+        with tempfile.TemporaryDirectory() as td:
+            report_file = Path(td) / "hygiene.json"
+            watchlist_file = Path(td) / "watchlist.json"
+            write_report(report_file)
+            watchlist_file.write_text(json.dumps({"symbols": ["hkHSI"]}), encoding="utf-8")
+            dry = promote.build_report(str(report_file), symbols=["hkHSI"])
+
+            with patch.object(promote, "fetch_open_position_symbols", return_value=([], [])), patch.object(
+                promote,
+                "apply_deactivations",
+            ) as apply_mock:
+                payload = promote.build_report(
+                    str(report_file),
+                    symbols=["hkHSI"],
+                    apply=True,
+                    confirm_proposal_hash=dry["proposal_hash"],
+                    watchlist_file=str(watchlist_file),
+                )
+
+        self.assertEqual(payload["status"], "blocked")
+        self.assertIn("selected_symbol_in_watchlist", payload["validation_reasons"])
+        self.assertEqual(payload["protected_watchlist_symbols"][0]["symbol"], "hkHSI")
+        self.assertTrue(payload["safety"]["blocks_watchlist_symbols"])
+        apply_mock.assert_not_called()
+
+    def test_collect_symbols_from_nested_watchlist_payload(self):
+        payload = {
+            "core": [{"symbol": "AAPL"}],
+            "markets": {"HK": {"symbols": ["00700", "09988"]}},
+        }
+
+        symbols = promote.collect_symbols_from_payload(payload)
+
+        self.assertEqual(symbols, {"AAPL", "00700", "09988"})
+
     def test_sql_for_deactivate_is_scoped_to_symbol_and_active_rows(self):
         sql = promote.sql_for_deactivate({"symbol": "hkHSI"})
 

@@ -11,6 +11,7 @@ from datetime import datetime
 
 REPORT_FILE = os.environ.get("UNIVERSE_HYGIENE_REPORT_FILE", "/tmp/universe_hygiene_report.json")
 BACKUP_DIR = os.environ.get("STOCK_UNIVERSE_HYGIENE_BACKUP_DIR", "/tmp/stock_universe_hygiene_backups")
+WATCHLIST_FILE = os.environ.get("RT_SIGNAL_WATCHLIST_FILE", "/root/rt_signal_watchlist.json")
 DB_CONTAINER = os.environ.get("QM_DB_CONTAINER", "quantmind-db")
 DB_USER = os.environ.get("QM_DB_USER", "quantmind")
 DB_NAME = os.environ.get("QM_DB_NAME", "quantmind")
@@ -195,6 +196,53 @@ def selected_candidates(candidates, symbols, allow_actions):
     return selected, rejected
 
 
+def collect_symbols_from_payload(payload):
+    symbols = set()
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key == "symbol" and isinstance(child, str):
+                    symbols.add(child.strip().upper())
+                elif key == "symbols" and isinstance(child, list):
+                    for item in child:
+                        if isinstance(item, str):
+                            symbols.add(item.strip().upper())
+                walk(child)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(payload)
+    return {symbol for symbol in symbols if symbol}
+
+
+def fetch_watchlist_symbols(path=WATCHLIST_FILE):
+    if not path:
+        return set(), []
+    payload = load_json_file(path, {})
+    if not payload:
+        return set(), []
+    return collect_symbols_from_payload(payload), []
+
+
+def selected_watchlist_protections(selected, watchlist_symbols):
+    watchlist_symbols = {str(symbol).upper() for symbol in watchlist_symbols or []}
+    protected = []
+    for item in selected or []:
+        symbol = str(item.get("symbol") or "").upper()
+        if symbol and symbol in watchlist_symbols:
+            protected.append(
+                {
+                    "symbol": item.get("symbol"),
+                    "market": item.get("market"),
+                    "exchange": item.get("exchange"),
+                    "recommended_action": item.get("recommended_action"),
+                }
+            )
+    return protected
+
+
 def manual_review_required_candidates(candidates, symbols, allow_actions):
     requested = {str(symbol).upper() for symbol in symbols or []}
     allow_actions = set(allow_actions or SAFE_AUTO_ACTIONS)
@@ -368,6 +416,7 @@ def build_report(
     confirm_proposal_hash="",
     allow_action=None,
     backup_dir=BACKUP_DIR,
+    watchlist_file=WATCHLIST_FILE,
 ):
     symbols = symbols or []
     report = load_json_file(report_file)
@@ -380,9 +429,14 @@ def build_report(
     review_plan = operator_review_plan(review_rows, digest)
     protected_positions = []
     protection_warnings = []
+    protected_watchlist_symbols = []
+    watchlist_symbols = set()
+    watchlist_warnings = []
     if apply and selected:
         selected_symbols = [item.get("symbol") for item in selected]
         protected_positions, protection_warnings = fetch_open_position_symbols(selected_symbols)
+        watchlist_symbols, watchlist_warnings = fetch_watchlist_symbols(watchlist_file)
+        protected_watchlist_symbols = selected_watchlist_protections(selected, watchlist_symbols)
     reasons = list(validation_reasons)
     if apply and not confirm_proposal_hash:
         reasons.append("confirm_proposal_hash_required")
@@ -396,6 +450,8 @@ def build_report(
         reasons.append("open_position_protection_unavailable")
     if protected_positions:
         reasons.append("selected_symbol_has_open_position")
+    if protected_watchlist_symbols:
+        reasons.append("selected_symbol_in_watchlist")
 
     status = "dry_run"
     apply_result = None
@@ -425,7 +481,9 @@ def build_report(
         "operator_review_required_candidates": review_rows,
         "operator_review_plan": review_plan,
         "protected_positions": protected_positions,
+        "protected_watchlist_symbols": protected_watchlist_symbols,
         "protection_warnings": protection_warnings,
+        "watchlist_warnings": watchlist_warnings,
         "validation_reasons": reasons,
         "applied": applied,
         "apply_result": apply_result,
@@ -434,6 +492,7 @@ def build_report(
             "requires_confirm_proposal_hash": True,
             "requires_explicit_symbol_selection": True,
             "blocks_open_position_symbols": True,
+            "blocks_watchlist_symbols": True,
             "backs_up_stocks_before_apply": True,
             "allowed_actions": sorted(allow_actions),
             "default_allowed_actions": sorted(SAFE_AUTO_ACTIONS),
@@ -476,7 +535,9 @@ def build_plan_from_report_payload(report, symbols=None, allow_action=None):
         "operator_review_required_candidates": review_rows,
         "operator_review_plan": operator_review_plan(review_rows, digest),
         "protected_positions": [],
+        "protected_watchlist_symbols": [],
         "protection_warnings": [],
+        "watchlist_warnings": [],
         "validation_reasons": reasons,
         "applied": False,
         "apply_result": None,
@@ -487,6 +548,7 @@ def build_plan_from_report_payload(report, symbols=None, allow_action=None):
             "requires_confirm_proposal_hash": True,
             "requires_explicit_symbol_selection": True,
             "blocks_open_position_symbols_on_apply": True,
+            "blocks_watchlist_symbols_on_apply": True,
             "backs_up_stocks_before_apply": True,
             "allowed_actions": sorted(allow_actions),
             "default_allowed_actions": sorted(SAFE_AUTO_ACTIONS),
@@ -526,6 +588,8 @@ def build_text_report(payload):
         lines.append("Checklist: " + ", ".join(review_plan.get("pre_apply_checklist") or []))
     if payload.get("rejected_symbols"):
         lines.append("Rejected: " + json.dumps(payload["rejected_symbols"], ensure_ascii=False))
+    if payload.get("protected_watchlist_symbols"):
+        lines.append("Watchlist protected: " + json.dumps(payload["protected_watchlist_symbols"], ensure_ascii=False))
     if payload.get("apply_result"):
         lines.append("apply_result=" + json.dumps(payload["apply_result"], ensure_ascii=False))
     return "\n".join(lines)
@@ -539,6 +603,7 @@ def parse_args():
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm-proposal-hash", default="")
     parser.add_argument("--backup-dir", default=BACKUP_DIR)
+    parser.add_argument("--watchlist-file", default=WATCHLIST_FILE)
     parser.add_argument("--json", action="store_true", help="emit JSON only")
     parser.add_argument("--text", action="store_true", help="emit text only")
     return parser.parse_args()
@@ -554,6 +619,7 @@ def main():
         confirm_proposal_hash=args.confirm_proposal_hash,
         allow_action=allow_actions,
         backup_dir=args.backup_dir,
+        watchlist_file=args.watchlist_file,
     )
     text = build_text_report(payload)
     if args.text:
