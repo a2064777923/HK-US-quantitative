@@ -6,7 +6,8 @@ import os
 import subprocess
 import sys
 from collections import Counter, defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 
 DB_CONTAINER = os.environ.get("QM_DB_CONTAINER", "quantmind-db")
@@ -19,6 +20,9 @@ MIN_LATEST_COVERAGE_PCT = float(os.environ.get("DATA_HEALTH_MIN_LATEST_COVERAGE_
 MIN_HISTORY_60D_COVERAGE_PCT = float(os.environ.get("DATA_HEALTH_MIN_HISTORY_60D_COVERAGE_PCT", "70"))
 SIGNAL_STALE_WARN_DAYS = int(os.environ.get("DATA_HEALTH_SIGNAL_STALE_WARN_DAYS", "1"))
 DAILY_SIGNAL_READY_TIME = os.environ.get("DATA_HEALTH_DAILY_SIGNAL_READY_TIME", "16:15")
+HK_DAILY_COMPLETE_TIME = os.environ.get("DATA_HEALTH_HK_DAILY_COMPLETE_TIME", "16:15")
+US_DAILY_COMPLETE_TIME = os.environ.get("DATA_HEALTH_US_DAILY_COMPLETE_TIME", "05:15")
+MARKET_TIMEZONE = os.environ.get("DATA_HEALTH_MARKET_TIMEZONE", "Asia/Hong_Kong")
 SIGNAL_ENGINE_COMMAND = os.environ.get("DATA_HEALTH_SIGNAL_ENGINE_COMMAND", "/usr/bin/python3 /root/signal_engine_v4.py")
 DATA_HEALTH_COMMAND = os.environ.get(
     "DATA_HEALTH_REPORT_COMMAND",
@@ -42,7 +46,26 @@ _COLUMN_CACHE = {}
 
 
 def now_iso():
-    return datetime.now().isoformat(timespec="seconds")
+    return market_now().isoformat(timespec="seconds")
+
+
+def market_tzinfo():
+    try:
+        return ZoneInfo(MARKET_TIMEZONE)
+    except Exception:
+        return timezone(timedelta(hours=8))
+
+
+def market_now():
+    return datetime.now(market_tzinfo()).replace(tzinfo=None)
+
+
+def as_market_time(value):
+    if value is None:
+        return market_now()
+    if getattr(value, "tzinfo", None) is not None:
+        return value.astimezone(market_tzinfo()).replace(tzinfo=None)
+    return value
 
 
 def save_json_atomic(path, payload):
@@ -163,8 +186,24 @@ def parse_hhmm_minutes(value):
         return 16 * 60 + 15
 
 
+def market_daily_complete_minutes(market):
+    return parse_hhmm_minutes(US_DAILY_COMPLETE_TIME if str(market).upper() == "US" else HK_DAILY_COMPLETE_TIME)
+
+
 def minutes_since_midnight(value):
     return value.hour * 60 + value.minute
+
+
+def last_completed_market_date(market, current_dt):
+    current_dt = as_market_time(current_dt)
+    current_date = current_dt.date()
+    if str(market).upper() == "US":
+        if minutes_since_midnight(current_dt) < market_daily_complete_minutes(market):
+            return (current_date - timedelta(days=2)).isoformat()
+        return (current_date - timedelta(days=1)).isoformat()
+    if minutes_since_midnight(current_dt) < market_daily_complete_minutes(market):
+        current_date -= timedelta(days=1)
+    return current_date.isoformat()
 
 
 def time_minutes_from_text(value):
@@ -401,11 +440,22 @@ def latest_ohlc_errors(row):
             errors.append(f"non_positive_{name}")
     if high is not None and low is not None and high < low:
         errors.append("high_below_low")
-    if high is not None and low is not None and close is not None and not (low <= close <= high):
-        errors.append("close_outside_high_low")
-    if high is not None and low is not None and open_price is not None and not (low <= open_price <= high):
-        errors.append("open_outside_high_low")
     return errors
+
+
+def latest_ohlc_warnings(row):
+    if not row:
+        return []
+    warnings = []
+    open_price = as_float(row.get("open"))
+    high = as_float(row.get("high"))
+    low = as_float(row.get("low"))
+    close = as_float(row.get("close"))
+    if high is not None and low is not None and close is not None and not (low <= close <= high):
+        warnings.append("close_outside_high_low")
+    if high is not None and low is not None and open_price is not None and not (low <= open_price <= high):
+        warnings.append("open_outside_high_low")
+    return warnings
 
 
 def signal_summary(signal_rows, market, latest_kline_date):
@@ -456,17 +506,25 @@ def signal_summary(signal_rows, market, latest_kline_date):
     }
 
 
-def summarize_market(market, symbols, kline_points, signal_rows):
+def summarize_market(market, symbols, kline_points, signal_rows, current_dt=None):
+    completed_date = last_completed_market_date(market, current_dt)
     symbol_summaries = []
     latest_dates = Counter()
+    newest_dates = Counter()
     data_sources = Counter()
     invalid_latest = []
+    warning_latest = []
     duplicate_symbol_day_count = 0
     duplicate_date_counts = Counter()
     duplicate_examples = []
     for symbol in symbols:
         points = kline_points.get((market, symbol), [])
-        latest = latest_point(points)
+        completed_points = [row for row in points if row.get("date") and row.get("date") <= completed_date]
+        latest = latest_point(completed_points)
+        newest = latest_point(points)
+        newest_date = latest.get("newest_daily_date") or newest.get("date") or None
+        if newest_date:
+            newest_dates[newest_date] += 1
         duplicates = duplicate_symbol_day_summary(points)
         duplicate_symbol_day_count += duplicates["duplicate_symbol_day_count"]
         duplicate_date_counts.update(duplicates["duplicate_date_counts"])
@@ -476,17 +534,22 @@ def summarize_market(market, symbols, kline_points, signal_rows):
             latest_dates[latest_date] += 1
             data_sources[str(latest.get("data_source") or "missing")] += 1
         errors = [] if not latest else latest_ohlc_errors(latest)
+        soft_warnings = [] if not latest else latest_ohlc_warnings(latest)
         if errors:
             invalid_latest.append({"symbol": symbol, "latest_date": latest_date, "errors": errors[:8]})
+        if soft_warnings:
+            warning_latest.append({"symbol": symbol, "latest_date": latest_date, "warnings": soft_warnings[:8]})
         symbol_summaries.append(
             {
                 "symbol": symbol,
                 "latest_date": latest_date,
+                "newest_daily_date": newest_date,
                 "latest_minute_date": latest.get("latest_minute_date") or None,
                 "latest_minute_data_source": latest.get("latest_minute_data_source") or None,
                 "history_rows_120d": history_rows(points),
                 "data_source": latest.get("data_source") or None,
                 "integrity_errors": errors,
+                "integrity_warnings": soft_warnings,
                 "duplicate_symbol_day_count": duplicates["duplicate_symbol_day_count"],
             }
         )
@@ -523,6 +586,8 @@ def summarize_market(market, symbols, kline_points, signal_rows):
         failures.append("invalid_latest_ohlc")
     if duplicate_symbol_day_count:
         failures.append("duplicate_daily_symbol_dates")
+    if warning_latest:
+        warnings.append("latest_ohlc_range_soft_warnings")
     latest_coverage_pct = rate(latest_count, active_count)
     history_60d_coverage_pct = rate(history_60d_count, active_count)
     if active_count and latest_coverage_pct < 50:
@@ -552,7 +617,10 @@ def summarize_market(market, symbols, kline_points, signal_rows):
         "active_symbol_count": active_count,
         "symbols_with_day_klines": symbols_with_klines,
         "latest_date": latest_date,
+        "expected_completed_date": completed_date,
+        "newest_daily_date": max(newest_dates) if newest_dates else None,
         "latest_date_distribution": dict(latest_dates),
+        "newest_daily_date_distribution": dict(newest_dates),
         "data_source_counts": dict(data_sources),
         "coverage": {
             "latest_date_count": latest_count,
@@ -566,6 +634,8 @@ def summarize_market(market, symbols, kline_points, signal_rows):
         "integrity": {
             "invalid_latest_ohlc_count": len(invalid_latest),
             "invalid_latest_ohlc_examples": invalid_latest[:20],
+            "latest_ohlc_warning_count": len(warning_latest),
+            "latest_ohlc_warning_examples": warning_latest[:20],
             "duplicate_daily_symbol_date_count": duplicate_symbol_day_count,
             "duplicate_daily_symbol_date_counts_by_date": dict(duplicate_date_counts),
             "duplicate_daily_symbol_date_examples": duplicate_examples[:20],
@@ -703,7 +773,7 @@ def feature_run_remediation(latest, status, notes, current_dt):
 
 def feature_run_summary(feature_run_rows, current_dt=None):
     rows_in = feature_run_rows or []
-    current_dt = current_dt or datetime.now()
+    current_dt = as_market_time(current_dt)
     if not rows_in:
         notes = ["missing_feature_run_rows"]
         return {
@@ -796,6 +866,7 @@ def daily_gap_remediation(markets):
 def fetch_kline_rows():
     data_source_expr = "k.data_source" if "data_source" in table_columns("klines") else "'missing'"
     minute_data_source_expr = "k.data_source" if "data_source" in table_columns("klines") else "'missing'"
+    market_timezone = sql_quote(MARKET_TIMEZONE)
     sql = """
         WITH active AS (
             SELECT CASE WHEN exchange = 'HKEX' THEN 'HK' ELSE 'US' END AS market,
@@ -830,24 +901,65 @@ def fetch_kline_rows():
             WHERE k.interval = 'day'
             ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC
         ),
-        latest AS (
-            SELECT DISTINCT ON (a.symbol)
-                   a.market, a.exchange, a.symbol,
-                   d.trade_date AS latest_date,
-                   d.open_price, d.high_price, d.low_price, d.close_price,
-                   d.volume, d.data_source,
-                   COALESCE(d.raw_symbol_day_row_count, 0) AS raw_symbol_day_row_count,
-                   COALESCE(d.duplicate_symbol_day_count, 0) AS duplicate_symbol_day_count
+        market_clock AS (
+            SELECT
+                (now() AT TIME ZONE '{market_timezone}')::date AS market_date,
+                (now() AT TIME ZONE '{market_timezone}')::time AS market_time
+        ),
+        active_expected AS (
+            SELECT a.market, a.exchange, a.symbol,
+                   CASE
+                       WHEN a.market = 'US' THEN
+                           (market_clock.market_date - CASE WHEN market_clock.market_time >= TIME '{us_complete}' THEN 1 ELSE 2 END)
+                       ELSE
+                           (market_clock.market_date - CASE WHEN market_clock.market_time >= TIME '{hk_complete}' THEN 0 ELSE 1 END)
+                       END AS expected_completed_date
             FROM active a
+            CROSS JOIN market_clock
+        ),
+        completed_bar AS (
+            SELECT DISTINCT ON (a.symbol)
+                   a.symbol,
+                   d.trade_date, d.open_price, d.high_price, d.low_price, d.close_price,
+                   d.volume, d.data_source, d.raw_symbol_day_row_count, d.duplicate_symbol_day_count
+            FROM active_expected a
+            LEFT JOIN daily_bar d
+              ON d.symbol = a.symbol
+             AND d.trade_date <= a.expected_completed_date
+            ORDER BY a.symbol, d.trade_date DESC NULLS LAST
+        ),
+        newest_bar AS (
+            SELECT DISTINCT ON (a.symbol)
+                   a.symbol,
+                   d.trade_date, d.open_price, d.high_price, d.low_price, d.close_price,
+                   d.volume, d.data_source, d.raw_symbol_day_row_count, d.duplicate_symbol_day_count
+            FROM active_expected a
             LEFT JOIN daily_bar d
               ON d.symbol = a.symbol
             ORDER BY a.symbol, d.trade_date DESC NULLS LAST
         ),
+        latest AS (
+            SELECT a.market, a.exchange, a.symbol,
+                   completed.trade_date AS latest_date,
+                   newest.trade_date AS newest_daily_date,
+                   COALESCE(completed.open_price, newest.open_price) AS open_price,
+                   COALESCE(completed.high_price, newest.high_price) AS high_price,
+                   COALESCE(completed.low_price, newest.low_price) AS low_price,
+                   COALESCE(completed.close_price, newest.close_price) AS close_price,
+                   COALESCE(completed.volume, newest.volume) AS volume,
+                   COALESCE(completed.data_source, newest.data_source) AS data_source,
+                   COALESCE(completed.raw_symbol_day_row_count, newest.raw_symbol_day_row_count, 0) AS raw_symbol_day_row_count,
+                   COALESCE(completed.duplicate_symbol_day_count, newest.duplicate_symbol_day_count, 0) AS duplicate_symbol_day_count
+            FROM active_expected a
+            LEFT JOIN completed_bar completed ON completed.symbol = a.symbol
+            LEFT JOIN newest_bar newest ON newest.symbol = a.symbol
+        ),
         history AS (
             SELECT a.symbol,
-                   count(d.*) FILTER (WHERE d.trade_date >= CURRENT_DATE - INTERVAL '120 days') AS history_rows_120d,
+                   count(d.*) FILTER (WHERE d.trade_date >= market_clock.market_date - INTERVAL '120 days') AS history_rows_120d,
                    COALESCE(sum(d.duplicate_symbol_day_count), 0) AS duplicate_symbol_day_count_120d
             FROM active a
+            CROSS JOIN market_clock
             LEFT JOIN daily_bar d
               ON d.symbol = a.symbol
             GROUP BY a.symbol
@@ -868,12 +980,19 @@ def fetch_kline_rows():
                l.volume, l.data_source, m.latest_minute_date, m.latest_minute_data_source,
                COALESCE(h.duplicate_symbol_day_count_120d, 0),
                COALESCE(l.raw_symbol_day_row_count, 0),
-               COALESCE(l.duplicate_symbol_day_count, 0)
+               COALESCE(l.duplicate_symbol_day_count, 0),
+               l.newest_daily_date
         FROM latest l
         LEFT JOIN history h ON h.symbol = l.symbol
         LEFT JOIN minute_latest m ON m.symbol = l.symbol
         ORDER BY l.market, l.symbol
-    """.format(data_source_expr=data_source_expr, minute_data_source_expr=minute_data_source_expr)
+    """.format(
+        data_source_expr=data_source_expr,
+        minute_data_source_expr=minute_data_source_expr,
+        market_timezone=market_timezone,
+        hk_complete=HK_DAILY_COMPLETE_TIME,
+        us_complete=US_DAILY_COMPLETE_TIME,
+    )
     r = psql(sql)
     if r.returncode != 0:
         return [], [f"kline_coverage_query_failed:{r.stderr.strip()}"]
@@ -899,6 +1018,7 @@ def fetch_kline_rows():
                 "duplicate_symbol_day_count": as_int(row[13]) if len(row) > 13 else 0,
                 "raw_symbol_day_row_count": as_int(row[14]) if len(row) > 14 else 0,
                 "latest_duplicate_symbol_day_count": as_int(row[15]) if len(row) > 15 else 0,
+                "newest_daily_date": row[16] if len(row) > 16 else row[4],
             }
         )
     return parsed, []
@@ -1011,7 +1131,7 @@ def build_report(stock_rows=None, kline_rows=None, signal_rows=None, feature_run
     symbols_by_market = normalize_stock_rows(stock_rows, kline_rows, signal_rows)
     kline_points = normalize_kline_points(kline_rows)
     markets = {
-        market: summarize_market(market, symbols, kline_points, signal_rows)
+        market: summarize_market(market, symbols, kline_points, signal_rows, current_dt=current_dt)
         for market, symbols in sorted(symbols_by_market.items())
     }
     feature_run = feature_run_summary(feature_run_rows, current_dt=current_dt)

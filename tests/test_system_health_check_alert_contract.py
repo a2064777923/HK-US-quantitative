@@ -141,6 +141,73 @@ class SystemHealthAlertContractTests(unittest.TestCase):
         self.assertEqual(checks[0]["status"], "WARN")
         self.assertIn("db down", checks[0]["detail"])
 
+    def test_data_health_payload_prefers_existing_report_file(self):
+        payload = {
+            "schema": "data_health_report_v1",
+            "status": "WARN",
+            "markets": {"US": {"status": "WARN"}},
+        }
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "data_health_report.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.object(health, "DATA_HEALTH_REPORT_FILE", str(path)):
+                loaded = health.data_health_payload()
+
+        self.assertEqual(loaded, payload)
+
+    def test_signal_check_from_data_health_uses_completed_market_dates(self):
+        checks = []
+        payload = {
+            "schema": "data_health_report_v1",
+            "markets": {
+                "US": {
+                    "expected_completed_date": "2026-06-16",
+                    "latest_date": "2026-06-16",
+                    "signals": {
+                        "status": "OK",
+                        "latest_signal_date": "2026-06-16",
+                        "lag_days_vs_latest_kline": 0,
+                        "notes": [],
+                    },
+                }
+            },
+            "feature_run": {
+                "latest": {"run_id": "signal_v4_20260616", "trade_date": "2026-06-16"},
+            },
+        }
+
+        used = health.signal_check_from_data_health(checks, payload)
+
+        self.assertTrue(used)
+        self.assertEqual(checks[0]["name"], "signals")
+        self.assertEqual(checks[0]["status"], "OK")
+        self.assertIn("fresh versus completed market dates", checks[0]["detail"])
+
+    def test_signal_check_from_data_health_fails_missing_signal_rows(self):
+        checks = []
+        payload = {
+            "schema": "data_health_report_v1",
+            "markets": {
+                "HK": {
+                    "expected_completed_date": "2026-06-17",
+                    "latest_date": "2026-06-17",
+                    "signals": {
+                        "status": "WARN",
+                        "latest_signal_date": None,
+                        "lag_days_vs_latest_kline": None,
+                        "notes": ["missing_signal_rows"],
+                    },
+                }
+            },
+            "feature_run": {"latest": {}},
+        }
+
+        used = health.signal_check_from_data_health(checks, payload)
+
+        self.assertTrue(used)
+        self.assertEqual(checks[0]["status"], "FAIL")
+        self.assertIn("missing markets=HK", checks[0]["detail"])
+
     def test_no_directional_alerts_warns_not_fails(self):
         checks = []
 

@@ -121,6 +121,11 @@ def add(checks, name, status, detail, data=None):
 
 
 def data_health_payload():
+    if DATA_HEALTH_REPORT_FILE and os.path.exists(DATA_HEALTH_REPORT_FILE):
+        with open(DATA_HEALTH_REPORT_FILE, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            return loaded
     try:
         import data_health_report
     except ImportError:
@@ -239,6 +244,58 @@ def signal_check(checks, latest_kline_date):
     return latest
 
 
+def signal_check_from_data_health(checks, data_health):
+    if not isinstance(data_health, dict) or data_health.get("schema") != "data_health_report_v1":
+        return False
+    markets = data_health.get("markets") if isinstance(data_health.get("markets"), dict) else {}
+    if not markets:
+        return False
+    feature_run = data_health.get("feature_run") if isinstance(data_health.get("feature_run"), dict) else {}
+    feature_latest = feature_run.get("latest") if isinstance(feature_run.get("latest"), dict) else {}
+    stale_markets = []
+    missing_markets = []
+    market_bits = []
+    for market, summary in sorted(markets.items()):
+        if not isinstance(summary, dict):
+            continue
+        signals = summary.get("signals") if isinstance(summary.get("signals"), dict) else {}
+        expected = summary.get("expected_completed_date") or summary.get("latest_date")
+        signal_date = signals.get("latest_signal_date")
+        lag = signals.get("lag_days_vs_latest_kline")
+        notes = signals.get("notes") or []
+        if "signal_rows_lag_latest_klines" in notes:
+            stale_markets.append(market)
+        if "missing_signal_rows" in notes or "missing_latest_signal_date" in notes or not signal_date:
+            missing_markets.append(market)
+        market_bits.append(f"{market}:expected={expected} signal={signal_date} lag={lag}")
+    problem_bits = []
+    if stale_markets:
+        problem_bits.append("stale markets=" + ",".join(stale_markets))
+    if missing_markets:
+        problem_bits.append("missing markets=" + ",".join(missing_markets))
+    status = "FAIL" if problem_bits else "OK"
+    detail_status = "; ".join(problem_bits) if problem_bits else "fresh versus completed market dates"
+    run_id = feature_latest.get("run_id")
+    trade_date = feature_latest.get("trade_date")
+    detail = f"{detail_status}; feature_run={run_id} trade_date={trade_date}; " + "; ".join(market_bits)
+    add(
+        checks,
+        "signals",
+        status,
+        detail,
+        {
+            "latest": trade_date,
+            "feature_run": feature_latest,
+            "markets": {
+                market: (summary.get("signals") or {})
+                for market, summary in markets.items()
+                if isinstance(summary, dict)
+            },
+        },
+    )
+    return True
+
+
 def data_health_check(checks):
     try:
         payload = data_health_payload()
@@ -289,6 +346,7 @@ def data_health_check(checks):
             "feature_run": feature_run,
         },
     )
+    return payload
 
 
 def feature_run_check(checks):
@@ -534,8 +592,9 @@ def build_payload():
     _COLUMN_CACHE.clear()
     checks = []
     latest_kline = latest_kline_check(checks)
-    signal_check(checks, latest_kline)
-    data_health_check(checks)
+    data_health = data_health_check(checks)
+    if not signal_check_from_data_health(checks, data_health):
+        signal_check(checks, latest_kline)
     feature_run_check(checks)
     positions_check(checks)
     portfolio_check(checks)

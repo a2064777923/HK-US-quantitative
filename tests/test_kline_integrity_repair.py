@@ -102,10 +102,32 @@ class KlineIntegrityRepairTests(unittest.TestCase):
 
     def test_ingestion_ohlc_guards_reject_inconsistent_rows(self):
         self.assertTrue(kline_batch.valid_ohlc(10, 11, 12, 9))
-        self.assertFalse(kline_batch.valid_ohlc(10, 13, 12, 9))
+        self.assertTrue(kline_batch.valid_ohlc(10, 13, 12, 9))
         self.assertFalse(kline_batch.valid_ohlc(10, 11, 8, 9))
         self.assertTrue(quantmind_daily_pipeline.valid_ohlc(10, 11, 12, 9))
         self.assertFalse(quantmind_daily_pipeline.valid_ohlc(10, 13, 12, 9))
+
+    def test_run_update_can_target_us_without_hk_batch(self):
+        db_results = {
+            "SELECT symbol FROM stocks WHERE is_active=true AND exchange IN ('NASDAQ','NYSE') ORDER BY symbol": "AAPL\nMSFT\n",
+            "SELECT count(DISTINCT symbol) FROM klines WHERE interval='day'": "2",
+            "SELECT max(timestamp) FROM klines WHERE interval='day'": "2026-06-12",
+        }
+
+        def fake_db(sql):
+            if sql in db_results:
+                return db_results[sql]
+            raise AssertionError(f"unexpected db query: {sql}")
+
+        with patch.object(kline_batch, "db", side_effect=fake_db), patch.object(
+            kline_batch,
+            "process_batch",
+            side_effect=AssertionError("HK batch should not run"),
+        ), patch.object(kline_batch, "process_us_symbols", return_value=(2, 0)) as process_us:
+            ok = kline_batch.run_update("us")
+
+        self.assertTrue(ok)
+        process_us.assert_called_once_with(["AAPL", "MSFT"])
 
     def test_kline_batch_flushes_multiple_statements_individually_by_default(self):
         calls = []

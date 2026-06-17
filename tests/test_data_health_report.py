@@ -203,7 +203,7 @@ class DataHealthReportTests(unittest.TestCase):
             kline_rows=rows,
             signal_rows=[signal("US", "2026-06-12", count=1)],
             feature_run_rows=[feature(expected=1, ready=1)],
-            current_dt=datetime(2026, 6, 12, 17, 0),
+            current_dt=datetime(2026, 6, 13, 6, 0),
         )
 
         us = payload["markets"]["US"]
@@ -212,6 +212,62 @@ class DataHealthReportTests(unittest.TestCase):
         self.assertEqual(us["source_quality"]["daily_latest_source_counts"], {"missing": 1})
         self.assertEqual(us["source_quality"]["daily_latest_source_coverage_pct"], 0.0)
         self.assertEqual(us["source_quality"]["sample_missing_daily_latest_source_symbols"], ["AAPL"])
+
+    def test_us_session_ignores_same_day_provisional_daily_bar_for_signal_freshness(self):
+        stocks = [stock("US", "AAPL")]
+        rows = history("US", "AAPL", "2026-06-16")
+        rows.append(
+            kline(
+                "US",
+                "AAPL",
+                "2026-06-17",
+                close=185,
+                high=186,
+                low=180,
+                open_price=181,
+                data_source="alpaca_provisional",
+            )
+        )
+
+        payload = report.build_report(
+            stock_rows=stocks,
+            kline_rows=rows,
+            signal_rows=[signal("US", "2026-06-16", count=1)],
+            feature_run_rows=[feature(expected=1, ready=1)],
+            current_dt=datetime(2026, 6, 17, 22, 0),
+        )
+
+        us = payload["markets"]["US"]
+        self.assertEqual(us["expected_completed_date"], "2026-06-16")
+        self.assertEqual(us["latest_date"], "2026-06-16")
+        self.assertEqual(us["newest_daily_date"], "2026-06-17")
+        self.assertEqual(us["signals"]["status"], "OK")
+        self.assertNotIn("signal_rows_lag_latest_klines", us["warnings"])
+
+    def test_open_close_outside_high_low_are_soft_warnings_not_failures(self):
+        stocks = [stock("US", "AAPL")]
+        rows = history("US", "AAPL", "2026-06-12")
+        rows[-1]["close"] = 110
+        rows[-1]["high"] = 105
+        rows[-1]["low"] = 95
+        rows[-1]["open"] = 94
+
+        payload = report.build_report(
+            stock_rows=stocks,
+            kline_rows=rows,
+            signal_rows=[signal("US", "2026-06-12", count=1)],
+            feature_run_rows=[feature(expected=1, ready=1)],
+            current_dt=datetime(2026, 6, 13, 6, 0),
+        )
+
+        us = payload["markets"]["US"]
+        self.assertEqual(payload["status"], "WARN")
+        self.assertNotIn("invalid_latest_ohlc", us["failures"])
+        self.assertIn("latest_ohlc_range_soft_warnings", us["warnings"])
+        self.assertEqual(us["integrity"]["invalid_latest_ohlc_count"], 0)
+        self.assertEqual(us["integrity"]["latest_ohlc_warning_count"], 1)
+        self.assertIn("close_outside_high_low", us["integrity"]["latest_ohlc_warning_examples"][0]["warnings"])
+        self.assertIn("open_outside_high_low", us["integrity"]["latest_ohlc_warning_examples"][0]["warnings"])
 
     def test_invalid_latest_ohlc_fails_report(self):
         stocks = [stock("US", "AAPL")]
@@ -224,7 +280,7 @@ class DataHealthReportTests(unittest.TestCase):
             kline_rows=rows,
             signal_rows=[signal("US", "2026-06-12", count=1)],
             feature_run_rows=[feature(expected=1, ready=1)],
-            current_dt=datetime(2026, 6, 12, 17, 0),
+            current_dt=datetime(2026, 6, 13, 6, 0),
         )
 
         us = payload["markets"]["US"]
@@ -244,7 +300,7 @@ class DataHealthReportTests(unittest.TestCase):
             kline_rows=rows,
             signal_rows=[signal("US", "2026-06-12", count=1)],
             feature_run_rows=[feature(expected=1, ready=1)],
-            current_dt=datetime(2026, 6, 12, 17, 0),
+            current_dt=datetime(2026, 6, 13, 6, 0),
         )
 
         us = payload["markets"]["US"]
@@ -269,7 +325,7 @@ class DataHealthReportTests(unittest.TestCase):
             kline_rows=rows,
             signal_rows=[signal("US", "2026-06-12", count=1)],
             feature_run_rows=[feature(status="feature_ready", ready=0, expected=1)],
-            current_dt=datetime(2026, 6, 12, 17, 0),
+            current_dt=datetime(2026, 6, 13, 6, 0),
         )
 
         self.assertEqual(payload["status"], "WARN")

@@ -3948,6 +3948,70 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertIn("data_health:HK:invalid_latest_ohlc", item["blocking_reasons"])
         self.assertEqual(payload["data_health"]["status"], "FAIL")
 
+    def test_compact_packet_preserves_bridge_and_judgment_context_without_bulk_reports(self):
+        health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
+        portfolio = {
+            "generated_at": "2026-06-12T10:01:00",
+            "portfolio_reports": [],
+            "portfolio_risk": {"status": "HIGH"},
+            "position_review": {
+                "items": [
+                    {
+                        "review_id": "simulation:8:AAPL:2026-06-12:risk_review",
+                        "portfolio_id": 8,
+                        "role": "simulation",
+                        "symbol": "AAPL",
+                        "urgency": "high",
+                        "recommended_action": "reduce",
+                    }
+                ]
+            },
+        }
+        bulky_strategy_learning = {
+            "schema": "strategy_learning_report_v1",
+            "source": {"submits_orders": False},
+            "overall": {"resolved_count": 1},
+            "huge_rows": [{"i": idx, "payload": "x" * 1000} for idx in range(200)],
+        }
+        bulky_replay = {
+            "schema": "v5_local_replay_report_v1",
+            "summary": {"overall_status": "V5_REPLAY_RESEARCH_ONLY", "promotion_ready": False},
+            "alerts": [{"signal_id": f"sig-{idx}", "payload": "x" * 1000} for idx in range(200)],
+        }
+
+        full = packet.build_packet(
+            [alert()],
+            health_payload=health,
+            portfolio_payload=portfolio,
+            intake_results=[intake_result()],
+            execution_readiness_payload=ready_execution_readiness(),
+            strategy_learning_payload=bulky_strategy_learning,
+            v5_local_replay_payload=bulky_replay,
+            market_context_payload={"schema": "market_context_report_v1", "markets": {"HK": {"regime": "mixed"}}},
+            data_health_payload={"schema": "data_health_report_v1", "status": "OK", "markets": {}},
+            event_catalyst_payload={"schema": "event_catalyst_report_v1", "status": "OK", "candidates": []},
+            event_catalyst_signal_payload={"schema": "event_catalyst_signal_report_v1", "status": "OK", "signals": []},
+            market_sentiment_payload={"schema": "market_sentiment_report_v1", "status": "OK", "indicators": []},
+            fundamentals_context_payload={"schema": "fundamentals_context_report_v1", "status": "OK", "items": []},
+            source_reliability_payload={"schema": "source_reliability_report_v1", "status": "OK", "components": []},
+        )
+
+        compact = packet.compact_packet(full)
+
+        self.assertEqual(compact["schema"], "hermes_signal_review_packet_v1")
+        self.assertEqual(compact["packet_context_mode"], "compact")
+        self.assertTrue(compact["compact_context_contract"]["lossless_for_bridge"])
+        self.assertEqual(compact["review_items"][0]["signal_id"], "sig-packet")
+        self.assertEqual(compact["position_review"]["items"][0]["review_id"], "simulation:8:AAPL:2026-06-12:risk_review")
+        self.assertEqual(compact["market_context"]["markets"]["HK"]["regime"], "mixed")
+        self.assertNotIn("portfolio_context", compact)
+        self.assertNotIn("strategy_learning", compact)
+        self.assertNotIn("v5_local_replay", compact)
+        self.assertIn("portfolio_context", compact["omitted_top_level_context"])
+        self.assertIn("strategy_learning", compact["omitted_top_level_context"])
+        self.assertIn("v5_local_replay", compact["omitted_top_level_context"])
+        self.assertEqual(compact["strategy_learning_brief"]["schema"], "hermes_strategy_learning_brief_v1")
+
     def test_kline_daily_gap_repair_is_visible_but_does_not_relax_eligibility(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
         portfolio = {"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []}

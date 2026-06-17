@@ -88,14 +88,13 @@ def round_price(value):
 
 
 def kline_errors(row):
-    return data_health.latest_ohlc_errors(
-        {
-            "open": row.get("open"),
-            "high": row.get("high"),
-            "low": row.get("low"),
-            "close": row.get("close"),
-        }
-    )
+    payload = {
+        "open": row.get("open"),
+        "high": row.get("high"),
+        "low": row.get("low"),
+        "close": row.get("close"),
+    }
+    return data_health.latest_ohlc_errors(payload) + data_health.latest_ohlc_warnings(payload)
 
 
 def today_iso():

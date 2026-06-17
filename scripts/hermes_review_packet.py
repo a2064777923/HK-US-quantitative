@@ -291,6 +291,148 @@ def archive_packet(packet, archive_dir=PACKET_ARCHIVE_DIR):
     return path
 
 
+def compact_sequence(values, limit=12):
+    if not isinstance(values, list):
+        return values
+    return values[: max(int(limit), 0)]
+
+
+def compact_mapping(payload, keep_keys=None, list_limit=12, nested_list_limit=6):
+    if not isinstance(payload, dict):
+        return payload
+    keys = keep_keys or payload.keys()
+    compact = {}
+    for key in keys:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if isinstance(value, list):
+            compact[key] = compact_sequence(value, list_limit)
+        elif isinstance(value, dict):
+            nested = {}
+            for child_key, child_value in value.items():
+                nested[child_key] = compact_sequence(child_value, nested_list_limit) if isinstance(child_value, list) else child_value
+            compact[key] = nested
+        else:
+            compact[key] = value
+    return compact
+
+
+def compact_context_payload(payload, keep_keys=None, list_limit=12):
+    if not isinstance(payload, dict):
+        return payload
+    default_keys = (
+        "schema",
+        "generated_at",
+        "status",
+        "source",
+        "summary",
+        "markets",
+        "market_context",
+        "signals",
+        "candidates",
+        "indicators",
+        "items",
+        "components",
+        "reason_codes",
+        "recommendations",
+        "checks",
+        "coverage",
+        "performance",
+        "portfolio",
+        "simulation",
+        "contract",
+        "apply_contract",
+        "read_only",
+        "submits_orders",
+        "changes_strategy",
+        "changes_portfolio",
+        "changes_crontab",
+    )
+    compact = compact_mapping(payload, keep_keys=keep_keys or default_keys, list_limit=list_limit, nested_list_limit=6)
+    if isinstance(compact.get("markets"), dict):
+        compact["markets"] = compact_mapping(compact["markets"], list_limit=6, nested_list_limit=4)
+    return compact
+
+
+def compact_packet(packet):
+    if not isinstance(packet, dict):
+        return packet
+    keep_keys = (
+        "schema",
+        "packet_id",
+        "generated_at",
+        "execution_safety",
+        "health",
+        "portfolio_risk",
+        "position_review",
+        "market_context",
+        "data_health",
+        "strategy_learning_brief",
+        "simulation_trade_review_brief",
+        "execution_readiness",
+        "simulation_performance",
+        "external_market_context",
+        "event_catalysts",
+        "event_catalyst_signals",
+        "market_sentiment",
+        "fundamentals_context",
+        "trusted_source_preflight",
+        "cron_audit",
+        "source_reliability",
+        "operator_action_queue",
+        "judgment_audit",
+        "position_judgment_audit",
+        "alert_selection",
+        "review_items",
+        "review_item_suppression",
+        "non_actionable_observations",
+        "non_actionable_observation_count",
+        "judgment_contract",
+        "position_judgment_contract",
+        "operator_notes",
+    )
+    compact = {key: copy.deepcopy(packet.get(key)) for key in keep_keys if key in packet}
+    for key in (
+        "market_context",
+        "data_health",
+        "execution_readiness",
+        "simulation_performance",
+        "external_market_context",
+        "event_catalysts",
+        "event_catalyst_signals",
+        "market_sentiment",
+        "fundamentals_context",
+        "trusted_source_preflight",
+        "cron_audit",
+        "source_reliability",
+        "operator_action_queue",
+        "judgment_audit",
+        "position_judgment_audit",
+    ):
+        if key in compact:
+            compact[key] = compact_context_payload(compact[key])
+    if isinstance(compact.get("non_actionable_observations"), list):
+        compact["non_actionable_observations"] = compact["non_actionable_observations"][:20]
+    omitted = [
+        key
+        for key in packet.keys()
+        if key not in keep_keys and key not in ("packet_context_mode", "omitted_top_level_context")
+    ]
+    compact["packet_context_mode"] = "compact"
+    compact["omitted_top_level_context"] = sorted(omitted)
+    compact["full_context_available_via"] = "hermes_review_packet.py --full-context --output <path>"
+    compact["compact_context_contract"] = {
+        "schema": "hermes_compact_packet_context_v1",
+        "lossless_for_bridge": True,
+        "preserves_review_items": True,
+        "preserves_position_review_items": True,
+        "preserves_judgment_contracts": True,
+        "omits_bulk_reports_only": True,
+    }
+    return compact
+
+
 def load_json_file(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -4104,6 +4246,11 @@ def parse_args():
     parser.add_argument("--no-archive", action="store_true", help="do not write packet snapshot archive")
     parser.add_argument("--stdout", action="store_true", help="print packet JSON to stdout")
     parser.add_argument(
+        "--full-context",
+        action="store_true",
+        help="write the full packet including bulky source reports; default writes compact bridge-safe context",
+    )
+    parser.add_argument(
         "--ephemeral-state",
         action="store_true",
         help="do not persist dry-run decisions to the intake dry_runs ledger",
@@ -4192,12 +4339,13 @@ def main():
         position_judgment_file=args.position_judgment_file,
         position_judgment_audit_payload=load_json_file(args.position_judgment_audit_file),
     )
+    output_packet = packet if args.full_context or os.environ.get("HERMES_PACKET_FULL_CONTEXT") == "1" else compact_packet(packet)
     if args.output:
-        save_json_atomic(args.output, packet)
+        save_json_atomic(args.output, output_packet)
     if not args.no_archive:
-        archive_packet(packet, args.archive_dir)
+        archive_packet(output_packet, args.archive_dir)
     if args.stdout or not args.output:
-        print(json.dumps(packet, ensure_ascii=False, indent=2))
+        print(json.dumps(output_packet, ensure_ascii=False, indent=2))
     return 0
 
 

@@ -13,6 +13,8 @@ FEATURE_VERSION = "v4_full"
 MODEL_NAME = "technical_signal_engine"
 DAILY_SIGNAL_READY_TIME = os.environ.get("SIGNAL_V4_DAILY_SIGNAL_READY_TIME", "16:15")
 ALLOW_INTRADAY_DAILY_SIGNAL = os.environ.get("SIGNAL_V4_ALLOW_INTRADAY_DAILY", "0") == "1"
+HK_DAILY_COMPLETE_TIME = os.environ.get("SIGNAL_V4_HK_DAILY_COMPLETE_TIME", "16:15")
+US_DAILY_COMPLETE_TIME = os.environ.get("SIGNAL_V4_US_DAILY_COMPLETE_TIME", "05:15")
 DB_ERRORS = []
 _COLUMN_CACHE = {}
 
@@ -79,6 +81,31 @@ def daily_signal_write_block(trade_date, now=None):
         return True, f"current_session_before_daily_signal_ready_time_{DAILY_SIGNAL_READY_TIME}"
     return False, ""
 
+def normalize_market(market):
+    market = str(market or "all").lower()
+    if market not in ("all", "hk", "us"):
+        raise ValueError(f"unsupported market: {market}")
+    return market
+
+def market_exchanges(market):
+    market = normalize_market(market)
+    if market == "hk":
+        return ("HKEX",)
+    if market == "us":
+        return ("NASDAQ", "NYSE")
+    return ("HKEX", "NASDAQ", "NYSE")
+
+def exchange_filter_sql(market, alias="s"):
+    exchanges = ", ".join(f"'{sql_quote(value)}'" for value in market_exchanges(market))
+    return f"{alias}.exchange IN ({exchanges})"
+
+def last_completed_us_date_sql():
+    return (
+        "(now() AT TIME ZONE 'Asia/Hong_Kong')::date "
+        f"- CASE WHEN (now() AT TIME ZONE 'Asia/Hong_Kong')::time >= TIME '{sql_quote(US_DAILY_COMPLETE_TIME)}' "
+        "THEN 1 ELSE 2 END"
+    )
+
 def table_columns(table):
     if table in _COLUMN_CACHE:
         return _COLUMN_CACHE[table]
@@ -98,19 +125,25 @@ def first_existing(table, candidates):
             return candidate
     return None
 
-def latest_kline_date():
-    raw = db("""
-        SELECT max(k.timestamp::date)
+def latest_kline_date(market="all"):
+    market = normalize_market(market)
+    if market == "us":
+        max_date_expr = f"LEAST(max(k.timestamp::date), {last_completed_us_date_sql()})"
+    else:
+        max_date_expr = "max(k.timestamp::date)"
+    raw = db(f"""
+        SELECT {max_date_expr}
         FROM klines k
         JOIN stocks s ON k.symbol = s.symbol
         WHERE k.interval = 'day'
           AND s.is_active = true
-          AND s.exchange IN ('HKEX','NASDAQ','NYSE')
+          AND {exchange_filter_sql(market, 's')}
     """)
     return raw.strip() if raw else ""
 
-def run_id_for(trade_date):
-    return f"signal_v4_{trade_date.replace('-', '')}"
+def run_id_for(trade_date, market="all"):
+    suffix = "" if normalize_market(market) == "all" else f"_{normalize_market(market)}"
+    return f"signal_v4_{trade_date.replace('-', '')}{suffix}"
 
 def feature_run_count_columns():
     return {
@@ -119,11 +152,12 @@ def feature_run_count_columns():
         "missing": first_existing("engine_feature_runs", ("missing_count", "missing_symbols")),
     }
 
-def ensure_feature_run(run_id, trade_date, expected_count):
+def ensure_feature_run(run_id, trade_date, expected_count, market="all"):
     quality = {
         "engine": "signal_engine_v4",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "trade_date_source": "max_active_hk_us_kline_date",
+        "market": normalize_market(market),
+        "trade_date_source": "market_completed_kline_date",
     }
     count_cols = feature_run_count_columns()
     expected_col = count_cols["expected"]
@@ -219,17 +253,22 @@ def upsert_signal_score(result, trade_date, run_id, quality):
             expected_price = EXCLUDED.expected_price
     """)
 
-def candidate_stocks_for_date(trade_date):
+def candidate_stocks_for_date(trade_date, market="all"):
+    latest_for_symbol_expr = (
+        f"max(k.timestamp::date) FILTER (WHERE k.timestamp::date <= '{sql_quote(trade_date)}'::date)"
+        if normalize_market(market) == "us"
+        else "max(k.timestamp::date)"
+    )
     return db(f"""
         SELECT k.symbol, s.exchange
         FROM klines k
         JOIN stocks s ON k.symbol = s.symbol
         WHERE k.interval = 'day'
           AND s.is_active = true
-          AND s.exchange IN ('HKEX','NASDAQ','NYSE')
+          AND {exchange_filter_sql(market, 's')}
         GROUP BY k.symbol, s.exchange
         HAVING count(*) >= 30
-           AND max(k.timestamp::date) = '{sql_quote(trade_date)}'::date
+           AND {latest_for_symbol_expr} = '{sql_quote(trade_date)}'::date
         ORDER BY k.symbol
     """)
 
@@ -243,12 +282,13 @@ def parse_stock_rows(raw):
             stocks.append({"symbol": parts[0], "exchange": parts[1]})
     return stocks
 
-def build_preflight_payload():
+def build_preflight_payload(market="all"):
     DB_ERRORS.clear()
     _COLUMN_CACHE.clear()
-    trade_date = latest_kline_date()
-    run_id = run_id_for(trade_date) if trade_date else ""
-    raw_stocks = candidate_stocks_for_date(trade_date) if trade_date else ""
+    market = normalize_market(market)
+    trade_date = latest_kline_date(market)
+    run_id = run_id_for(trade_date, market) if trade_date else ""
+    raw_stocks = candidate_stocks_for_date(trade_date, market) if trade_date else ""
     stocks = parse_stock_rows(raw_stocks)
     write_blocked, block_reason = daily_signal_write_block(trade_date) if trade_date else (False, "")
     count_cols = feature_run_count_columns()
@@ -261,6 +301,7 @@ def build_preflight_payload():
         "status": status,
         "trade_date": trade_date,
         "run_id": run_id,
+        "market": market,
         "candidate_count": len(stocks),
         "write_blocked": write_blocked,
         "block_reason": block_reason,
@@ -617,7 +658,7 @@ def score_technical(closes, highs, lows, volumes):
 # ═══════════════════════════════════════════
 # 主分析流程
 # ═══════════════════════════════════════════
-def analyze_stock(symbol, exchange):
+def analyze_stock(symbol, exchange, trade_date=None):
     """全面分析一隻股票，返回完整報告"""
     
     # 獲取K線
@@ -628,6 +669,7 @@ def analyze_stock(symbol, exchange):
                    open_price, high_price, low_price, close_price, volume
             FROM klines
             WHERE symbol='{sql_quote(symbol)}' AND interval='day'
+              {f"AND timestamp::date <= '{sql_quote(trade_date)}'::date" if trade_date else ""}
             ORDER BY timestamp::date, timestamp DESC
         )
         SELECT open_price, high_price, low_price, close_price, volume
@@ -718,16 +760,17 @@ def analyze_stock(symbol, exchange):
         'risk_flags': risk_flags,
     }
 
-def run():
+def run(market="all"):
     DB_ERRORS.clear()
+    market = normalize_market(market)
     log("=" * 60)
-    log("信號引擎 v4 — 全面多維度分析")
+    log(f"信號引擎 v4 — 全面多維度分析 market={market}")
 
-    trade_date = latest_kline_date()
+    trade_date = latest_kline_date(market)
     if not trade_date:
         log("❌ 無法取得最新K線日期")
         return False
-    run_id = run_id_for(trade_date)
+    run_id = run_id_for(trade_date, market)
     log(f"trade_date={trade_date} run_id={run_id}")
     write_blocked, block_reason = daily_signal_write_block(trade_date)
     if write_blocked:
@@ -735,7 +778,7 @@ def run():
         log("   K線更新可以繼續；signal_v4 daily run 需等收市後完整日K。")
         return True
 
-    stocks = candidate_stocks_for_date(trade_date)
+    stocks = candidate_stocks_for_date(trade_date, market)
     
     if not stocks:
         log(f"❌ {trade_date} 無足夠K線數據")
@@ -743,7 +786,7 @@ def run():
     
     total = len([l for l in stocks.split('\n') if l.strip()])
     log(f"分析 {total} 隻股票...")
-    ensure_feature_run(run_id, trade_date, total)
+    ensure_feature_run(run_id, trade_date, total, market=market)
     if DB_ERRORS:
         log("❌ 建立feature run失敗，停止寫入信號")
         return False
@@ -757,7 +800,7 @@ def run():
         if len(parts) < 2: continue
         symbol, exchange = parts[0], parts[1]
         
-        result = analyze_stock(symbol, exchange)
+        result = analyze_stock(symbol, exchange, trade_date=trade_date)
         if result is None: continue
         results[result['side']].append(result)
         
@@ -772,6 +815,7 @@ def run():
             'risk_flags': result['risk_flags'],
             'price': result['price'],
             'exchange': result['exchange'],
+            'market': market,
             'trade_date': trade_date,
             'run_id': run_id,
         }
@@ -816,12 +860,13 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--preflight", action="store_true", help="validate DB/schema/date inputs without writing")
     parser.add_argument("--json", action="store_true", help="emit JSON for --preflight")
+    parser.add_argument("--market", choices=("all", "hk", "us"), default=os.environ.get("SIGNAL_V4_MARKET", "all"))
     return parser.parse_args()
 
 def main():
     args = parse_args()
     if args.preflight:
-        payload = build_preflight_payload()
+        payload = build_preflight_payload(args.market)
         if args.json:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
@@ -838,7 +883,7 @@ def main():
             if payload["db_errors"]:
                 print("db_errors=" + "; ".join(payload["db_errors"]))
         return 0 if payload["status"] == "OK" else 2
-    return 0 if run() else 1
+    return 0 if run(args.market) else 1
 
 if __name__ == '__main__':
     sys.exit(main())

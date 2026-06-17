@@ -113,13 +113,12 @@ class SignalEngineV4SchemaTests(unittest.TestCase):
                 return feature_columns
             if "information_schema.columns" in sql and "engine_signal_scores" in sql:
                 return signal_columns
-            if "SELECT max(daily_bar.trade_date)" in sql:
-                self.assertIn("SELECT DISTINCT ON (k.symbol, k.timestamp::date)", sql)
-                self.assertIn("ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC", normalized)
+            if "SELECT max(k.timestamp::date)" in sql:
+                self.assertIn("s.exchange IN ('HKEX', 'NASDAQ', 'NYSE')", sql)
                 return "2026-06-12"
-            if "SELECT d.symbol, s.exchange" in sql:
-                self.assertIn("WITH daily_bar AS", sql)
-                self.assertIn("HAVING count(*) >= 30 AND max(d.trade_date)", normalized)
+            if "SELECT k.symbol, s.exchange" in sql:
+                self.assertIn("s.exchange IN ('HKEX', 'NASDAQ', 'NYSE')", sql)
+                self.assertIn("HAVING count(*) >= 30 AND max(k.timestamp::date)", normalized)
                 return "00700|HKEX\nAAPL|NASDAQ"
             raise AssertionError(f"unexpected SQL: {sql}")
 
@@ -132,11 +131,44 @@ class SignalEngineV4SchemaTests(unittest.TestCase):
         self.assertEqual(payload["status"], "OK")
         self.assertEqual(payload["trade_date"], "2026-06-12")
         self.assertEqual(payload["run_id"], "signal_v4_20260612")
+        self.assertEqual(payload["market"], "all")
         self.assertEqual(payload["candidate_count"], 2)
         self.assertFalse(payload["writes_database"])
         self.assertFalse(payload["write_blocked"])
         self.assertEqual(payload["feature_run_count_columns"]["expected"], "expected_symbols")
         self.assertTrue(payload["schema_checks"]["engine_signal_scores_has_run_id"])
+
+    def test_us_preflight_uses_completed_market_date_and_us_universe_only(self):
+        feature_columns = "\n".join(["run_id", "status", "expected_symbols", "ready_symbols", "missing_symbols"])
+        signal_columns = "\n".join(["run_id", "quality"])
+
+        def fake_db(sql, timeout=30):
+            normalized = " ".join(sql.split())
+            if "information_schema.columns" in sql and "engine_feature_runs" in sql:
+                return feature_columns
+            if "information_schema.columns" in sql and "engine_signal_scores" in sql:
+                return signal_columns
+            if "LEAST(max(k.timestamp::date)" in sql:
+                self.assertIn("s.exchange IN ('NASDAQ', 'NYSE')", sql)
+                self.assertIn("Asia/Hong_Kong", sql)
+                return "2026-06-16"
+            if "SELECT k.symbol, s.exchange" in sql:
+                self.assertIn("s.exchange IN ('NASDAQ', 'NYSE')", sql)
+                self.assertIn("FILTER (WHERE k.timestamp::date <= '2026-06-16'::date)", normalized)
+                return "AAPL|NASDAQ\nJPM|NYSE"
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        engine._COLUMN_CACHE.clear()
+        with patch.object(engine, "db", side_effect=fake_db), patch.object(
+            engine, "daily_signal_write_block", return_value=(False, "")
+        ):
+            payload = engine.build_preflight_payload("us")
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(payload["market"], "us")
+        self.assertEqual(payload["trade_date"], "2026-06-16")
+        self.assertEqual(payload["run_id"], "signal_v4_20260616_us")
+        self.assertEqual(payload["candidate_count"], 2)
 
     def test_analyze_stock_reads_canonical_daily_bars_before_limit(self):
         captured = {}
@@ -151,13 +183,14 @@ class SignalEngineV4SchemaTests(unittest.TestCase):
             )
 
         with patch.object(engine, "db", side_effect=fake_db):
-            result = engine.analyze_stock("AAPL", "NASDAQ")
+            result = engine.analyze_stock("AAPL", "NASDAQ", trade_date="2026-06-16")
 
         self.assertIsNotNone(result)
         sql = captured["sql"]
         normalized = " ".join(sql.split())
         self.assertIn("WITH daily_bar AS", sql)
         self.assertIn("SELECT DISTINCT ON (timestamp::date)", sql)
+        self.assertIn("timestamp::date <= '2026-06-16'::date", sql)
         self.assertIn("ORDER BY timestamp::date, timestamp DESC", normalized)
         self.assertIn("FROM daily_bar ORDER BY trade_date DESC LIMIT 120", normalized)
 

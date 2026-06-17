@@ -275,24 +275,31 @@ def _flush_batch(sql_buf):
             log(f"  寫入失敗 {symbol}: {str(single.stderr).strip()[-300:]}")
     return ok, fail
 
-def run_update():
+def run_update(market="all"):
+    market = str(market or "all").lower()
+    if market not in ("all", "hk", "us"):
+        raise ValueError(f"unsupported market: {market}")
     log("=" * 50)
-    log("K線批量更新")
+    log(f"K線批量更新 market={market}")
+
+    hk_fail = 0
+    us_fail = 0
     
     # 港股
-    syms = db("SELECT symbol FROM stocks WHERE is_active=true AND exchange='HKEX' ORDER BY symbol")
-    hk_list = [s.strip() for s in syms.split('\n') if s.strip()]
-    log(f"港股: {len(hk_list)} 隻")
-    hk_ok, hk_fail = process_batch(hk_list, "hk", "tencent")
-    log(f"港股完成: {hk_ok} ok, {hk_fail} fail")
+    if market in ("all", "hk"):
+        syms = db("SELECT symbol FROM stocks WHERE is_active=true AND exchange='HKEX' ORDER BY symbol")
+        hk_list = [s.strip() for s in syms.split('\n') if s.strip()]
+        log(f"港股: {len(hk_list)} 隻")
+        hk_ok, hk_fail = process_batch(hk_list, "hk", "tencent")
+        log(f"港股完成: {hk_ok} ok, {hk_fail} fail")
     
     # 美股
-    syms = db("SELECT symbol FROM stocks WHERE is_active=true AND exchange IN ('NASDAQ','NYSE') ORDER BY symbol")
-    us_list = [s.strip() for s in syms.split('\n') if s.strip()]
-    log(f"美股: {len(us_list)} 隻")
-    us_ok, us_fail = process_us_symbols(us_list)
-    
-    log(f"美股完成: {us_ok} ok, {us_fail} fail")
+    if market in ("all", "us"):
+        syms = db("SELECT symbol FROM stocks WHERE is_active=true AND exchange IN ('NASDAQ','NYSE') ORDER BY symbol")
+        us_list = [s.strip() for s in syms.split('\n') if s.strip()]
+        log(f"美股: {len(us_list)} 隻")
+        us_ok, us_fail = process_us_symbols(us_list)
+        log(f"美股完成: {us_ok} ok, {us_fail} fail")
     
     total = db("SELECT count(DISTINCT symbol) FROM klines WHERE interval='day'")
     latest = db("SELECT max(timestamp) FROM klines WHERE interval='day'")
@@ -301,6 +308,7 @@ def run_update():
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--market", choices=("all", "hk", "us"), default=os.environ.get("KLINE_BATCH_MARKET", "all"))
     parser.add_argument("--no-lock", action="store_true", help="disable single-instance lock for tests/debug")
     parser.add_argument("--lock-file", default=LOCK_FILE)
     return parser.parse_args(argv)
@@ -310,7 +318,7 @@ def main(argv=None):
     lock_enabled = not args.no_lock and os.environ.get("KLINE_BATCH_DISABLE_LOCK", "0") != "1"
     try:
         with SingleInstanceLock(args.lock_file, enabled=lock_enabled):
-            ok = run_update()
+            ok = run_update(args.market)
     except AlreadyRunning as exc:
         log(f"已有 K線批量更新在執行，跳過本輪: {exc}")
         return 0
