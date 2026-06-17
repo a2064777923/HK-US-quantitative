@@ -85,6 +85,7 @@ class RtOrderIntakeTests(unittest.TestCase):
         conflict_gate=(True, {"status": "PASS"}),
         market_gate=(True, {"status": "PASS"}),
         readiness_gate=(True, {"status": "PASS"}),
+        broker_reconciliation_gate=(True, {"status": "PASS"}),
         context_result=None,
         pilot_enabled=None,
         pilot_notional_cap=None,
@@ -106,6 +107,7 @@ class RtOrderIntakeTests(unittest.TestCase):
         patches = [
             patch.object(intake, "health_gate", return_value=(True, {"status": "OK"})),
             patch.object(intake, "execution_readiness_gate", return_value=readiness_gate),
+            patch.object(intake, "order_intake_broker_reconciliation_gate", return_value=broker_reconciliation_gate),
             patch.object(intake, "strategy_evidence_gate", return_value=strategy_gate),
             patch.object(intake, "symbol_conflict_gate", return_value=conflict_gate),
             patch.object(intake, "fetch_context_for_backend", return_value=context_result),
@@ -113,9 +115,9 @@ class RtOrderIntakeTests(unittest.TestCase):
         ]
         if submit_result is not None:
             patches.append(patch.object(intake, "submit_order", return_value=submit_result))
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
             if submit_result is not None:
-                with patches[6] as submit:
+                with patches[7] as submit:
                     result = intake.process_alert(alert, mode, state, state_file, judgment_file)
                     return result, submit
             return intake.process_alert(alert, mode, state, state_file, judgment_file), None
@@ -364,6 +366,42 @@ class RtOrderIntakeTests(unittest.TestCase):
         self.assertTrue(payload["would_block_execute"])
         self.assertIn("execution_readiness_status_warn", payload["reasons"])
         self.assertEqual(payload["warning_gates"][0]["gate"], "source_reliability")
+
+    def test_alpaca_broker_reconciliation_gate_blocks_unmatched_broker_orders(self):
+        report = {
+            "schema": "rt_order_intake_event_store_report_v1",
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "lineage_summary": {
+                "schema": "rt_order_intake_lineage_summary_v1",
+                "status": "NO_SUBMITTED_ORDERS",
+                "submitted_count": 0,
+            },
+            "broker_reconciliation": {
+                "schema": "rt_order_intake_broker_reconciliation_v1",
+                "status": "FAIL",
+                "broker": "alpaca-paper",
+                "broker_order_count": 5,
+                "matched_order_count": 0,
+                "unmatched_broker_order_count": 5,
+                "reason_codes": ["broker_orders_missing_from_intake_state"],
+            },
+        }
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "event_store.json"
+            path.write_text(json.dumps(report), encoding="utf-8")
+
+            ok, payload = intake.order_intake_broker_reconciliation_gate("alpaca-paper", "execute", str(path))
+
+        self.assertFalse(ok)
+        self.assertEqual(payload["status"], "REJECTED")
+        self.assertIn("broker_reconciliation_missing_orders", payload["reasons"])
+        self.assertEqual(payload["broker_reconciliation"]["unmatched_broker_order_count"], 5)
+
+    def test_non_alpaca_broker_reconciliation_gate_not_required(self):
+        ok, payload = intake.order_intake_broker_reconciliation_gate("quantmind-sim", "execute", "missing.json")
+
+        self.assertTrue(ok)
+        self.assertEqual(payload["status"], "NOT_REQUIRED")
 
     def test_execute_requires_market_context_gate(self):
         with tempfile.TemporaryDirectory() as td:
@@ -942,6 +980,53 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertEqual(result["order_result"]["id"], "alpaca-order")
             alpaca_submit.assert_called_once_with("AAPL", "buy", result["plan"]["quantity"], "sig-alpaca-paper")
             qm_submit.assert_not_called()
+
+    def test_alpaca_execute_rejects_when_broker_reconciliation_fails(self):
+        intake.US_ORDER_BROKER = "alpaca-paper"
+        intake.ALPACA_API_KEY_ID = "paper-key"
+        intake.ALPACA_API_SECRET_KEY = "paper-secret"
+        self.context = {
+            "cash_hkd": 1_000_000,
+            "equity_hkd": 1_000_000,
+            "positions": {},
+            "broker_context": {"backend": "alpaca-paper", "account_ok": True, "positions_ok": True},
+        }
+        alert = fresh_alert("sig-alpaca-recon-fail", "AAPL")
+        alert.update({"market": "US", "entry_price": 100, "stop_loss": 95, "take_profit": 112})
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            with patch.object(
+                intake,
+                "submit_alpaca_paper_order",
+                return_value={"id": "should-not-submit", "broker": "alpaca-paper"},
+            ) as alpaca_submit:
+                result, _submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                    broker_reconciliation_gate=(
+                        False,
+                        {
+                            "status": "REJECTED",
+                            "broker_reconciliation": {
+                                "status": "FAIL",
+                                "unmatched_broker_order_count": 5,
+                            },
+                            "reasons": ["broker_reconciliation_missing_orders"],
+                        },
+                    ),
+                )
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("broker_reconciliation_gate_failed", result["reasons"])
+        self.assertEqual(result["broker_reconciliation"]["broker_reconciliation"]["status"], "FAIL")
+        alpaca_submit.assert_not_called()
 
     def test_alpaca_paper_submit_uses_pilot_capped_quantity(self):
         intake.US_ORDER_BROKER = "alpaca-paper"

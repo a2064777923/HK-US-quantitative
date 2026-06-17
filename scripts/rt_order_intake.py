@@ -46,6 +46,10 @@ JUDGMENT_FILE = os.environ.get("RT_ORDER_JUDGMENT_FILE", "/tmp/hermes_trade_judg
 STRATEGY_EVIDENCE_FILE = os.environ.get("RT_SIGNAL_OUTCOME_REPORT_FILE", "/tmp/rt_signal_outcome_report.json")
 MARKET_CONTEXT_FILE = os.environ.get("MARKET_CONTEXT_REPORT_FILE", "/tmp/market_context_report.json")
 EXECUTION_READINESS_FILE = os.environ.get("EXECUTION_READINESS_REPORT_FILE", "/tmp/execution_readiness_report.json")
+ORDER_INTAKE_EVENT_STORE_REPORT_FILE = os.environ.get(
+    "RT_ORDER_INTAKE_EVENT_STORE_REPORT_FILE",
+    "/tmp/rt_order_intake_event_store_report.json",
+)
 
 USD_TO_HKD = float(os.environ.get("USD_TO_HKD", "7.80"))
 POSITION_SIZE_PCT = float(os.environ.get("RT_ORDER_POSITION_SIZE_PCT", "0.10"))
@@ -69,6 +73,9 @@ MIN_OUTCOME_AVG_RETURN_PCT = float(os.environ.get("RT_ORDER_MIN_OUTCOME_AVG_RETU
 MAX_OUTCOME_REPORT_AGE_HOURS = int(os.environ.get("RT_ORDER_MAX_OUTCOME_REPORT_AGE_HOURS", "72"))
 REQUIRE_EXECUTION_READINESS = os.environ.get("RT_ORDER_REQUIRE_EXECUTION_READINESS", "1") != "0"
 MAX_READINESS_REPORT_AGE_HOURS = float(os.environ.get("RT_ORDER_MAX_READINESS_REPORT_AGE_HOURS", "2"))
+MAX_BROKER_RECONCILIATION_AGE_MINUTES = float(
+    os.environ.get("RT_ORDER_MAX_BROKER_RECONCILIATION_AGE_MINUTES", "30")
+)
 REQUIRE_MARKET_CONTEXT = os.environ.get("RT_ORDER_REQUIRE_MARKET_CONTEXT", "1") != "0"
 MAX_MARKET_CONTEXT_AGE_HOURS = int(os.environ.get("RT_ORDER_MAX_MARKET_CONTEXT_AGE_HOURS", "72"))
 MIN_MARKET_EXCEPTION_CONFIDENCE = float(os.environ.get("RT_ORDER_MIN_MARKET_EXCEPTION_CONFIDENCE", "0.80"))
@@ -790,6 +797,78 @@ def execution_readiness_gate(mode, report_file=EXECUTION_READINESS_FILE):
     return not reasons, payload
 
 
+def order_intake_broker_reconciliation_gate(backend, mode, report_file=ORDER_INTAKE_EVENT_STORE_REPORT_FILE):
+    """Require Alpaca paper broker/state reconciliation before execute-mode submits."""
+    if backend != "alpaca-paper":
+        return True, {"status": "NOT_REQUIRED", "backend": backend, "report_file": report_file}
+
+    report = load_json_file(report_file, {})
+    reasons = []
+    if not isinstance(report, dict) or not report:
+        reasons.append("order_intake_event_store_missing")
+        report = {}
+    elif report.get("schema") != "rt_order_intake_event_store_report_v1":
+        reasons.append("order_intake_event_store_schema_invalid")
+
+    generated_at = parse_time(report.get("generated_at")) if report else None
+    if report and not generated_at:
+        reasons.append("order_intake_event_store_generated_at_missing")
+
+    broker_recon = report.get("broker_reconciliation") if isinstance(report.get("broker_reconciliation"), dict) else {}
+    lineage = report.get("lineage_summary") if isinstance(report.get("lineage_summary"), dict) else {}
+    broker_status = str(broker_recon.get("status") or "missing").upper()
+    broker = str(broker_recon.get("broker") or "").strip().lower()
+    if generated_at:
+        age_minutes = (datetime.now() - generated_at).total_seconds() / 60.0
+        if age_minutes > MAX_BROKER_RECONCILIATION_AGE_MINUTES:
+            reasons.append("order_intake_event_store_stale")
+
+    if broker_status == "FAIL":
+        reasons.append("broker_reconciliation_missing_orders")
+    elif broker_status == "DEGRADED":
+        reasons.append("broker_reconciliation_query_failed")
+    elif broker_status == "MISSING_CREDENTIALS":
+        reasons.append("broker_reconciliation_missing_credentials")
+    elif broker_status == "NOT_CONFIGURED":
+        reasons.append("broker_reconciliation_not_configured")
+    elif broker_status == "MISSING":
+        reasons.append("broker_reconciliation_missing")
+    elif broker_status != "OK":
+        reasons.append(f"broker_reconciliation_status_{broker_status.lower()}")
+
+    if broker not in ("alpaca-paper", "alpaca_paper"):
+        reasons.append("broker_reconciliation_broker_mismatch")
+
+    payload = {
+        "status": "PASS" if not reasons else "REJECTED",
+        "report_file": report_file,
+        "generated_at": report.get("generated_at") if report else None,
+        "broker_reconciliation": {
+            "schema": broker_recon.get("schema"),
+            "status": broker_status,
+            "broker": broker_recon.get("broker"),
+            "broker_order_count": broker_recon.get("broker_order_count"),
+            "matched_order_count": broker_recon.get("matched_order_count"),
+            "unmatched_broker_order_count": broker_recon.get("unmatched_broker_order_count"),
+            "reason_codes": broker_recon.get("reason_codes") or [],
+            "sample_state_order_ids": broker_recon.get("sample_state_order_ids") or [],
+        },
+        "lineage_summary": {
+            "status": lineage.get("status"),
+            "submitted_count": lineage.get("submitted_count"),
+            "submitted_with_order_id_count": lineage.get("submitted_with_order_id_count"),
+            "submitted_missing_order_id_count": lineage.get("submitted_missing_order_id_count"),
+        },
+        "max_age_minutes": MAX_BROKER_RECONCILIATION_AGE_MINUTES,
+        "reasons": reasons,
+    }
+    if mode != "execute":
+        payload["status"] = "DRY_RUN_ONLY"
+        payload["would_block_execute"] = bool(reasons)
+        return True, payload
+    return not reasons, payload
+
+
 def strategy_evidence_gate(alert, mode, report_file=STRATEGY_EVIDENCE_FILE):
     """Require sufficient forward outcome evidence before execute mode."""
     if not REQUIRE_STRATEGY_EVIDENCE:
@@ -1069,6 +1148,9 @@ def build_judgment_request(alert, plan, context):
             "requires_execution_readiness": REQUIRE_EXECUTION_READINESS,
             "execution_readiness_report_file": EXECUTION_READINESS_FILE,
             "max_readiness_report_age_hours": MAX_READINESS_REPORT_AGE_HOURS,
+            "requires_broker_reconciliation": True,
+            "broker_reconciliation_report_file": ORDER_INTAKE_EVENT_STORE_REPORT_FILE,
+            "max_broker_reconciliation_age_minutes": MAX_BROKER_RECONCILIATION_AGE_MINUTES,
             "requires_strategy_evidence": REQUIRE_STRATEGY_EVIDENCE,
             "strategy_evidence_horizon": STRATEGY_EVIDENCE_HORIZON,
             "min_outcome_sample": MIN_OUTCOME_SAMPLE,
@@ -1520,6 +1602,22 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
         }
         record_decision(state, sid, decision, state_file, mode)
         return decision
+    broker_reconciliation_ok, broker_reconciliation = order_intake_broker_reconciliation_gate(backend, mode)
+    if not broker_reconciliation_ok:
+        decision = {
+            "signal_id": sid,
+            "status": "rejected",
+            "reasons": ["broker_reconciliation_gate_failed"],
+            "order_backend": backend,
+            "broker_context": broker_context,
+            "broker_reconciliation": broker_reconciliation,
+            "execution_readiness": execution_readiness,
+            "strategy_evidence": strategy_gate,
+            "symbol_conflict": conflict_gate,
+            "checked_at": now_iso(),
+        }
+        record_decision(state, sid, decision, state_file, mode)
+        return decision
     plan, plan_errors = build_order_plan(alert, context)
     if plan_errors:
         decision = {
@@ -1602,6 +1700,7 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
         "original_plan": plan,
         "warnings": context_warnings,
         "broker_context": broker_context,
+        "broker_reconciliation": broker_reconciliation if "broker_reconciliation" in locals() else None,
         "context": {
             "cash_hkd": context["cash_hkd"],
             "equity_hkd": context["equity_hkd"],
