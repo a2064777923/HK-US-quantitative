@@ -5,9 +5,19 @@ K線批量更新 — 每隻股票一次SQL寫入所有K線（唔再逐條INSERT�
 import argparse, errno, subprocess, json, time, urllib.request, tempfile, os, sys
 from datetime import datetime
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover - Python versions without zoneinfo
+    ZoneInfo = None
+
 DEFAULT_FETCH_COUNT = int(os.environ.get("KLINE_BATCH_FETCH_COUNT", "120"))
 ALLOW_MULTI_SYMBOL_TRANSACTION = os.environ.get("KLINE_BATCH_ALLOW_MULTI_SYMBOL_TRANSACTION", "0") == "1"
 LOCK_FILE = os.environ.get("KLINE_BATCH_LOCK_FILE", "/tmp/kline_batch.lock")
+MIN_SUCCESS_RATE = float(os.environ.get("KLINE_BATCH_MIN_SUCCESS_RATE", "0.80"))
+MARKET_TIMEZONE = os.environ.get("KLINE_BATCH_MARKET_TIMEZONE", "Asia/Hong_Kong")
+US_DAILY_COMPLETE_TIME = os.environ.get("KLINE_BATCH_US_DAILY_COMPLETE_TIME", "05:15")
+US_INTRADAY_BLOCK_START_TIME = os.environ.get("KLINE_BATCH_US_INTRADAY_BLOCK_START_TIME", "20:30")
+ALLOW_US_INTRADAY_DAILY = os.environ.get("KLINE_BATCH_ALLOW_US_INTRADAY_DAILY", "0") == "1"
 
 
 class AlreadyRunning(RuntimeError):
@@ -119,6 +129,61 @@ def db_batch(sql_file):
 
 def log(msg):
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+def market_now(now=None):
+    if now is not None:
+        if getattr(now, "tzinfo", None) is not None:
+            return now.astimezone(market_tzinfo()).replace(tzinfo=None)
+        return now
+    return datetime.now(market_tzinfo()).replace(tzinfo=None)
+
+
+def market_tzinfo():
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo(MARKET_TIMEZONE)
+        except Exception:
+            pass
+    return None
+
+
+def parse_hhmm_minutes(value):
+    try:
+        hour, minute = str(value).split(":", 1)
+        return int(hour) * 60 + int(minute)
+    except (TypeError, ValueError):
+        return 0
+
+
+def minutes_since_midnight(value):
+    return value.hour * 60 + value.minute
+
+
+def us_daily_fetch_block(now=None):
+    """Avoid writing current-session US daily rows before the close is complete."""
+    if ALLOW_US_INTRADAY_DAILY:
+        return False, ""
+    current = market_now(now)
+    minute = minutes_since_midnight(current)
+    block_start = parse_hhmm_minutes(US_INTRADAY_BLOCK_START_TIME)
+    complete = parse_hhmm_minutes(US_DAILY_COMPLETE_TIME)
+    if minute >= block_start or minute < complete:
+        return True, (
+            "us_current_session_daily_fetch_blocked:"
+            f"safe_after={US_DAILY_COMPLETE_TIME},block_start={US_INTRADAY_BLOCK_START_TIME}"
+        )
+    return False, ""
+
+
+def market_refresh_ok(ok, fail, min_success_rate=None):
+    if min_success_rate is None:
+        min_success_rate = MIN_SUCCESS_RATE
+    total = int(ok or 0) + int(fail or 0)
+    if total <= 0:
+        return False, 0.0
+    success_rate = ok / total
+    return ok > 0 and success_rate >= min_success_rate, success_rate
 
 def fetch_kline(code, market="hk", count=DEFAULT_FETCH_COUNT):
     param = f"{market}{code},day,,,{count},qfq"
@@ -275,7 +340,7 @@ def _flush_batch(sql_buf):
             log(f"  寫入失敗 {symbol}: {str(single.stderr).strip()[-300:]}")
     return ok, fail
 
-def run_update(market="all"):
+def run_update(market="all", now=None):
     market = str(market or "all").lower()
     if market not in ("all", "hk", "us"):
         raise ValueError(f"unsupported market: {market}")
@@ -284,6 +349,7 @@ def run_update(market="all"):
 
     hk_fail = 0
     us_fail = 0
+    market_results = []
     
     # 港股
     if market in ("all", "hk"):
@@ -292,19 +358,35 @@ def run_update(market="all"):
         log(f"港股: {len(hk_list)} 隻")
         hk_ok, hk_fail = process_batch(hk_list, "hk", "tencent")
         log(f"港股完成: {hk_ok} ok, {hk_fail} fail")
+        hk_continue, hk_success_rate = market_refresh_ok(hk_ok, hk_fail)
+        market_results.append(("HK", hk_continue, hk_success_rate, hk_ok, hk_fail, ""))
     
     # 美股
     if market in ("all", "us"):
-        syms = db("SELECT symbol FROM stocks WHERE is_active=true AND exchange IN ('NASDAQ','NYSE') ORDER BY symbol")
-        us_list = [s.strip() for s in syms.split('\n') if s.strip()]
-        log(f"美股: {len(us_list)} 隻")
-        us_ok, us_fail = process_us_symbols(us_list)
-        log(f"美股完成: {us_ok} ok, {us_fail} fail")
+        blocked, block_reason = us_daily_fetch_block(now)
+        if blocked:
+            log(f"美股日線刷新跳過: {block_reason}")
+            market_results.append(("US", False, 0.0, 0, 0, block_reason))
+        else:
+            syms = db("SELECT symbol FROM stocks WHERE is_active=true AND exchange IN ('NASDAQ','NYSE') ORDER BY symbol")
+            us_list = [s.strip() for s in syms.split('\n') if s.strip()]
+            log(f"美股: {len(us_list)} 隻")
+            us_ok, us_fail = process_us_symbols(us_list)
+            log(f"美股完成: {us_ok} ok, {us_fail} fail")
+            us_continue, us_success_rate = market_refresh_ok(us_ok, us_fail)
+            market_results.append(("US", us_continue, us_success_rate, us_ok, us_fail, ""))
     
     total = db("SELECT count(DISTINCT symbol) FROM klines WHERE interval='day'")
     latest = db("SELECT max(timestamp) FROM klines WHERE interval='day'")
     log(f"=== 總計: {total} 隻, 最新: {latest} ===")
-    return (hk_fail + us_fail) == 0
+    for market_name, ok_to_continue, success_rate, ok_count, fail_count, reason in market_results:
+        status = "OK" if ok_to_continue else "FAIL"
+        reason_suffix = f" reason={reason}" if reason else ""
+        log(
+            f"{market_name}刷新門檻: {status} success_rate={success_rate:.2%} "
+            f"ok={ok_count} fail={fail_count} min={MIN_SUCCESS_RATE:.0%}{reason_suffix}"
+        )
+    return all(result[1] for result in market_results)
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()

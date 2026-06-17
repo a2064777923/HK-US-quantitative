@@ -23,6 +23,14 @@
 # Requires passing /tmp/market_context_report.json for new BUY orders unless RT_ORDER_REQUIRE_MARKET_CONTEXT=0.
 # * * * * * RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=alert-sim RT_ALERT_REQUIRE_CONFIRMED=1 RT_ORDER_EXECUTE_PILOT_ENABLED=1 RT_ORDER_PILOT_MAX_ORDER_NOTIONAL_HKD=5000 RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=500 RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=1 RT_ORDER_US_BROKER=alpaca-paper /usr/bin/python3 /root/rt_alert_bridge.py
 
+# Completed daily K-line refresh + v4 signal generation.
+# kline_batch.py exits non-zero during unsafe US current-session daily windows,
+# and tolerates small symbol-level provider failures only when market coverage
+# stays above KLINE_BATCH_MIN_SUCCESS_RATE.
+0,30 9-16 * * 1-5 /usr/bin/python3 -u /root/kline_batch.py --market hk --lock-file /tmp/kline_batch_hk.lock >> /tmp/kline_batch.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py --market hk >> /tmp/signal_v4.log 2>&1
+30 16 * * 1-5 /usr/bin/python3 -u /root/kline_batch.py --market hk --lock-file /tmp/kline_batch_hk.lock >> /tmp/kline_batch.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py --market hk >> /tmp/signal_v4.log 2>&1
+20 5 * * 2-6 /usr/bin/python3 -u /root/kline_batch.py --market us --lock-file /tmp/kline_batch_us.lock >> /tmp/kline_batch_us.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py --market us >> /tmp/signal_v4_us.log 2>&1
+
 # Optional read-only health report for Hermes/operator logs.
 */5 * * * * /usr/bin/python3 /root/system_health_check.py --output /tmp/quantmind_system_health.json >> /tmp/quantmind_health.log 2>&1
 

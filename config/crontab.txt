@@ -4,15 +4,18 @@
 # 心跳（每2分鐘）
 */2 * * * * /root/heartbeat_refresh.sh
 
-# K線更新 + 信號生成（交易時段每30分鐘）
-0,30 9-16 * * 1-5 /usr/bin/python3 -u /root/kline_batch.py >> /tmp/kline_batch.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py >> /tmp/signal_v4.log 2>&1
+# HK K線更新 + HK 信號生成（港股交易時段）
+0,30 9-16 * * 1-5 /usr/bin/python3 -u /root/kline_batch.py --market hk --lock-file /tmp/kline_batch_hk.lock >> /tmp/kline_batch.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py --market hk >> /tmp/signal_v4.log 2>&1
 
 # Legacy策略監控（交易時段每5分鐘）
 # 默認只管理已有倉位/止損止盈；新開倉需顯式設 QM_STRATEGY_ALLOW_NEW_POSITIONS=1。
 */5 9-16 * * 1-5 QM_STRATEGY_ALLOW_NEW_POSITIONS=0 /usr/bin/python3 -u /root/quantmind_strategy_runner.py >> /tmp/quantmind_strategy.log 2>&1
 
-# 收市後全量更新 + 信號重算
-30 16 * * 1-5 /usr/bin/python3 -u /root/kline_batch.py >> /tmp/kline_batch.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py >> /tmp/signal_v4.log 2>&1
+# HK 收市後 K線更新 + HK 信號重算
+30 16 * * 1-5 /usr/bin/python3 -u /root/kline_batch.py --market hk --lock-file /tmp/kline_batch_hk.lock >> /tmp/kline_batch.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py --market hk >> /tmp/signal_v4.log 2>&1
+
+# US 收市後 K線更新 + US 信號重算（HKT 05:20，避免盤中日線）
+20 5 * * 2-6 /usr/bin/python3 -u /root/kline_batch.py --market us --lock-file /tmp/kline_batch_us.lock >> /tmp/kline_batch_us.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py --market us >> /tmp/signal_v4_us.log 2>&1
 
 # 持倉價格更新（每15分鐘）
 */15 9-16 * * 1-5 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update.log 2>&1

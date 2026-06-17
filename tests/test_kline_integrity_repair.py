@@ -1,6 +1,7 @@
 import unittest
 import tempfile
 from unittest.mock import patch
+from datetime import datetime
 
 from scripts import kline_integrity_repair as repair
 from scripts import kline_batch
@@ -128,6 +129,38 @@ class KlineIntegrityRepairTests(unittest.TestCase):
 
         self.assertTrue(ok)
         process_us.assert_called_once_with(["AAPL", "MSFT"])
+
+    def test_run_update_allows_partial_symbol_failures_above_success_threshold(self):
+        db_results = {
+            "SELECT symbol FROM stocks WHERE is_active=true AND exchange IN ('NASDAQ','NYSE') ORDER BY symbol": "AAPL\nMSFT\nBAD\n",
+            "SELECT count(DISTINCT symbol) FROM klines WHERE interval='day'": "3",
+            "SELECT max(timestamp) FROM klines WHERE interval='day'": "2026-06-12",
+        }
+
+        def fake_db(sql):
+            if sql in db_results:
+                return db_results[sql]
+            raise AssertionError(f"unexpected db query: {sql}")
+
+        with patch.object(kline_batch, "db", side_effect=fake_db), patch.object(
+            kline_batch,
+            "process_us_symbols",
+            return_value=(2, 1),
+        ), patch.object(kline_batch, "MIN_SUCCESS_RATE", 0.60):
+            ok = kline_batch.run_update("us", now=datetime(2026, 6, 18, 6, 0))
+
+        self.assertTrue(ok)
+
+    def test_run_update_blocks_us_current_session_daily_refresh(self):
+        with patch.object(kline_batch, "db") as db_mock, patch.object(
+            kline_batch,
+            "process_us_symbols",
+        ) as process_us:
+            ok = kline_batch.run_update("us", now=datetime(2026, 6, 17, 21, 30))
+
+        self.assertFalse(ok)
+        process_us.assert_not_called()
+        db_mock.assert_any_call("SELECT count(DISTINCT symbol) FROM klines WHERE interval='day'")
 
     def test_kline_batch_flushes_multiple_statements_individually_by_default(self):
         calls = []
