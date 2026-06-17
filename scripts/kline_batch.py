@@ -2,8 +2,8 @@
 """
 K線批量更新 — 每隻股票一次SQL寫入所有K線（唔再逐條INSERT）
 """
-import argparse, errno, subprocess, json, time, urllib.request, tempfile, os, sys
-from datetime import datetime
+import argparse, errno, subprocess, json, time, urllib.parse, urllib.request, tempfile, os, sys
+from datetime import datetime, timedelta
 
 try:
     from zoneinfo import ZoneInfo
@@ -18,6 +18,28 @@ MARKET_TIMEZONE = os.environ.get("KLINE_BATCH_MARKET_TIMEZONE", "Asia/Hong_Kong"
 US_DAILY_COMPLETE_TIME = os.environ.get("KLINE_BATCH_US_DAILY_COMPLETE_TIME", "05:15")
 US_INTRADAY_BLOCK_START_TIME = os.environ.get("KLINE_BATCH_US_INTRADAY_BLOCK_START_TIME", "20:30")
 ALLOW_US_INTRADAY_DAILY = os.environ.get("KLINE_BATCH_ALLOW_US_INTRADAY_DAILY", "0") == "1"
+US_PROVIDER = os.environ.get("KLINE_BATCH_US_PROVIDER", "auto").strip().lower()
+ALPACA_DATA_BASE_URL = os.environ.get("ALPACA_DATA_BASE_URL", "https://data.alpaca.markets").rstrip("/")
+ALPACA_DATA_FEED = os.environ.get("ALPACA_DATA_FEED", "iex")
+ALPACA_DATA_ADJUSTMENT = os.environ.get("ALPACA_DATA_ADJUSTMENT", "all")
+ALPACA_BATCH_SIZE = int(os.environ.get("KLINE_BATCH_ALPACA_BATCH_SIZE", "80"))
+ALPACA_PAGE_LIMIT = int(os.environ.get("KLINE_BATCH_ALPACA_PAGE_LIMIT", "10000"))
+ALPACA_MAX_PAGES = int(os.environ.get("KLINE_BATCH_ALPACA_MAX_PAGES", "120"))
+ALPACA_SLEEP_SECONDS = float(os.environ.get("KLINE_BATCH_ALPACA_SLEEP_SECONDS", "0.2"))
+ALPACA_LOOKBACK_CALENDAR_DAYS = int(
+    os.environ.get("KLINE_BATCH_ALPACA_LOOKBACK_CALENDAR_DAYS", str(max(DEFAULT_FETCH_COUNT * 3, 240)))
+)
+ALPACA_API_KEY_ID = (
+    os.environ.get("APCA_API_KEY_ID")
+    or os.environ.get("ALPACA_API_KEY_ID")
+    or os.environ.get("ALPACA_API_KEY")
+    or os.environ.get("ALPACA_KEY_ID", "")
+)
+ALPACA_API_SECRET_KEY = (
+    os.environ.get("APCA_API_SECRET_KEY")
+    or os.environ.get("ALPACA_API_SECRET_KEY")
+    or os.environ.get("ALPACA_SECRET_KEY", "")
+)
 
 
 class AlreadyRunning(RuntimeError):
@@ -185,6 +207,111 @@ def market_refresh_ok(ok, fail, min_success_rate=None):
     success_rate = ok / total
     return ok > 0 and success_rate >= min_success_rate, success_rate
 
+
+def alpaca_auth_available():
+    return bool(ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY)
+
+
+def alpaca_headers():
+    return {
+        "APCA-API-KEY-ID": ALPACA_API_KEY_ID,
+        "APCA-API-SECRET-KEY": ALPACA_API_SECRET_KEY,
+    }
+
+
+def alpaca_bars_url():
+    path = "/stocks/bars" if ALPACA_DATA_BASE_URL.endswith("/v2") else "/v2/stocks/bars"
+    return ALPACA_DATA_BASE_URL + path
+
+
+def last_completed_us_date(now=None):
+    current = market_now(now)
+    complete = parse_hhmm_minutes(US_DAILY_COMPLETE_TIME)
+    offset_days = 1 if minutes_since_midnight(current) >= complete else 2
+    return (current.date() - timedelta(days=offset_days)).isoformat()
+
+
+def alpaca_date_window(count=DEFAULT_FETCH_COUNT, now=None):
+    end_date = last_completed_us_date(now)
+    lookback_days = max(int(count) * 3, ALPACA_LOOKBACK_CALENDAR_DAYS)
+    start_date = (datetime.strptime(end_date, "%Y-%m-%d").date() - timedelta(days=lookback_days)).isoformat()
+    return start_date, end_date
+
+
+def alpaca_provider_symbol(symbol):
+    value = str(symbol or "").strip().upper()
+    if not value or "^" in value:
+        return None
+    value = value.replace("/", ".")
+    if not value[0].isalpha():
+        return None
+    if not all(ch.isalnum() or ch == "." for ch in value):
+        return None
+    return value[:12]
+
+
+def alpaca_bar_to_kline(item):
+    try:
+        timestamp = str(item.get("t") or "")
+        open_price = float(item.get("o"))
+        high_price = float(item.get("h"))
+        low_price = float(item.get("l"))
+        close_price = float(item.get("c"))
+        volume = float(item.get("v") or 0)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if not timestamp or not valid_ohlc(open_price, close_price, high_price, low_price):
+        return None
+    return [timestamp[:10], open_price, close_price, high_price, low_price, volume]
+
+
+def fetch_alpaca_us_daily_rows(symbols, count=DEFAULT_FETCH_COUNT, now=None):
+    provider_to_symbol = {}
+    for symbol in symbols:
+        provider_symbol = alpaca_provider_symbol(symbol)
+        if provider_symbol:
+            provider_to_symbol[provider_symbol] = str(symbol).strip().upper()
+    if not provider_to_symbol:
+        return {}
+
+    start_date, end_date = alpaca_date_window(count=count, now=now)
+    params = {
+        "symbols": ",".join(provider_to_symbol.keys()),
+        "timeframe": "1Day",
+        "start": start_date,
+        "end": end_date,
+        "limit": str(ALPACA_PAGE_LIMIT),
+        "adjustment": ALPACA_DATA_ADJUSTMENT,
+        "feed": ALPACA_DATA_FEED,
+        "sort": "asc",
+    }
+    rows_by_symbol = {}
+    page_token = None
+    pages = 0
+    while True:
+        request_params = dict(params)
+        if page_token:
+            request_params["page_token"] = page_token
+        url = alpaca_bars_url() + "?" + urllib.parse.urlencode(request_params)
+        req = urllib.request.Request(url, headers=alpaca_headers())
+        with urllib.request.urlopen(req, timeout=60) as response:
+            payload = json.loads(response.read().decode())
+        for provider_symbol, bars in (payload.get("bars") or {}).items():
+            symbol = provider_to_symbol.get(str(provider_symbol).upper())
+            if not symbol:
+                continue
+            parsed = [row for row in (alpaca_bar_to_kline(item) for item in bars or []) if row]
+            if parsed:
+                rows_by_symbol.setdefault(symbol, []).extend(parsed)
+        page_token = payload.get("next_page_token")
+        pages += 1
+        if not page_token:
+            break
+        if pages >= ALPACA_MAX_PAGES:
+            raise RuntimeError("alpaca_pagination_limit_exceeded")
+        time.sleep(ALPACA_SLEEP_SECONDS)
+    return {symbol: rows[-int(count) :] for symbol, rows in rows_by_symbol.items() if rows}
+
 def fetch_kline(code, market="hk", count=DEFAULT_FETCH_COUNT):
     param = f"{market}{code},day,,,{count},qfq"
     url = f"https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param={param}"
@@ -275,6 +402,42 @@ def process_batch(symbols, market, source):
     return ok, fail
 
 def process_us_symbols(symbols):
+    if US_PROVIDER in ("auto", "alpaca", "alpaca-paper", "alpaca_market_data") and alpaca_auth_available():
+        return process_us_symbols_alpaca(symbols)
+    if US_PROVIDER in ("alpaca", "alpaca-paper", "alpaca_market_data") and not alpaca_auth_available():
+        log("  Alpaca US日線未配置憑證，回退 Tencent US")
+    return process_us_symbols_tencent(symbols)
+
+
+def process_us_symbols_alpaca(symbols):
+    ok, fail = 0, 0
+    symbols = [str(sym).strip().upper() for sym in symbols if str(sym).strip()]
+    for start in range(0, len(symbols), ALPACA_BATCH_SIZE):
+        batch = symbols[start : start + ALPACA_BATCH_SIZE]
+        try:
+            bars_by_symbol = fetch_alpaca_us_daily_rows(batch)
+        except Exception as exc:
+            log(f"  Alpaca US日線批次失敗 {start + 1}-{start + len(batch)}: {str(exc)[:240]}")
+            fail += len(batch)
+            continue
+        for sym in batch:
+            klines = bars_by_symbol.get(sym) or []
+            if not klines:
+                fail += 1
+                continue
+            sql = build_sql_inserts(sym, klines, "alpaca_market_data")
+            if sql:
+                write_ok, write_fail = _flush_batch([sql])
+                ok += write_ok
+                fail += write_fail
+            else:
+                fail += 1
+        log(f"  Alpaca進度: {min(start + len(batch), len(symbols))}/{len(symbols)} (ok={ok} fail={fail})")
+        time.sleep(ALPACA_SLEEP_SECONDS)
+    return ok, fail
+
+
+def process_us_symbols_tencent(symbols):
     ok, fail = 0, 0
     for sym in symbols:
         found = False

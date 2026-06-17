@@ -56,6 +56,8 @@ GRANULARITY_RULES = [
             "tencent_hk",
             "tencent_us",
             "tencent_day_repair",
+            "alpaca_market_data",
+            "alpaca_daily_ohlcv",
             "yfinance",
             "yahoo_chart",
         ),

@@ -119,6 +119,21 @@ class UniverseHygieneReportTests(unittest.TestCase):
         self.assertIn("missing_daily_klines", candidate["issues"])
         self.assertEqual(candidate["recommended_action"], "candidate_remove_from_stock_universe")
 
+    def test_problem_lists_are_complete_for_bulk_universe_cleanup(self):
+        rows = [row("AAPL", "2026-06-12", market="US", exchange="NASDAQ")]
+        rows.extend(
+            row(f"BAD{i:03d}^A", None, history=0, market="US", exchange="NYSE")
+            for i in range(150)
+        )
+
+        payload = report.build_report(rows)
+        us = payload["markets"]["US"]
+
+        self.assertEqual(us["problem_symbol_count"], 150)
+        self.assertEqual(len(us["high_priority_candidates"]), 150)
+        self.assertEqual(len(us["all_problem_symbols"]), 150)
+        self.assertEqual(len(payload["proposal"]["candidate_deactivate_or_remap"]["US"]), 150)
+
 
 if __name__ == "__main__":
     unittest.main()

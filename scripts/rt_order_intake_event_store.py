@@ -43,6 +43,7 @@ BROKER_RECONCILIATION_BROKER = os.environ.get(
     os.environ.get("RT_ORDER_US_BROKER", "auto"),
 ).strip().lower()
 ALPACA_RECONCILIATION_ORDER_LIMIT = int(os.environ.get("RT_ORDER_ALPACA_RECONCILIATION_ORDER_LIMIT", "50"))
+SYSTEM_CLIENT_ORDER_PREFIX = os.environ.get("RT_ORDER_CLIENT_ORDER_ID_PREFIX", "qm-")
 
 
 def now_iso():
@@ -189,6 +190,17 @@ def broker_order_ids(order):
     return unique_text([order.get("id"), order.get("client_order_id"), order.get("clientOrderId")])
 
 
+def broker_client_order_id(order):
+    if not isinstance(order, dict):
+        return ""
+    return str(order.get("client_order_id") or order.get("clientOrderId") or "").strip()
+
+
+def is_system_broker_order(order):
+    client_order_id = broker_client_order_id(order)
+    return bool(client_order_id and client_order_id.startswith(SYSTEM_CLIENT_ORDER_PREFIX))
+
+
 def compact_broker_order(order):
     if not isinstance(order, dict):
         return {}
@@ -317,9 +329,16 @@ def broker_reconciliation(
     if not isinstance(broker_orders, list):
         broker_orders = []
 
+    system_broker_orders = []
+    external_broker_orders = []
     matched = []
     unmatched = []
     for order in broker_orders:
+        if is_system_broker_order(order):
+            system_broker_orders.append(order)
+        else:
+            external_broker_orders.append(order)
+            continue
         ids = broker_order_ids(order)
         if ids and any(order_id in state_order_id_set for order_id in ids):
             matched.append(order)
@@ -336,13 +355,17 @@ def broker_reconciliation(
         "status": status,
         "broker": "alpaca-paper",
         "order_limit": int(order_limit),
+        "system_client_order_prefix": SYSTEM_CLIENT_ORDER_PREFIX,
         "broker_order_count": len(broker_orders),
+        "system_broker_order_count": len(system_broker_orders),
+        "external_broker_order_count": len(external_broker_orders),
         "matched_order_count": len(matched),
         "unmatched_broker_order_count": len(unmatched),
         "state_submitted_count": len(submitted),
         "state_order_id_count": len(state_order_ids),
         "sample_state_order_ids": state_order_ids[:10],
         "unmatched_broker_orders": [compact_broker_order(order) for order in unmatched[:10]],
+        "external_broker_orders": [compact_broker_order(order) for order in external_broker_orders[:10]],
         "reason_codes": reasons,
         "read_only": True,
     }
@@ -723,6 +746,8 @@ def build_text_report(payload):
                     "status": broker_recon.get("status"),
                     "broker": broker_recon.get("broker"),
                     "broker_order_count": broker_recon.get("broker_order_count"),
+                    "system_broker_order_count": broker_recon.get("system_broker_order_count"),
+                    "external_broker_order_count": broker_recon.get("external_broker_order_count"),
                     "matched_order_count": broker_recon.get("matched_order_count"),
                     "unmatched_broker_order_count": broker_recon.get("unmatched_broker_order_count"),
                 },

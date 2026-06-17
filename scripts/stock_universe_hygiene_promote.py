@@ -128,7 +128,10 @@ def first_existing(table, candidates, fallback):
 def proposal_candidates(report):
     out = []
     for market, summary in sorted((report.get("markets") or {}).items()):
-        for item in summary.get("high_priority_candidates") or []:
+        source_items = summary.get("all_problem_symbols") or summary.get("high_priority_candidates") or []
+        for item in source_items:
+            if item.get("recommended_action") not in SAFE_AUTO_ACTIONS | MANUAL_REVIEW_ACTIONS:
+                continue
             out.append(
                 {
                     "market": market,

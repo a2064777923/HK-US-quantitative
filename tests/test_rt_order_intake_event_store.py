@@ -237,6 +237,33 @@ class RtOrderIntakeEventStoreTests(unittest.TestCase):
         self.assertEqual(recon["unmatched_broker_order_count"], 1)
         self.assertIn("broker_orders_missing_from_intake_state", recon["reason_codes"])
 
+    def test_broker_reconciliation_does_not_block_external_manual_orders(self):
+        broker_orders = [
+            {
+                "id": "manual-order-1",
+                "client_order_id": "578d9693-2a52-4703-ab53-7686a10fd46a",
+                "symbol": "AAPL",
+                "side": "buy",
+                "qty": "1",
+                "status": "filled",
+                "submitted_at": "2026-06-12T10:00:00Z",
+                "filled_at": "2026-06-12T10:00:01Z",
+            }
+        ]
+
+        recon = store.broker_reconciliation(
+            [],
+            broker="alpaca-paper",
+            order_fetcher=lambda limit: broker_orders,
+        )
+
+        self.assertEqual(recon["status"], "OK")
+        self.assertEqual(recon["broker_order_count"], 1)
+        self.assertEqual(recon["system_broker_order_count"], 0)
+        self.assertEqual(recon["external_broker_order_count"], 1)
+        self.assertEqual(recon["unmatched_broker_order_count"], 0)
+        self.assertEqual(recon["external_broker_orders"][0]["symbol"], "AAPL")
+
     def test_broker_reconciliation_not_configured_when_disabled(self):
         recon = store.broker_reconciliation([], broker="none")
 

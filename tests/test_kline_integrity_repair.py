@@ -197,7 +197,11 @@ class KlineIntegrityRepairTests(unittest.TestCase):
 
     def test_kline_batch_process_us_counts_write_failures(self):
         kline = [["2026-06-12", "10", "11", "12", "9", "100"]]
-        with patch.object(kline_batch, "fetch_kline", return_value=kline), patch.object(
+        with patch.object(kline_batch, "alpaca_auth_available", return_value=False), patch.object(
+            kline_batch,
+            "fetch_kline",
+            return_value=kline,
+        ), patch.object(
             kline_batch,
             "_flush_batch",
             side_effect=[(1, 0), (0, 1)],
@@ -205,6 +209,77 @@ class KlineIntegrityRepairTests(unittest.TestCase):
             ok, fail = kline_batch.process_us_symbols(["AAPL", "SQ"])
 
         self.assertEqual((ok, fail), (1, 1))
+
+    def test_kline_batch_process_us_prefers_alpaca_when_configured(self):
+        bars = {
+            "AAPL": [["2026-06-12", 10.0, 11.0, 12.0, 9.0, 1000.0]],
+            "MSFT": [["2026-06-12", 20.0, 21.0, 22.0, 19.0, 2000.0]],
+        }
+        flushed = []
+
+        def fake_flush(sql_buf):
+            flushed.extend(sql_buf)
+            return (1, 0)
+
+        with patch.object(kline_batch, "alpaca_auth_available", return_value=True), patch.object(
+            kline_batch,
+            "fetch_alpaca_us_daily_rows",
+            return_value=bars,
+        ) as alpaca_fetch, patch.object(kline_batch, "fetch_kline", side_effect=AssertionError("Tencent should not be used")), patch.object(
+            kline_batch,
+            "_flush_batch",
+            side_effect=fake_flush,
+        ), patch.object(kline_batch.time, "sleep", return_value=None):
+            ok, fail = kline_batch.process_us_symbols(["AAPL", "MSFT"])
+
+        self.assertEqual((ok, fail), (2, 0))
+        alpaca_fetch.assert_called_once_with(["AAPL", "MSFT"])
+        self.assertEqual(len(flushed), 2)
+        self.assertTrue(all("alpaca_market_data" in sql for sql in flushed))
+
+    def test_kline_batch_alpaca_rows_parse_and_skip_invalid_symbols(self):
+        payloads = [
+            {
+                "bars": {
+                    "AAPL": [
+                        {"t": "2026-06-11T04:00:00Z", "o": 10, "h": 12, "l": 9, "c": 11, "v": 100},
+                        {"t": "2026-06-12T04:00:00Z", "o": 11, "h": 13, "l": 10, "c": 12, "v": 200},
+                    ]
+                },
+                "next_page_token": None,
+            }
+        ]
+        requests_seen = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                import json
+
+                return json.dumps(self.payload).encode()
+
+        def fake_urlopen(req, timeout=60):
+            requests_seen.append(req.full_url)
+            return FakeResponse(payloads.pop(0))
+
+        with patch.object(kline_batch, "ALPACA_API_KEY_ID", "key"), patch.object(
+            kline_batch,
+            "ALPACA_API_SECRET_KEY",
+            "secret",
+        ), patch.object(kline_batch.urllib.request, "urlopen", side_effect=fake_urlopen):
+            rows = kline_batch.fetch_alpaca_us_daily_rows(["AAPL", "BAD^A"], count=1, now=datetime(2026, 6, 18, 6, 0))
+
+        self.assertEqual(rows, {"AAPL": [["2026-06-12", 11.0, 12.0, 13.0, 10.0, 200.0]]})
+        self.assertIn("symbols=AAPL", requests_seen[0])
+        self.assertNotIn("BAD", requests_seen[0])
 
     def test_kline_batch_lock_raises_when_already_running(self):
         with tempfile.TemporaryDirectory() as td, patch.object(

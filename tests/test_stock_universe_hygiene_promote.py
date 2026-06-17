@@ -20,6 +20,28 @@ def hygiene_report():
         },
         "markets": {
             "HK": {
+                "all_problem_symbols": [
+                    {
+                        "market": "HK",
+                        "symbol": "hkHSI",
+                        "exchange": "HKEX",
+                        "name": "hkHSI",
+                        "recommended_action": "candidate_remove_from_stock_universe",
+                        "issues": ["symbol_format_unusual_for_exchange", "missing_daily_klines"],
+                        "latest_date": None,
+                        "history_rows_120d": 0,
+                    },
+                    {
+                        "market": "HK",
+                        "symbol": "00011",
+                        "exchange": "HKEX",
+                        "name": "恒生銀行",
+                        "recommended_action": "candidate_deactivate_or_symbol_mapping",
+                        "issues": ["latest_kline_stale_ge_30d"],
+                        "latest_date": "2026-01-14",
+                        "history_rows_120d": 0,
+                    },
+                ],
                 "high_priority_candidates": [
                     {
                         "market": "HK",
@@ -114,6 +136,16 @@ class StockUniverseHygienePromoteTests(unittest.TestCase):
         self.assertEqual(payload["selected_candidates"][0]["symbol"], "00011")
         self.assertEqual(payload["operator_review_plan"]["status"], "not_required")
         self.assertIn("candidate_deactivate_or_symbol_mapping", payload["safety"]["allowed_actions"])
+
+    def test_candidates_use_full_problem_list_not_truncated_display_list(self):
+        payload = hygiene_report()
+        payload["markets"]["HK"]["high_priority_candidates"] = payload["markets"]["HK"]["high_priority_candidates"][:1]
+
+        plan = promote.build_plan_from_report_payload(payload)
+
+        self.assertEqual(plan["candidate_count"], 2)
+        self.assertEqual(plan["operator_review_plan"]["review_required_count"], 1)
+        self.assertEqual(plan["operator_review_plan"]["items"][0]["symbol"], "00011")
 
     def test_build_plan_from_report_payload_is_read_only_and_surfaces_manual_review(self):
         with patch.object(promote, "fetch_open_position_symbols") as fetch_mock, patch.object(

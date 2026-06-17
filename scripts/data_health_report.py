@@ -345,6 +345,8 @@ def source_family(value):
         return None
     if "repair" in text:
         return "repair"
+    if text.startswith("alpaca"):
+        return "alpaca"
     if text.startswith("tencent"):
         return "tencent"
     return text
@@ -405,6 +407,7 @@ def build_source_quality(symbol_summaries):
         "minute_latest_source_counts": dict(minute_sources),
         "source_family_normalization": {
             "tencent": ["tencent", "tencent_hk", "tencent_us", "tencent_min"],
+            "alpaca": ["alpaca_market_data", "alpaca_daily_ohlcv", "alpaca_minute_ohlcv"],
             "repair": ["values containing repair"],
         },
         "daily_latest_source_coverage_pct": rate(daily_with_source, latest_count),

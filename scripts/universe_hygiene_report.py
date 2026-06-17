@@ -326,14 +326,14 @@ def summarize_market(market, rows_in):
         "recommended_action_counts": dict(action_counts),
         "high_priority_candidates": [
             item for item in problematic if item["recommended_action"] in high_priority_actions
-        ][:100],
+        ],
         "refetch_candidates": [
             item
             for item in problematic
             if item["recommended_action"] in ("candidate_refetch_then_review", "monitor_or_refetch_after_close")
-        ][:100],
+        ],
         "active_symbols": active_symbols,
-        "all_problem_symbols": problematic[:300],
+        "all_problem_symbols": problematic,
     }
 
 
@@ -455,6 +455,16 @@ def build_report(universe_rows=None):
         "proposal": build_proposal(markets, generated_at),
         "recommendations": build_recommendations(markets),
         "warnings": warnings,
+        "source_summary": {
+            "active_symbol_count": summary["active_symbol_count"],
+            "problem_symbol_count": summary["problem_symbol_count"],
+            "high_priority_count": summary["high_priority_count"],
+            "refetch_or_monitor_count": summary["refetch_or_monitor_count"],
+            "market_problem_rates": {
+                market: market_summary.get("problem_symbol_pct")
+                for market, market_summary in sorted(markets.items())
+            },
+        },
     }
 
 
