@@ -151,8 +151,10 @@ def build_recommendations(status, sim_report, risk_report, trade_review, symbol_
     recs = []
     if status == "FAIL":
         recs.append("keep_alert_sim_disabled_until_simulation_performance_recovers")
-    if traceability and traceability.get("status") not in ("OK", "NO_SAMPLE"):
+    if traceability and traceability.get("status") not in ("OK", "NO_SAMPLE", "LEGACY_OR_EXTERNAL"):
         recs.append("repair_sim_trade_signal_lineage_before_strategy_tuning")
+    if traceability and traceability.get("status") == "LEGACY_OR_EXTERNAL":
+        recs.append("collect_v5_intake_trade_lineage_before_promotion")
     if as_float(sim_report.get("return_pct_vs_initial"), 0.0) <= MIN_RETURN_PCT:
         recs.append("block_new_buy_exposure_until_simulation_total_return_positive")
     if as_float(trade_review.get("closed_pnl_hkd_est"), 0.0) <= MIN_CLOSED_PNL_HKD:
@@ -253,6 +255,22 @@ def trade_order_ids(trade):
     return {"entry": entry_ids, "exit": exit_ids, "all": unique_text(entry_ids + exit_ids)}
 
 
+def classify_closed_trade_traceability(ids, entry_matches, exit_matches, order_index):
+    if not ids["all"] or not ids["entry"] or not ids["exit"]:
+        return "LEGACY_OR_EXTERNAL"
+    if not entry_matches and not exit_matches:
+        if order_index.get("processed_decision_count", 0) <= 0:
+            return "LEGACY_OR_EXTERNAL"
+        return "UNMATCHED"
+    if entry_matches and exit_matches:
+        return "FULL"
+    if entry_matches:
+        return "ENTRY_ONLY"
+    if exit_matches:
+        return "EXIT_ONLY"
+    return "UNMATCHED"
+
+
 def build_closed_trade_signal_traceability(closed_trades, order_state_payload=None, state_file=RT_ORDER_STATE_FILE):
     loaded_from_file = order_state_payload is None
     state_exists = os.path.exists(state_file) if loaded_from_file else True
@@ -282,23 +300,19 @@ def build_closed_trade_signal_traceability(closed_trades, order_state_payload=No
         elif not exit_matches:
             reasons.append("exit_order_id_unmatched")
 
-        if not ids["all"]:
-            status = "NO_ORDER_IDS"
-            no_order_ids += 1
-        elif entry_matches and exit_matches:
-            status = "FULL"
+        status = classify_closed_trade_traceability(ids, entry_matches, exit_matches, order_index)
+        if status == "LEGACY_OR_EXTERNAL":
+            if not ids["all"]:
+                no_order_ids += 1
+        elif status == "FULL":
             entry_traceable += 1
             any_traceable += 1
             full_traceable += 1
-        elif entry_matches:
-            status = "ENTRY_ONLY"
+        elif status == "ENTRY_ONLY":
             entry_traceable += 1
             any_traceable += 1
-        elif exit_matches:
-            status = "EXIT_ONLY"
+        elif status == "EXIT_ONLY":
             any_traceable += 1
-        else:
-            status = "UNMATCHED"
 
         for reason in reasons:
             reason_counts[reason] += 1
@@ -317,12 +331,15 @@ def build_closed_trade_signal_traceability(closed_trades, order_state_payload=No
         )
 
     closed_count = len(closed_trades or [])
+    legacy_or_external_count = sum(1 for row in rows if row["trace_status"] == "LEGACY_OR_EXTERNAL")
     reason_codes = []
     if closed_count <= 0:
         status = "NO_SAMPLE"
     elif not state_exists:
         status = "MISSING"
         reason_codes.append("rt_order_intake_state_missing")
+    elif legacy_or_external_count == closed_count:
+        status = "LEGACY_OR_EXTERNAL"
     elif order_index["processed_decision_count"] <= 0:
         status = "MISSING"
         reason_codes.append("rt_order_intake_processed_empty")
@@ -348,6 +365,7 @@ def build_closed_trade_signal_traceability(closed_trades, order_state_payload=No
         "entry_traceable_count": entry_traceable,
         "any_order_traceable_count": any_traceable,
         "fully_traceable_count": full_traceable,
+        "legacy_or_external_closed_trade_count": legacy_or_external_count,
         "untraceable_closed_trade_count": max(closed_count - entry_traceable, 0),
         "entry_traceable_pct": round(entry_traceable / closed_count * 100, 2) if closed_count else 0.0,
         "processed_decision_count": order_index["processed_decision_count"],
@@ -420,6 +438,15 @@ def build_remediation_actions(status, summary, reasons, symbol_rows, open_risk_r
             "closed simulation P&L cannot be used for strategy learning unless entries can be traced to reviewed signals",
             "preserve order_id/trade_id/signal_id linkage before changing strategy thresholds or watchlists",
             ["closed_trade_signal_traceability_missing"],
+        )
+    if "simulation_closed_trade_lineage_legacy_or_external" in reason_set:
+        add(
+            "collect_v5_intake_trade_lineage",
+            "critical",
+            "rt_order_intake_and_simulation_trade_review",
+            "legacy/external simulation trades cannot prove current v5/Hermes intake performance",
+            "collect fresh submitted v5 intake trades with order_result.order_id before using simulation P&L for promotion",
+            ["simulation_closed_trade_lineage_legacy_or_external"],
         )
     if str(summary.get("risk_level") or "").lower() in ("high", "critical") or summary.get("high_priority_count"):
         add(
@@ -576,6 +603,23 @@ def build_failure_postmortem(status, summary, reasons, symbol_rows, open_risk_ro
                 "Repair the order/signal lineage first, then rerun simulation performance and postmortem audit.",
             ],
         )
+    if "simulation_closed_trade_lineage_legacy_or_external" in reason_set:
+        traceability = summary.get("closed_trade_signal_traceability") or {}
+        add(
+            "legacy_or_external_trade_lineage_not_v5_evidence",
+            "critical",
+            "Closed simulation trades are legacy/external and cannot prove v5 intake performance",
+            {
+                "traceability_status": traceability.get("status"),
+                "legacy_or_external_closed_trade_count": traceability.get("legacy_or_external_closed_trade_count"),
+                "entry_traceable_count": traceability.get("entry_traceable_count"),
+                "reason_codes": traceability.get("reason_codes") or [],
+            },
+            [
+                "Keep the trades visible in performance and risk reports, but do not treat their P&L as v5/Hermes execution evidence.",
+                "Collect fresh submitted v5 intake trades with order_result.order_id before considering readiness or strategy promotion.",
+            ],
+        )
     if loss_rows:
         add(
             "loss_concentration_requires_symbol_postmortem",
@@ -718,7 +762,9 @@ def build_report(portfolio_payload=None, order_state_payload=None):
             reasons.append("simulation_closed_pnl_not_positive")
         if closed_win_rate is None or closed_win_rate <= MIN_CLOSED_WIN_RATE_PCT:
             reasons.append("simulation_closed_win_rate_too_low")
-        if traceability.get("status") not in ("OK", "NO_SAMPLE"):
+        if traceability.get("status") == "LEGACY_OR_EXTERNAL":
+            reasons.append("simulation_closed_trade_lineage_legacy_or_external")
+        elif traceability.get("status") not in ("OK", "NO_SAMPLE"):
             reasons.append("closed_trade_signal_traceability_missing")
     if any(note in ("recent_closed_trades_negative", "loss_rate_above_60pct") for note in review_notes):
         reasons.append("simulation_trade_review_blocking_notes")
@@ -736,6 +782,7 @@ def build_report(portfolio_payload=None, order_state_payload=None):
         "simulation_closed_pnl_not_positive",
         "simulation_closed_win_rate_too_low",
         "simulation_trade_review_blocking_notes",
+        "simulation_closed_trade_lineage_legacy_or_external",
         "closed_trade_signal_traceability_missing",
         "simulation_portfolio_risk_critical",
     )):
@@ -759,6 +806,7 @@ def build_report(portfolio_payload=None, order_state_payload=None):
             "status": traceability.get("status"),
             "entry_traceable_count": traceability.get("entry_traceable_count"),
             "untraceable_closed_trade_count": traceability.get("untraceable_closed_trade_count"),
+            "legacy_or_external_closed_trade_count": traceability.get("legacy_or_external_closed_trade_count"),
             "reason_codes": traceability.get("reason_codes") or [],
         },
         "review_notes": review_notes,

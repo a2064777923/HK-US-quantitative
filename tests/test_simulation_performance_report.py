@@ -142,8 +142,8 @@ class SimulationPerformanceReportTests(unittest.TestCase):
         self.assertIn("simulation_total_return_not_positive", payload["reason_codes"])
         self.assertIn("simulation_closed_pnl_not_positive", payload["reason_codes"])
         self.assertIn("simulation_trade_review_blocking_notes", payload["reason_codes"])
-        self.assertIn("closed_trade_signal_traceability_missing", payload["reason_codes"])
-        self.assertEqual(payload["closed_trade_signal_traceability"]["status"], "MISSING")
+        self.assertIn("simulation_closed_trade_lineage_legacy_or_external", payload["reason_codes"])
+        self.assertEqual(payload["closed_trade_signal_traceability"]["status"], "LEGACY_OR_EXTERNAL")
         postmortem = payload["failure_postmortem"]
         self.assertEqual(postmortem["schema"], "simulation_failure_postmortem_v1")
         self.assertEqual(postmortem["status"], "ACTION_REQUIRED")
@@ -152,12 +152,12 @@ class SimulationPerformanceReportTests(unittest.TestCase):
         self.assertFalse(postmortem["changes_strategy"])
         hypothesis_ids = [row["id"] for row in postmortem["hypotheses"]]
         self.assertIn("entry_filter_or_signal_quality_weak", hypothesis_ids)
-        self.assertIn("closed_trade_signal_lineage_missing", hypothesis_ids)
+        self.assertIn("legacy_or_external_trade_lineage_not_v5_evidence", hypothesis_ids)
         self.assertIn("loss_concentration_requires_symbol_postmortem", hypothesis_ids)
         self.assertIn("portfolio_level_recovery_not_proven", hypothesis_ids)
         self.assertIn("failure_category", postmortem["required_learning_record"]["required_fields"])
         self.assertIn("keep_alert_sim_disabled_until_simulation_performance_recovers", payload["recommendations"])
-        self.assertIn("repair_sim_trade_signal_lineage_before_strategy_tuning", payload["recommendations"])
+        self.assertIn("collect_v5_intake_trade_lineage_before_promotion", payload["recommendations"])
         remediation = payload["remediation_plan"]
         self.assertEqual(remediation["schema"], "simulation_strategy_remediation_v1")
         self.assertEqual(remediation["status"], "operator_review_required")
@@ -176,7 +176,7 @@ class SimulationPerformanceReportTests(unittest.TestCase):
             [action["action_id"] for action in remediation["actions"]],
         )
         self.assertIn(
-            "repair_closed_trade_signal_lineage",
+            "collect_v5_intake_trade_lineage",
             [action["action_id"] for action in remediation["actions"]],
         )
 
@@ -201,10 +201,24 @@ class SimulationPerformanceReportTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["status"], "FAIL")
-        self.assertIn("closed_trade_signal_traceability_missing", payload["reason_codes"])
+        self.assertIn("simulation_closed_trade_lineage_legacy_or_external", payload["reason_codes"])
         self.assertEqual(payload["closed_trade_signal_traceability"]["processed_decision_count"], 0)
         self.assertEqual(payload["closed_trade_signal_traceability"]["dry_run_decision_count"], 1)
-        self.assertIn("repair_sim_trade_signal_lineage_before_strategy_tuning", payload["recommendations"])
+        self.assertIn("collect_v5_intake_trade_lineage_before_promotion", payload["recommendations"])
+
+    def test_legacy_closed_trades_are_marked_as_external_when_no_v5_lineage_exists(self):
+        payload = report.build_report(
+            portfolio_payload(),
+            order_state_payload={"processed": {}, "dry_runs": {}},
+        )
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertEqual(payload["closed_trade_signal_traceability"]["status"], "LEGACY_OR_EXTERNAL")
+        self.assertEqual(payload["closed_trade_signal_traceability"]["legacy_or_external_closed_trade_count"], 3)
+        self.assertIn("simulation_closed_trade_lineage_legacy_or_external", payload["reason_codes"])
+        self.assertNotIn("closed_trade_signal_traceability_missing", payload["reason_codes"])
+        self.assertNotIn("repair_sim_trade_signal_lineage_before_strategy_tuning", payload["recommendations"])
+        self.assertIn("collect_v5_intake_trade_lineage_before_promotion", payload["recommendations"])
 
 
 if __name__ == "__main__":
