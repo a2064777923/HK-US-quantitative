@@ -179,7 +179,7 @@
 # */10 * * * * /usr/bin/python3 /root/hermes_judgment_event_store.py --apply --confirm-schema-hash <schema_hash> --output /tmp/hermes_judgment_event_store_report.json --text >> /tmp/hermes_judgment_event_store.log 2>&1
 
 # Optional order-intake decision durability dry-run. It reads dry_runs/processed state and does not write DB unless hash-confirmed.
-*/10 * * * * /usr/bin/python3 /root/rt_order_intake_event_store.py --output /tmp/rt_order_intake_event_store_report.json --text >> /tmp/rt_order_intake_event_store.log 2>&1
+*/10 * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/rt_order_intake_event_store.py --output /tmp/rt_order_intake_event_store_report.json --text >> /tmp/rt_order_intake_event_store.log 2>&1"
 # After reviewing schema_hash in /tmp/rt_order_intake_event_store_report.json, an operator may replace the dry-run line with:
 # */10 * * * * /usr/bin/python3 /root/rt_order_intake_event_store.py --apply --confirm-schema-hash <schema_hash> --output /tmp/rt_order_intake_event_store_report.json --text >> /tmp/rt_order_intake_event_store.log 2>&1
 

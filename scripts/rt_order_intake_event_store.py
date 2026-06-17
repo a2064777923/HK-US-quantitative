@@ -11,6 +11,8 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 from datetime import datetime
 
 
@@ -21,6 +23,26 @@ DB_USER = os.environ.get("QM_DB_USER", "quantmind")
 DB_NAME = os.environ.get("QM_DB_NAME", "quantmind")
 DEFAULT_TABLE = os.environ.get("RT_ORDER_INTAKE_EVENT_TABLE", "rt_order_intake_events")
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ALPACA_TRADING_BASE_URL = os.environ.get(
+    "ALPACA_TRADING_BASE_URL",
+    os.environ.get("ALPACA_BASE_URL", os.environ.get("APCA_API_BASE_URL", "https://paper-api.alpaca.markets/v2")),
+).rstrip("/")
+ALPACA_API_KEY_ID = (
+    os.environ.get("APCA_API_KEY_ID")
+    or os.environ.get("ALPACA_API_KEY_ID")
+    or os.environ.get("ALPACA_API_KEY")
+    or os.environ.get("ALPACA_KEY_ID", "")
+)
+ALPACA_API_SECRET_KEY = (
+    os.environ.get("APCA_API_SECRET_KEY")
+    or os.environ.get("ALPACA_API_SECRET_KEY")
+    or os.environ.get("ALPACA_SECRET_KEY", "")
+)
+BROKER_RECONCILIATION_BROKER = os.environ.get(
+    "RT_ORDER_INTAKE_RECONCILE_BROKER",
+    os.environ.get("RT_ORDER_US_BROKER", "auto"),
+).strip().lower()
+ALPACA_RECONCILIATION_ORDER_LIMIT = int(os.environ.get("RT_ORDER_ALPACA_RECONCILIATION_ORDER_LIMIT", "50"))
 
 
 def now_iso():
@@ -129,6 +151,201 @@ def order_result_ids(order_result):
     elif order_result is not None:
         ids.append(order_result)
     return unique_text(ids)
+
+
+def alpaca_auth_available():
+    return bool(ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY)
+
+
+def alpaca_request(path, method="GET", data=None):
+    url = ALPACA_TRADING_BASE_URL + path
+    body = json.dumps(data).encode("utf-8") if data is not None else None
+    headers = {
+        "Content-Type": "application/json",
+        "Apca-Api-Key-Id": ALPACA_API_KEY_ID,
+        "Apca-Api-Secret-Key": ALPACA_API_SECRET_KEY,
+    }
+    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+
+def fetch_alpaca_orders(limit=ALPACA_RECONCILIATION_ORDER_LIMIT):
+    query = urllib.parse.urlencode(
+        {
+            "status": "all",
+            "limit": int(limit),
+            "direction": "desc",
+        }
+    )
+    result = alpaca_request(f"/orders?{query}")
+    return result if isinstance(result, list) else []
+
+
+def broker_order_ids(order):
+    if not isinstance(order, dict):
+        return []
+    return unique_text([order.get("id"), order.get("client_order_id"), order.get("clientOrderId")])
+
+
+def compact_broker_order(order):
+    if not isinstance(order, dict):
+        return {}
+    return {
+        "id": order.get("id"),
+        "client_order_id": order.get("client_order_id") or order.get("clientOrderId"),
+        "symbol": order.get("symbol"),
+        "side": order.get("side"),
+        "qty": order.get("qty") or order.get("quantity"),
+        "status": order.get("status"),
+        "submitted_at": order.get("submitted_at"),
+        "filled_at": order.get("filled_at"),
+    }
+
+
+def submitted_state_order_ids(events):
+    order_ids = []
+    submitted = []
+    for event in events:
+        decision = event.get("decision") if isinstance(event, dict) else {}
+        if not isinstance(decision, dict) or decision.get("status") != "submitted":
+            continue
+        row = {
+            "ledger": event.get("ledger"),
+            "signal_id": event.get("signal_id"),
+            "symbol": plan_value(decision, "symbol") or (decision.get("alert") or {}).get("symbol"),
+            "side": plan_value(decision, "side") or (decision.get("alert") or {}).get("signal_type"),
+            "submitted_at": decision.get("submitted_at"),
+            "order_ids": order_result_ids(decision.get("order_result")),
+        }
+        submitted.append(row)
+        order_ids.extend(row["order_ids"])
+    return unique_text(order_ids), submitted
+
+
+def broker_reconciliation(
+    events,
+    broker=BROKER_RECONCILIATION_BROKER,
+    order_limit=ALPACA_RECONCILIATION_ORDER_LIMIT,
+    order_fetcher=None,
+):
+    broker = str(broker or "auto").strip().lower()
+    if broker in ("", "none", "disabled", "quantmind-sim", "quantmind_sim"):
+        return {
+            "schema": "rt_order_intake_broker_reconciliation_v1",
+            "status": "NOT_CONFIGURED",
+            "broker": broker or "none",
+            "broker_order_count": 0,
+            "matched_order_count": 0,
+            "unmatched_broker_order_count": 0,
+            "state_submitted_count": 0,
+            "state_order_id_count": 0,
+            "sample_state_order_ids": [],
+            "unmatched_broker_orders": [],
+            "reason_codes": ["broker_reconciliation_not_configured"],
+            "read_only": True,
+        }
+    if broker == "auto":
+        broker = "alpaca-paper" if alpaca_auth_available() or order_fetcher is not None else "none"
+        if broker == "none":
+            return {
+                "schema": "rt_order_intake_broker_reconciliation_v1",
+                "status": "NOT_CONFIGURED",
+                "broker": "auto",
+                "broker_order_count": 0,
+                "matched_order_count": 0,
+                "unmatched_broker_order_count": 0,
+                "state_submitted_count": 0,
+                "state_order_id_count": 0,
+                "sample_state_order_ids": [],
+                "unmatched_broker_orders": [],
+                "reason_codes": ["broker_reconciliation_not_configured"],
+                "read_only": True,
+            }
+    if broker not in ("alpaca-paper", "alpaca_paper"):
+        return {
+            "schema": "rt_order_intake_broker_reconciliation_v1",
+            "status": "NOT_CONFIGURED",
+            "broker": broker,
+            "broker_order_count": 0,
+            "matched_order_count": 0,
+            "unmatched_broker_order_count": 0,
+            "state_submitted_count": 0,
+            "state_order_id_count": 0,
+            "sample_state_order_ids": [],
+            "unmatched_broker_orders": [],
+            "reason_codes": ["unsupported_broker_for_reconciliation"],
+            "read_only": True,
+        }
+    if order_fetcher is None and not alpaca_auth_available():
+        return {
+            "schema": "rt_order_intake_broker_reconciliation_v1",
+            "status": "MISSING_CREDENTIALS",
+            "broker": "alpaca-paper",
+            "broker_order_count": 0,
+            "matched_order_count": 0,
+            "unmatched_broker_order_count": 0,
+            "state_submitted_count": 0,
+            "state_order_id_count": 0,
+            "sample_state_order_ids": [],
+            "unmatched_broker_orders": [],
+            "reason_codes": ["alpaca_paper_credentials_missing"],
+            "read_only": True,
+        }
+
+    state_order_ids, submitted = submitted_state_order_ids(events)
+    state_order_id_set = set(state_order_ids)
+    try:
+        broker_orders = order_fetcher(order_limit) if order_fetcher else fetch_alpaca_orders(order_limit)
+    except Exception as exc:
+        return {
+            "schema": "rt_order_intake_broker_reconciliation_v1",
+            "status": "DEGRADED",
+            "broker": "alpaca-paper",
+            "broker_order_count": 0,
+            "matched_order_count": 0,
+            "unmatched_broker_order_count": 0,
+            "state_submitted_count": len(submitted),
+            "state_order_id_count": len(state_order_ids),
+            "sample_state_order_ids": state_order_ids[:10],
+            "unmatched_broker_orders": [],
+            "reason_codes": ["broker_order_query_failed"],
+            "error": str(exc),
+            "read_only": True,
+        }
+    if not isinstance(broker_orders, list):
+        broker_orders = []
+
+    matched = []
+    unmatched = []
+    for order in broker_orders:
+        ids = broker_order_ids(order)
+        if ids and any(order_id in state_order_id_set for order_id in ids):
+            matched.append(order)
+        else:
+            unmatched.append(order)
+
+    reasons = []
+    status = "OK"
+    if unmatched:
+        status = "FAIL"
+        reasons.append("broker_orders_missing_from_intake_state")
+    return {
+        "schema": "rt_order_intake_broker_reconciliation_v1",
+        "status": status,
+        "broker": "alpaca-paper",
+        "order_limit": int(order_limit),
+        "broker_order_count": len(broker_orders),
+        "matched_order_count": len(matched),
+        "unmatched_broker_order_count": len(unmatched),
+        "state_submitted_count": len(submitted),
+        "state_order_id_count": len(state_order_ids),
+        "sample_state_order_ids": state_order_ids[:10],
+        "unmatched_broker_orders": [compact_broker_order(order) for order in unmatched[:10]],
+        "reason_codes": reasons,
+        "read_only": True,
+    }
 
 
 def normalize_state(raw):
@@ -390,6 +607,9 @@ def build_report(
     table_name=DEFAULT_TABLE,
     apply=False,
     confirm_schema_hash="",
+    broker=BROKER_RECONCILIATION_BROKER,
+    broker_order_limit=ALPACA_RECONCILIATION_ORDER_LIMIT,
+    order_fetcher=None,
 ):
     reasons = []
     try:
@@ -398,6 +618,12 @@ def build_report(
         reasons.append("invalid_table_name")
     state, state_stats, warnings = load_state(state_file)
     events, event_stats = build_events(state)
+    broker_recon = broker_reconciliation(
+        events,
+        broker=broker,
+        order_limit=broker_order_limit,
+        order_fetcher=order_fetcher,
+    )
     current_schema_hash = schema_hash(table_name) if not reasons else ""
     current_batch_hash = batch_hash(events, table_name) if not reasons else ""
     if apply and not confirm_schema_hash:
@@ -441,6 +667,7 @@ def build_report(
         "duplicate_count": event_stats["duplicate_count"],
         "event_summary": event_summary(events),
         "lineage_summary": lineage_summary(events),
+        "broker_reconciliation": broker_recon,
         "warnings": warnings,
         "validation_reasons": reasons,
         "applied": applied,
@@ -487,6 +714,21 @@ def build_text_report(payload):
     )
     if payload.get("apply_result"):
         lines.append("apply_result=" + json.dumps(payload["apply_result"], ensure_ascii=False))
+    broker_recon = payload.get("broker_reconciliation") or {}
+    if broker_recon:
+        lines.append(
+            "broker_reconciliation="
+            + json.dumps(
+                {
+                    "status": broker_recon.get("status"),
+                    "broker": broker_recon.get("broker"),
+                    "broker_order_count": broker_recon.get("broker_order_count"),
+                    "matched_order_count": broker_recon.get("matched_order_count"),
+                    "unmatched_broker_order_count": broker_recon.get("unmatched_broker_order_count"),
+                },
+                ensure_ascii=False,
+            )
+        )
     return "\n".join(lines)
 
 

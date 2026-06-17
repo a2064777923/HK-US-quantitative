@@ -218,6 +218,37 @@ def healthy_inputs():
             },
             "recommendations": ["cron_wiring_matches_required_read_only_contract"],
         },
+        "order_intake_event_store": {
+            "schema": "rt_order_intake_event_store_report_v1",
+            "generated_at": FRESH_TIME,
+            "status": "dry_run",
+            "lineage_summary": {
+                "schema": "rt_order_intake_lineage_summary_v1",
+                "status": "NO_SUBMITTED_ORDERS",
+                "submitted_count": 0,
+                "submitted_with_order_id_count": 0,
+                "submitted_missing_order_id_count": 0,
+                "processed_submitted_with_order_id_count": 0,
+                "unique_order_id_count": 0,
+                "sample_order_ids": [],
+                "reason_codes": [],
+                "sample_submitted": [],
+            },
+            "broker_reconciliation": {
+                "schema": "rt_order_intake_broker_reconciliation_v1",
+                "status": "OK",
+                "broker": "alpaca-paper",
+                "broker_order_count": 0,
+                "matched_order_count": 0,
+                "unmatched_broker_order_count": 0,
+                "state_submitted_count": 0,
+                "state_order_id_count": 0,
+                "sample_state_order_ids": [],
+                "unmatched_broker_orders": [],
+                "reason_codes": [],
+                "read_only": True,
+            },
+        },
     }
 
 
@@ -831,6 +862,43 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         self.assertEqual(gate["data"]["missing_required_job_count"], 2)
         self.assertEqual(gate["data"]["installation_plan"]["proposal_hash"], "install-hash")
         self.assertEqual(gate["data"]["installation_plan"]["install_line_count"], 2)
+
+    def test_broker_reconciliation_blocked_missing_intake_lineage(self):
+        inputs = healthy_inputs()
+        inputs["order_intake_event_store"]["broker_reconciliation"].update(
+            {
+                "status": "FAIL",
+                "broker_order_count": 5,
+                "matched_order_count": 0,
+                "unmatched_broker_order_count": 5,
+                "unmatched_broker_orders": [
+                    {
+                        "id": "order-1",
+                        "symbol": "BAC",
+                        "side": "buy",
+                        "qty": "3",
+                        "status": "filled",
+                    }
+                ],
+                "reason_codes": ["broker_orders_missing_from_intake_state"],
+            }
+        )
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "BLOCKED")
+        gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "order_intake_broker_reconciliation"][0]
+        self.assertIn("missing from intake state", gate["detail"])
+        self.assertEqual(gate["data"]["unmatched_broker_order_count"], 5)
+
+    def test_broker_reconciliation_ok_does_not_block(self):
+        inputs = healthy_inputs()
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "READY")
+        gate = [gate for gate in payload["gates"] if gate["gate"] == "order_intake_broker_reconciliation"][0]
+        self.assertEqual(gate["status"], "PASS")
 
 
 if __name__ == "__main__":

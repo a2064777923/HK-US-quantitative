@@ -24,6 +24,10 @@ POSITION_JUDGMENT_AUDIT_FILE = os.environ.get(
     "/tmp/hermes_position_judgment_audit_report.json",
 )
 CRON_AUDIT_FILE = os.environ.get("CRON_AUDIT_REPORT_FILE", "/tmp/cron_audit_report.json")
+ORDER_INTAKE_EVENT_STORE_FILE = os.environ.get(
+    "RT_ORDER_INTAKE_EVENT_STORE_REPORT_FILE",
+    "/tmp/rt_order_intake_event_store_report.json",
+)
 REPORT_FILE = os.environ.get("EXECUTION_READINESS_REPORT_FILE", "/tmp/execution_readiness_report.json")
 MIN_RESOLVED_OUTCOMES = int(os.environ.get("EXECUTION_READINESS_MIN_RESOLVED_OUTCOMES", "5"))
 MIN_DIRECTIONAL_INTAKE_COVERAGE_PCT = float(
@@ -437,6 +441,37 @@ def cron_audit_gate_payload(cron_audit):
     }
 
 
+def order_intake_broker_reconciliation_payload(order_intake_event_store):
+    order_intake_event_store = order_intake_event_store if isinstance(order_intake_event_store, dict) else {}
+    recon = (
+        order_intake_event_store.get("broker_reconciliation")
+        if isinstance(order_intake_event_store.get("broker_reconciliation"), dict)
+        else {}
+    )
+    lineage = (
+        order_intake_event_store.get("lineage_summary")
+        if isinstance(order_intake_event_store.get("lineage_summary"), dict)
+        else {}
+    )
+    return {
+        "schema": recon.get("schema"),
+        "status": recon.get("status") or "MISSING",
+        "broker": recon.get("broker"),
+        "broker_order_count": as_int(recon.get("broker_order_count"), 0),
+        "matched_order_count": as_int(recon.get("matched_order_count"), 0),
+        "unmatched_broker_order_count": as_int(recon.get("unmatched_broker_order_count"), 0),
+        "state_submitted_count": as_int(recon.get("state_submitted_count"), 0),
+        "state_order_id_count": as_int(recon.get("state_order_id_count"), 0),
+        "sample_state_order_ids": recon.get("sample_state_order_ids") or [],
+        "unmatched_broker_orders": recon.get("unmatched_broker_orders") or [],
+        "reason_codes": recon.get("reason_codes") or [],
+        "lineage_status": lineage.get("status"),
+        "lineage_submitted_count": as_int(lineage.get("submitted_count"), 0),
+        "generated_at": order_intake_event_store.get("generated_at"),
+        "read_only": recon.get("read_only", True),
+    }
+
+
 def build_report(
     system_health=None,
     data_health=None,
@@ -450,6 +485,7 @@ def build_report(
     simulation_performance=None,
     position_judgment_audit=None,
     cron_audit=None,
+    order_intake_event_store=None,
     min_resolved_outcomes=MIN_RESOLVED_OUTCOMES,
     min_directional_intake_coverage_pct=MIN_DIRECTIONAL_INTAKE_COVERAGE_PCT,
     min_win_rate_pct=MIN_WIN_RATE_PCT,
@@ -474,6 +510,7 @@ def build_report(
     simulation_performance = simulation_performance if isinstance(simulation_performance, dict) else {}
     position_judgment_audit = position_judgment_audit if isinstance(position_judgment_audit, dict) else {}
     cron_audit = cron_audit if isinstance(cron_audit, dict) else {}
+    order_intake_event_store = order_intake_event_store if isinstance(order_intake_event_store, dict) else {}
     gates = []
     now = now or datetime.now()
 
@@ -499,6 +536,7 @@ def build_report(
             ("simulation_performance", simulation_performance, ("generated_at",)),
             ("position_judgment_audit", position_judgment_audit, ("generated_at",)),
             ("cron_audit", cron_audit, ("generated_at",)),
+            ("order_intake_event_store", order_intake_event_store, ("generated_at",)),
         ],
         now=now,
         max_age_minutes=max_report_age_minutes,
@@ -555,6 +593,37 @@ def build_report(
         cron_gate_status,
         cron_detail,
         cron_payload,
+    )
+
+    broker_recon = order_intake_broker_reconciliation_payload(order_intake_event_store)
+    broker_recon_status = broker_recon.get("status") or "MISSING"
+    if broker_recon.get("schema") != "rt_order_intake_broker_reconciliation_v1":
+        broker_recon_gate_status = "WARN"
+        broker_recon_detail = "order intake broker reconciliation schema is missing or invalid"
+    elif broker_recon_status == "FAIL":
+        broker_recon_gate_status = "BLOCK"
+        broker_recon_detail = (
+            "broker has "
+            f"{broker_recon['unmatched_broker_order_count']} order(s) missing from intake state"
+        )
+    elif broker_recon_status == "DEGRADED":
+        broker_recon_gate_status = "BLOCK"
+        broker_recon_detail = "broker order reconciliation query failed"
+    elif broker_recon_status == "MISSING_CREDENTIALS":
+        broker_recon_gate_status = "BLOCK"
+        broker_recon_detail = "broker reconciliation is configured but credentials are unavailable"
+    elif broker_recon_status == "OK":
+        broker_recon_gate_status = "PASS"
+        broker_recon_detail = "broker orders match intake state lineage"
+    else:
+        broker_recon_gate_status = "INFO"
+        broker_recon_detail = f"broker reconciliation status is {broker_recon_status}"
+    add_gate(
+        gates,
+        "order_intake_broker_reconciliation",
+        broker_recon_gate_status,
+        broker_recon_detail,
+        broker_recon,
     )
 
     counts = latest_outcome_counts(outcome_report, strategy_learning)
@@ -1034,6 +1103,7 @@ def build_report_from_files(args):
         simulation_performance=load_json_file(args.simulation_performance_file),
         position_judgment_audit=load_json_file(args.position_judgment_audit_file),
         cron_audit=load_json_file(args.cron_audit_file),
+        order_intake_event_store=load_json_file(args.order_intake_event_store_file),
         min_resolved_outcomes=args.min_resolved_outcomes,
         min_directional_intake_coverage_pct=args.min_directional_intake_coverage_pct,
         min_win_rate_pct=args.min_win_rate_pct,
@@ -1071,6 +1141,7 @@ def parse_args():
     parser.add_argument("--simulation-performance-file", default=SIMULATION_PERFORMANCE_FILE)
     parser.add_argument("--position-judgment-audit-file", default=POSITION_JUDGMENT_AUDIT_FILE)
     parser.add_argument("--cron-audit-file", default=CRON_AUDIT_FILE)
+    parser.add_argument("--order-intake-event-store-file", default=ORDER_INTAKE_EVENT_STORE_FILE)
     parser.add_argument("--min-resolved-outcomes", type=int, default=MIN_RESOLVED_OUTCOMES)
     parser.add_argument(
         "--min-directional-intake-coverage-pct",

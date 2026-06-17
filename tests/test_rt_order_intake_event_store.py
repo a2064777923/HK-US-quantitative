@@ -177,6 +177,73 @@ class RtOrderIntakeEventStoreTests(unittest.TestCase):
         self.assertEqual(payload["lineage_summary"]["submitted_missing_order_id_count"], 1)
         self.assertIn("submitted_order_id_missing", payload["lineage_summary"]["reason_codes"])
 
+    def test_broker_reconciliation_flags_unmatched_alpaca_orders(self):
+        broker_orders = [
+            {
+                "id": "broker-order-1",
+                "client_order_id": "qm-sig-1",
+                "symbol": "AAPL",
+                "side": "buy",
+                "qty": "1",
+                "status": "filled",
+                "submitted_at": "2026-06-12T10:00:00Z",
+                "filled_at": "2026-06-12T10:00:01Z",
+            }
+        ]
+        event = {
+            "ledger": "processed",
+            "signal_id": "sig-1",
+            "decision": {
+                **intake_decision("sig-1", status="submitted", mode="execute"),
+                "submitted_at": "2026-06-12T10:00:00",
+                "order_result": {"order_id": "broker-order-1"},
+            },
+        }
+
+        recon = store.broker_reconciliation(
+            [event],
+            broker="alpaca-paper",
+            order_fetcher=lambda limit: broker_orders,
+        )
+
+        self.assertEqual(recon["schema"], "rt_order_intake_broker_reconciliation_v1")
+        self.assertEqual(recon["status"], "OK")
+        self.assertEqual(recon["broker_order_count"], 1)
+        self.assertEqual(recon["matched_order_count"], 1)
+        self.assertEqual(recon["unmatched_broker_order_count"], 0)
+
+    def test_broker_reconciliation_fails_when_state_has_no_matching_lineage(self):
+        broker_orders = [
+            {
+                "id": "broker-order-2",
+                "client_order_id": "qm-missing",
+                "symbol": "BAC",
+                "side": "buy",
+                "qty": "3",
+                "status": "filled",
+                "submitted_at": "2026-06-12T10:00:00Z",
+                "filled_at": "2026-06-12T10:00:01Z",
+            }
+        ]
+
+        recon = store.broker_reconciliation(
+            [],
+            broker="alpaca-paper",
+            order_fetcher=lambda limit: broker_orders,
+        )
+
+        self.assertEqual(recon["status"], "FAIL")
+        self.assertEqual(recon["matched_order_count"], 0)
+        self.assertEqual(recon["unmatched_broker_order_count"], 1)
+        self.assertIn("broker_orders_missing_from_intake_state", recon["reason_codes"])
+
+    def test_broker_reconciliation_not_configured_when_disabled(self):
+        recon = store.broker_reconciliation([], broker="none")
+
+        self.assertEqual(recon["status"], "NOT_CONFIGURED")
+        self.assertEqual(recon["broker_order_count"], 0)
+        self.assertEqual(recon["reason_codes"], ["broker_reconciliation_not_configured"])
+
 
 if __name__ == "__main__":
     unittest.main()
