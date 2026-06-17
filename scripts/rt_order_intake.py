@@ -7,11 +7,14 @@ RT_ORDER_EXECUTION_MODE=execute or --mode execute.
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 API_BASE = os.environ.get("QM_API_BASE", "https://notopenai.asia/api/v1").rstrip("/")
@@ -36,6 +39,7 @@ ALPACA_API_SECRET_KEY = (
 US_ORDER_BROKER = os.environ.get("RT_ORDER_US_BROKER", "quantmind-sim").strip().lower()
 
 STATE_FILE = os.environ.get("RT_ORDER_STATE_FILE", "/tmp/rt_order_intake_state.json")
+STATE_LOCK_TIMEOUT_SECONDS = float(os.environ.get("RT_ORDER_STATE_LOCK_TIMEOUT_SECONDS", "30"))
 ALERT_QUEUE_FILE = os.environ.get("RT_ALERT_QUEUE_FILE", "/tmp/rt_signal_alerts.jsonl")
 ALERT_FILE = os.environ.get("RT_ALERT_FILE", "/tmp/rt_signal_alert.json")
 JUDGMENT_FILE = os.environ.get("RT_ORDER_JUDGMENT_FILE", "/tmp/hermes_trade_judgments.jsonl")
@@ -106,10 +110,21 @@ def load_json_file(path, default):
 
 
 def save_json_atomic(path, payload):
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
 
 
 def load_state(path):
@@ -121,6 +136,69 @@ def load_state(path):
     if "dry_runs" not in state or not isinstance(state["dry_runs"], dict):
         state["dry_runs"] = {}
     return state
+
+
+class StateLockTimeout(RuntimeError):
+    pass
+
+
+@contextmanager
+def state_file_lock(path, timeout_seconds=STATE_LOCK_TIMEOUT_SECONDS):
+    """Serialize state read/modify/write across cron processes."""
+    lock_path = f"{path}.lock"
+    directory = os.path.dirname(lock_path) or "."
+    os.makedirs(directory, exist_ok=True)
+    handle = open(lock_path, "a+", encoding="utf-8")
+    backend = "none"
+    deadline = time.monotonic() + max(float(timeout_seconds), 0.0)
+    try:
+        try:
+            import fcntl
+
+            backend = "fcntl"
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise StateLockTimeout(f"timed out waiting for state lock: {lock_path}")
+                    time.sleep(0.05)
+        except ImportError:
+            try:
+                import msvcrt
+
+                backend = "msvcrt"
+                while True:
+                    try:
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        if time.monotonic() >= deadline:
+                            raise StateLockTimeout(f"timed out waiting for state lock: {lock_path}")
+                        time.sleep(0.05)
+            except ImportError:
+                backend = "none"
+
+        yield
+    finally:
+        try:
+            if backend == "fcntl":
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            elif backend == "msvcrt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            handle.close()
+
+
+def process_alert_with_state_lock(alert, mode, state_file, judgment_file=JUDGMENT_FILE):
+    return process_alert(alert, mode, load_state(state_file), state_file, judgment_file)
 
 
 def signal_id(alert):
@@ -361,13 +439,21 @@ def alpaca_request(path, method="GET", data=None):
         return json.loads(raw) if raw else {}
 
 
-def submit_alpaca_paper_order(symbol, side, quantity):
+def alpaca_client_order_id(signal_id_value):
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", str(signal_id_value or "")).strip("-")
+    if not cleaned:
+        cleaned = str(int(time.time()))
+    return f"qm-{cleaned}"[:48]
+
+
+def submit_alpaca_paper_order(symbol, side, quantity, signal_id_value=None):
     order = {
         "symbol": symbol,
         "side": side.lower(),
         "type": "market",
         "time_in_force": "day",
         "qty": str(int(quantity)),
+        "client_order_id": alpaca_client_order_id(signal_id_value),
     }
     result = alpaca_request("/orders", method="POST", data=order)
     if isinstance(result, dict):
@@ -391,7 +477,12 @@ def broker_auth_available(token, backend):
 
 def submit_order_to_backend(token, backend, plan):
     if backend == "alpaca-paper":
-        return submit_alpaca_paper_order(plan["symbol"], plan["side"], plan["quantity"])
+        return submit_alpaca_paper_order(
+            plan["symbol"],
+            plan["side"],
+            plan["quantity"],
+            plan.get("signal_id"),
+        )
     return submit_order(token, plan["symbol"], plan["side"], plan["quantity"], plan["price_reference"])
 
 
@@ -1339,7 +1430,7 @@ def record_decision(state, sid, payload, state_file, mode):
         record_dry_run(state, sid, payload, state_file)
 
 
-def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
+def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
     sid = signal_id(alert)
     if sid in state["processed"]:
         return {
@@ -1450,6 +1541,7 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
         }
         record_decision(state, sid, decision, state_file, mode)
         return decision
+    plan["signal_id"] = sid
 
     hermes_ok, plan, hermes_gate = evaluate_hermes_judgment(alert, plan, context, mode, judgment_file)
     if not hermes_ok:
@@ -1563,6 +1655,16 @@ def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
         return final
 
 
+def process_alert(alert, mode, state, state_file, judgment_file=JUDGMENT_FILE):
+    with state_file_lock(state_file):
+        current_state = load_state(state_file)
+        result = _process_alert_unlocked(alert, mode, current_state, state_file, judgment_file)
+        if isinstance(state, dict):
+            state.clear()
+            state.update(current_state)
+        return result
+
+
 def load_alerts_from_args(args):
     if args.alert_json:
         loaded = json.loads(args.alert_json)
@@ -1604,9 +1706,8 @@ def main():
     )
     args = parser.parse_args()
 
-    state = load_state(args.state_file)
     alerts = load_alerts_from_args(args)
-    results = [process_alert(alert, args.mode, state, args.state_file, args.judgment_file) for alert in alerts]
+    results = [process_alert_with_state_lock(alert, args.mode, args.state_file, args.judgment_file) for alert in alerts]
     payload = {"mode": args.mode, "count": len(results), "results": results}
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 

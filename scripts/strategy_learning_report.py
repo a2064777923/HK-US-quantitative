@@ -80,6 +80,23 @@ def load_json_file(path, default=None):
         return default
 
 
+def parse_timestamp(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+
+def iso_timestamp(value):
+    parsed = parse_timestamp(value)
+    return parsed.isoformat(timespec="seconds") if parsed else None
+
+
 def load_jsonl_tail(path, limit=DEFAULT_QUEUE_SCAN_LIMIT):
     rows = deque(maxlen=limit if limit and limit > 0 else None)
     warnings = []
@@ -562,6 +579,8 @@ def build_join_rows(alerts, judgments, intake_decisions, outcomes, judgment_audi
             "context_review_cohort": None,
             "intake_status": intake_status(decision),
             "intake_ledger": decision.get("_ledger"),
+            "intake_checked_at": decision.get("checked_at"),
+            "intake_submitted_at": decision.get("submitted_at"),
             "intake_reason_bucket": intake_reason_bucket(decision),
             "actionability_category": actionability_category(decision),
             "outcome_status": outcome_status(outcome, horizon=horizon),
@@ -911,12 +930,36 @@ def build_intake_coverage(rows):
             "missing_pct": round(len(missing) / total * 100, 2) if total else 0.0,
         }
 
-    missing = [row for row in rows if row.get("intake_reason_bucket") == "missing_intake_decision"]
+    all_rows = [row for row in rows if isinstance(row, dict)]
+    missing = [row for row in all_rows if row.get("intake_reason_bucket") == "missing_intake_decision"]
     missing_by_trigger = Counter(row.get("trigger_key") or "missing" for row in missing)
     missing_by_symbol = Counter(row.get("symbol") or "missing" for row in missing)
-    directional = [row for row in rows if row.get("signal_type") in ("BUY", "SELL")]
-    watch = [row for row in rows if row.get("signal_type") == "WATCH"]
-    other = [row for row in rows if row.get("signal_type") not in ("BUY", "SELL", "WATCH")]
+    directional_all = [row for row in all_rows if row.get("signal_type") in ("BUY", "SELL")]
+    watch_all = [row for row in all_rows if row.get("signal_type") == "WATCH"]
+    other_all = [row for row in all_rows if row.get("signal_type") not in ("BUY", "SELL", "WATCH")]
+    decision_rows = [
+        row
+        for row in all_rows
+        if row.get("intake_status") in ("dry_run", "submitted", "rejected", "error")
+        or row.get("intake_ledger") in ("dry_runs", "processed")
+    ]
+    decision_times = [
+        parse_timestamp(row.get("generated_at"))
+        for row in decision_rows
+    ]
+    decision_times = [stamp for stamp in decision_times if stamp]
+    observation_start = min(decision_times).isoformat(timespec="seconds") if decision_times else None
+    if observation_start:
+        intake_rows = [
+            row
+            for row in all_rows
+            if (row.get("generated_at") or "") >= observation_start
+        ]
+    else:
+        intake_rows = all_rows
+    directional = [row for row in intake_rows if row.get("signal_type") in ("BUY", "SELL")]
+    watch = [row for row in intake_rows if row.get("signal_type") == "WATCH"]
+    other = [row for row in intake_rows if row.get("signal_type") not in ("BUY", "SELL", "WATCH")]
     examples = [
         {
             "signal_id": row.get("signal_id"),
@@ -928,12 +971,26 @@ def build_intake_coverage(rows):
         }
         for row in missing[:30]
     ]
-    out = coverage_for(rows)
+    out = coverage_for(intake_rows)
     out.update(
         {
             "directional": coverage_for(directional),
             "watch": coverage_for(watch),
             "other": coverage_for(other),
+            "all_time": {
+                "overall": coverage_for(all_rows),
+                "directional": coverage_for(directional_all),
+                "watch": coverage_for(watch_all),
+                "other": coverage_for(other_all),
+            },
+            "coverage_scope": "intake_observation_window",
+            "observation_window": {
+                "starts_at": iso_timestamp(
+                    observation_start
+                ),
+                "source_row_count": len(intake_rows),
+                "all_time_row_count": len(all_rows),
+            },
         }
     )
     out.update({
@@ -1075,6 +1132,7 @@ def build_recommendations(payload):
         )
     intake_coverage = payload.get("intake_coverage") or {}
     directional_coverage = intake_coverage.get("directional") or {}
+    directional_all_time_coverage = (intake_coverage.get("all_time") or {}).get("directional") or {}
     if (
         directional_coverage.get("joined_signal_count", 0) >= MIN_LEARNING_SAMPLE
         and directional_coverage.get("coverage_pct", 100) < 80
@@ -1082,6 +1140,11 @@ def build_recommendations(payload):
         recs.append("directional_intake_coverage_below_80pct_learning_incomplete")
     elif intake_coverage.get("joined_signal_count", 0) >= MIN_LEARNING_SAMPLE and intake_coverage.get("coverage_pct", 100) < 50:
         recs.append("overall_intake_coverage_below_50pct_due_to_observations")
+    if (
+        directional_all_time_coverage.get("joined_signal_count", 0) >= MIN_LEARNING_SAMPLE
+        and directional_all_time_coverage.get("coverage_pct", 100) < 80
+    ):
+        recs.append("directional_intake_coverage_all_time_below_80pct_backlog_persists")
     if not recs:
         recs.append("learning_report_ready_continue_collecting_and_compare_cohorts")
     return recs
@@ -1218,8 +1281,9 @@ def build_text_report(payload):
             )
     if payload.get("intake_coverage"):
         coverage = payload["intake_coverage"]
+        scope = coverage.get("coverage_scope") or "all_time"
         lines.append(
-            f"Intake coverage: {coverage['with_intake_decision_count']}/{coverage['joined_signal_count']} "
+            f"Intake coverage ({scope}): {coverage['with_intake_decision_count']}/{coverage['joined_signal_count']} "
             f"({coverage['coverage_pct']}%)"
         )
     lines.append("Recommendations: " + ", ".join(payload["recommendations"]))

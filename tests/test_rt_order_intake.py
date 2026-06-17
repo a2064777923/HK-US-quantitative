@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 from scripts import rt_order_intake as intake
 
@@ -148,6 +149,51 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertIn(alert["signal_id"], state["processed"])
             submit.assert_called_once()
 
+    def test_state_lock_preserves_concurrent_submitted_and_dry_run_updates(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            alert = fresh_alert("sig-lock-race")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+            Path(state_file).write_text(
+                json.dumps(
+                    {
+                        "processed": {
+                            alert["signal_id"]: {
+                                "signal_id": alert["signal_id"],
+                                "status": "submitted",
+                                "submitted_at": "2026-06-18T03:00:00",
+                                "order_result": {"order_id": "submitted-ok"},
+                            }
+                        },
+                        "dry_runs": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            stale_state = {"processed": {}, "dry_runs": {}}
+
+            with patch.object(intake, "health_gate", return_value=(True, {"status": "OK"})), \
+                patch.object(intake, "execution_readiness_gate", return_value=(True, {"status": "PASS"})), \
+                patch.object(intake, "strategy_evidence_gate", return_value=(True, {"status": "PASS"})), \
+                patch.object(intake, "symbol_conflict_gate", return_value=(True, {"status": "PASS"})), \
+                patch.object(intake, "fetch_context_for_backend", return_value=("token", self.context, [])), \
+                patch.object(intake, "market_context_gate", return_value=(True, {"status": "PASS"})):
+                dry_result = intake.process_alert(
+                    alert,
+                    "dry-run",
+                    stale_state,
+                    state_file,
+                    judgment_file,
+                )
+
+            self.assertEqual(dry_result["status"], "duplicate")
+            self.assertNotIn(alert["signal_id"], stale_state.get("dry_runs", {}))
+            state_after = intake.load_state(state_file)
+            self.assertEqual(state_after["processed"][alert["signal_id"]]["status"], "submitted")
+            self.assertNotIn(alert["signal_id"], state_after["dry_runs"])
+
     def test_validate_alert_requires_execution_candidate_true(self):
         not_candidate = fresh_alert("sig-not-candidate")
         not_candidate["execution_candidate"] = False
@@ -156,6 +202,26 @@ class RtOrderIntakeTests(unittest.TestCase):
 
         self.assertIn("not_execution_candidate", intake.validate_alert(not_candidate))
         self.assertIn("not_execution_candidate", intake.validate_alert(missing_candidate))
+
+    def test_save_json_atomic_uses_unique_temp_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "state.json"
+            temp_names = []
+
+            original_mkstemp = intake.tempfile.mkstemp
+
+            def tracked_mkstemp(*args, **kwargs):
+                fd, tmp = original_mkstemp(*args, **kwargs)
+                temp_names.append(tmp)
+                return fd, tmp
+
+            with patch.object(intake.tempfile, "mkstemp", side_effect=tracked_mkstemp):
+                intake.save_json_atomic(str(path), {"id": str(uuid4())})
+
+            self.assertTrue(path.exists())
+            self.assertEqual(len(temp_names), 1)
+            self.assertNotEqual(temp_names[0], str(path) + ".tmp")
+            self.assertFalse(Path(temp_names[0]).exists())
 
     def test_execute_requires_matching_hermes_judgment(self):
         with tempfile.TemporaryDirectory() as td:
@@ -803,6 +869,7 @@ class RtOrderIntakeTests(unittest.TestCase):
                 "status": "submitted",
                 "submitted_at": datetime.now().isoformat(timespec="seconds"),
             }
+            intake.save_json_atomic(state_file, state)
             alert = fresh_alert("sig-pilot-daily-cap")
             self.write_judgments(judgment_file, judgment(alert["signal_id"]))
 
@@ -873,7 +940,7 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertEqual(result["status"], "submitted")
             self.assertEqual(result["order_backend"], "alpaca-paper")
             self.assertEqual(result["order_result"]["id"], "alpaca-order")
-            alpaca_submit.assert_called_once_with("AAPL", "buy", result["plan"]["quantity"])
+            alpaca_submit.assert_called_once_with("AAPL", "buy", result["plan"]["quantity"], "sig-alpaca-paper")
             qm_submit.assert_not_called()
 
     def test_alpaca_paper_submit_uses_pilot_capped_quantity(self):
@@ -913,7 +980,13 @@ class RtOrderIntakeTests(unittest.TestCase):
         self.assertEqual(result["status"], "submitted")
         self.assertEqual(result["plan"]["quantity"], 3)
         self.assertEqual(result["original_plan"]["quantity"], 175)
-        alpaca_submit.assert_called_once_with("BAC", "buy", 3)
+        alpaca_submit.assert_called_once_with("BAC", "buy", 3, "sig-alpaca-capped")
+
+    def test_alpaca_client_order_id_is_traceable_and_bounded(self):
+        cid = intake.alpaca_client_order_id("20260618:BAC:布林上軌動量突破:BUY:989847")
+        self.assertTrue(cid.startswith("qm-"))
+        self.assertLessEqual(len(cid), 48)
+        self.assertNotIn(":", cid)
 
     def test_us_alpaca_paper_requires_credentials(self):
         intake.US_ORDER_BROKER = "alpaca-paper"

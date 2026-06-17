@@ -541,6 +541,49 @@ class StrategyLearningReportTests(unittest.TestCase):
         self.assertIn("overall_intake_coverage_below_50pct_due_to_observations", recs)
         self.assertNotIn("dominant_intake_blocker:missing_intake_decision", recs)
 
+    def test_intake_coverage_uses_decision_observation_window_when_state_starts_late(self):
+        rows = [
+            {
+                "signal_id": "old-missing",
+                "symbol": "AAPL",
+                "signal_type": "BUY",
+                "trigger_key": "BUY:MA",
+                "generated_at": "2026-06-12T09:00:00",
+                "intake_reason_bucket": "missing_intake_decision",
+            },
+            {
+                "signal_id": "new-covered",
+                "symbol": "MSFT",
+                "signal_type": "BUY",
+                "trigger_key": "BUY:MA",
+                "generated_at": "2026-06-12T10:01:00",
+                "intake_status": "dry_run",
+                "intake_ledger": "dry_runs",
+                "intake_reason_bucket": "accepted_dry_run",
+                "intake_checked_at": "2026-06-12T10:01:30",
+            },
+            {
+                "signal_id": "new-watch",
+                "symbol": "MSFT",
+                "signal_type": "WATCH",
+                "trigger_key": "WATCH:RSI",
+                "generated_at": "2026-06-12T10:02:00",
+                "intake_reason_bucket": "missing_intake_decision",
+            },
+        ]
+
+        coverage = learning.build_intake_coverage(rows)
+
+        self.assertEqual(coverage["coverage_scope"], "intake_observation_window")
+        self.assertEqual(coverage["observation_window"]["starts_at"], "2026-06-12T10:01:00")
+        self.assertEqual(coverage["all_time"]["directional"]["coverage_pct"], 50.0)
+        self.assertEqual(coverage["directional"]["joined_signal_count"], 1)
+        self.assertEqual(coverage["directional"]["coverage_pct"], 100.0)
+        self.assertEqual(coverage["watch"]["joined_signal_count"], 1)
+        self.assertEqual(coverage["watch"]["coverage_pct"], 0.0)
+        self.assertEqual(coverage["joined_signal_count"], 2)
+        self.assertEqual(coverage["coverage_pct"], 50.0)
+
     def test_low_directional_intake_coverage_is_learning_incomplete(self):
         payload = {
             "overall": {"resolved_count": 0},
