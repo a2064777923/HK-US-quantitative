@@ -182,6 +182,42 @@ class RtSignalOutcomeReportTests(unittest.TestCase):
         self.assertIn("BUY:MA", by_trigger)
         self.assertEqual(by_trigger["BUY:MA"]["horizons"]["1d"]["resolved_count"], 1)
 
+    def test_execution_candidate_cohort_excludes_diagnostic_directional_rows(self):
+        executable = alert("exec-1", "AAPL", "BUY", strategy_config_id="cfg-a", watchlist_id="wl-a")
+        executable["execution_candidate"] = True
+        diagnostic = downgraded_watch_alert("diag-1", "MSFT", "BUY", entry=100)
+        klines = {
+            "AAPL": [
+                {"date": "2026-06-10", "open": 99, "high": 101, "low": 98, "close": 100},
+                {"date": "2026-06-11", "open": 101, "high": 112, "low": 99, "close": 110},
+            ],
+            "MSFT": [
+                {"date": "2026-06-10", "open": 99, "high": 101, "low": 98, "close": 100},
+                {"date": "2026-06-11", "open": 100, "high": 101, "low": 89, "close": 90},
+            ],
+        }
+
+        payload = report.build_report([executable, diagnostic], klines_by_symbol=klines, horizons=(1,))
+        execution = payload["execution_candidate"]
+        by_trigger = {row["key"]: row for row in execution["by_trigger"]}
+
+        self.assertEqual(payload["counts"]["execution_candidate_count"], 1)
+        self.assertEqual(payload["counts"]["non_execution_candidate_count"], 1)
+        self.assertEqual(payload["execution_candidate_count"], 1)
+        self.assertEqual(payload["non_execution_candidate_count"], 1)
+        self.assertEqual(payload["downgraded_directional_alert_count"], 1)
+        self.assertEqual(execution["counts"]["evaluated_signal_count"], 1)
+        self.assertEqual(execution["counts"]["resolved_signal_count"], 1)
+        self.assertEqual(execution["counts"]["non_execution_candidate_count"], 1)
+        self.assertEqual(execution["overall"]["scope"], "execution_candidate")
+        self.assertTrue(execution["overall"]["execution_candidate"])
+        self.assertEqual(execution["overall"]["horizons"]["1d"]["resolved_count"], 1)
+        self.assertEqual(execution["overall"]["horizons"]["1d"]["avg_signed_close_return_pct"], 10.0)
+        self.assertEqual(payload["execution_candidate_overall"], execution["overall"])
+        self.assertEqual(payload["execution_candidate_by_trigger"], execution["by_trigger"])
+        self.assertEqual(by_trigger["BUY:MA"]["count"], 1)
+        self.assertEqual(by_trigger["BUY:MA"]["horizons"]["1d"]["avg_signed_close_return_pct"], 10.0)
+
     def test_intraday_minutes_resolve_ambiguous_same_day_threshold_order(self):
         klines = {
             "AAPL": [

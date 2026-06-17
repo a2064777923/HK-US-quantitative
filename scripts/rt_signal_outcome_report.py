@@ -1287,6 +1287,10 @@ def summarize_groups(evaluations, key_fn, horizons, metadata_fn=None):
     return sorted(rows_out, key=lambda row: (-row["count"], row["key"]))
 
 
+def execution_candidate_rows(evaluations):
+    return [item for item in evaluations or [] if item.get("execution_candidate") is True]
+
+
 def strategy_group_metadata(items):
     return {
         "source_counts": value_counts(items, "strategy_config_source"),
@@ -1869,6 +1873,78 @@ def build_report(
         maturity,
         kline_gap_source_diagnostic or {},
     )
+    execution_candidate_evaluations = execution_candidate_rows(evaluations)
+    execution_candidate_horizons = {
+        f"{horizon}d": horizon_metrics(execution_candidate_evaluations, f"{horizon}d") for horizon in horizons
+    }
+    execution_candidate_payload = {
+        "schema": "rt_signal_outcome_execution_candidate_report_v1",
+        "generated_at": now_iso(),
+        "scope": "execution_candidate",
+        "counts": {
+            "raw_alert_count": raw_alert_count,
+            "directional_alert_count": directional_alert_count,
+            "downgraded_directional_alert_count": downgraded_directional_alert_count,
+            "execution_candidate_count": len(execution_candidate_evaluations),
+            "non_execution_candidate_count": evaluated_signal_count - len(execution_candidate_evaluations),
+            "evaluated_signal_count": len(execution_candidate_evaluations),
+            "resolved_signal_count": len([item for item in execution_candidate_evaluations if item.get("status") == "resolved"]),
+            "pending_signal_count": len([item for item in execution_candidate_evaluations if item.get("status") != "resolved"]),
+        },
+        "overall": {
+            "scope": "execution_candidate",
+            "execution_candidate": True,
+            "resolved_signal_count": len([item for item in execution_candidate_evaluations if item.get("status") == "resolved"]),
+            "pending_or_invalid_count": len([item for item in execution_candidate_evaluations if item.get("status") != "resolved"]),
+            "pending_reasons": dict(Counter(item.get("reason", "none") for item in execution_candidate_evaluations if item.get("status") != "resolved")),
+            "horizons": execution_candidate_horizons,
+        },
+        "by_confirmation": summarize_groups(
+            execution_candidate_evaluations,
+            lambda item: "confirmed" if item.get("confirmed") is True else "unconfirmed",
+            horizons,
+        ),
+        "by_intraday_signal_alignment": summarize_groups(
+            execution_candidate_evaluations,
+            intraday_signal_context_alignment,
+            horizons,
+        ),
+        "by_trigger": summarize_groups(
+            execution_candidate_evaluations,
+            lambda item: f"{item.get('signal_type')}:{item.get('trigger') or 'UNKNOWN'}",
+            horizons,
+        ),
+        "by_strategy_config": summarize_groups(
+            execution_candidate_evaluations,
+            lambda item: metadata_value(item.get("strategy_config_id")),
+            horizons,
+            metadata_fn=strategy_group_metadata,
+        ),
+        "by_watchlist": summarize_groups(
+            execution_candidate_evaluations,
+            lambda item: metadata_value(item.get("watchlist_id")),
+            horizons,
+            metadata_fn=watchlist_group_metadata,
+        ),
+        "by_strategy_config_trigger": summarize_groups(
+            execution_candidate_evaluations,
+            lambda item: (
+                f"{metadata_value(item.get('strategy_config_id'))}|"
+                f"{item.get('signal_type')}:{item.get('trigger') or 'UNKNOWN'}"
+            ),
+            horizons,
+            metadata_fn=strategy_trigger_group_metadata,
+        ),
+        "by_symbol": summarize_groups(execution_candidate_evaluations, lambda item: item.get("symbol"), horizons),
+        "evaluations": execution_candidate_evaluations,
+        "recent_evaluations": execution_candidate_evaluations[-50:],
+        "warnings": [],
+        "source": {
+            "read_only": True,
+            "submits_orders": False,
+            "scope_filter": "execution_candidate_only",
+        },
+    }
     payload = {
         "schema": "rt_signal_outcome_report_v1",
         "generated_at": now_iso(),
@@ -1877,6 +1953,8 @@ def build_report(
         "raw_alert_count": raw_alert_count,
         "directional_alert_count": directional_alert_count,
         "downgraded_directional_alert_count": downgraded_directional_alert_count,
+        "execution_candidate_count": len(execution_candidate_evaluations),
+        "non_execution_candidate_count": evaluated_signal_count - len(execution_candidate_evaluations),
         "evaluated_signal_count": evaluated_signal_count,
         "duplicate_signal_count": duplicate_count,
         "resolved_signal_count": resolved_signal_count,
@@ -1903,6 +1981,8 @@ def build_report(
             "raw_alert_count": raw_alert_count,
             "directional_alert_count": directional_alert_count,
             "downgraded_directional_alert_count": downgraded_directional_alert_count,
+            "execution_candidate_count": len(execution_candidate_evaluations),
+            "non_execution_candidate_count": evaluated_signal_count - len(execution_candidate_evaluations),
             "evaluated_signal_count": evaluated_signal_count,
             "duplicate_signal_count": duplicate_count,
             "by_signal_type": dict(Counter(signal_side(alert) or "UNKNOWN" for alert in scoped_alerts)),
@@ -1961,6 +2041,9 @@ def build_report(
             metadata_fn=strategy_trigger_group_metadata,
         ),
         "by_symbol": summarize_groups(evaluations, lambda item: item.get("symbol"), horizons),
+        "execution_candidate": execution_candidate_payload,
+        "execution_candidate_overall": execution_candidate_payload["overall"],
+        "execution_candidate_by_trigger": execution_candidate_payload["by_trigger"],
         "evaluations": evaluations,
         "recent_evaluations": evaluations[-50:],
         "warnings": fetch_warnings + diagnostic_warnings + intraday_warnings + intraday_signal_warnings,
