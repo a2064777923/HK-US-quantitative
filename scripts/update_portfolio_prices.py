@@ -106,6 +106,7 @@ def update_portfolio_totals():
         LEFT JOIN positions pos
           ON pos.portfolio_id = p.id
          AND {position_status_sql(alias='pos')}
+         AND COALESCE(pos.quantity, 0) > 0
         WHERE p.id = {PORTFOLIO_ID}
         GROUP BY p.available_cash
     """)

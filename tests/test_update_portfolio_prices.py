@@ -126,6 +126,25 @@ class UpdatePortfolioPricesTests(unittest.TestCase):
         self.assertIn("current_capital = 3500.0", update_sql)
         self.assertIn("total_value = 3500.0", update_sql)
 
+    def test_update_portfolio_totals_ignores_zero_quantity_position_rows(self):
+        calls = []
+
+        def fake_db(sql):
+            calls.append(sql)
+            if "SELECT COALESCE(p.available_cash" in sql:
+                return "1000|2500"
+            return ""
+
+        with patch.object(
+            updater,
+            "table_columns",
+            return_value={"current_capital", "total_value", "updated_at"},
+        ), patch.object(updater, "db", side_effect=fake_db):
+            updater.update_portfolio_totals()
+
+        select_sql = next(sql for sql in calls if "SELECT COALESCE(p.available_cash" in sql)
+        self.assertIn("COALESCE(pos.quantity, 0) > 0", select_sql)
+
     def test_hk_realtime_price_parses_tencent_quote(self):
         class Response:
             def read(self):
