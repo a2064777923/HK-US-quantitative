@@ -1,7 +1,7 @@
 {
   "schema": "rt_signal_strategy_config_v1",
-  "version": "v5.2-risk-off-trigger-remediation-20260618",
-  "description": "Realtime v5.2 risk-off remediation. Noisy or underperforming BUY triggers are diagnostic WATCH only unless later evidence supports re-enabling; Hermes, readiness, liquidity, RR, and intake gates remain unchanged.",
+  "version": "v5.3-market-breadth-buy-guard-20260618",
+  "description": "Realtime v5.3 market-breadth BUY guard. Noisy or underperforming BUY triggers remain diagnostic, and new BUY execution candidates are suppressed to WATCH when same-market realtime breadth is risk-off; Hermes, readiness, liquidity, RR, and intake gates remain unchanged.",
   "signal_cooldown_seconds": 1800,
   "volume_anomaly_ratio": 3.0,
   "confirmation_thresholds": {
@@ -34,6 +34,14 @@
     "atr_stop_multiple": 2.0,
     "atr_take_profit_multiple": 3.0,
     "min_rr_ratio": 1.2
+  },
+  "market_breadth_model": {
+    "enabled": true,
+    "block_new_buy_in_risk_off": true,
+    "min_sample_size": 10,
+    "risk_off_max_advancer_pct": 35.0,
+    "risk_off_min_decliner_pct": 50.0,
+    "risk_off_max_avg_change_pct": -0.6
   },
   "emission": {
     "emit_unconfirmed_directional_as_watch": true

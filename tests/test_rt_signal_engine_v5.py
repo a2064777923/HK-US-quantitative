@@ -2073,7 +2073,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         config = self.repo_strategy_config()
         normalized, warnings = rt.normalize_strategy_config(config)
         self.assertEqual(warnings, [])
-        self.assertEqual(normalized["version"], "v5.2-risk-off-trigger-remediation-20260618")
+        self.assertEqual(normalized["version"], "v5.3-market-breadth-buy-guard-20260618")
 
         expected_modes = {
             "BUY:布林下軌突破": "disabled_pending_rework",
@@ -2093,6 +2093,79 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertFalse(overrides["BUY:站上MA5"]["enabled"])
         self.assertEqual(overrides["BUY:布林上軌動量突破"]["min_full_score"], 0.75)
         self.assertEqual(overrides["BUY:急漲"]["min_full_score"], 0.75)
+        self.assertTrue(normalized["market_breadth_model"]["enabled"])
+        self.assertTrue(normalized["market_breadth_model"]["block_new_buy_in_risk_off"])
+
+    def test_market_breadth_context_summarizes_realtime_quotes(self):
+        quotes = {
+            "A": {"price": 10, "high": 11, "low": 9, "prev_close": 10, "volume": 1, "market": "HK", "change_pct": 1.0},
+            "B": {"price": 10, "high": 11, "low": 9, "prev_close": 10, "volume": 1, "market": "HK", "change_pct": -2.0},
+            "C": {"price": 10, "high": 11, "low": 9, "prev_close": 10, "volume": 1, "market": "HK", "change_pct": 0.0},
+        }
+
+        breadth = rt.market_breadth_context_from_quotes(quotes)["HK"]
+
+        self.assertEqual(breadth["sample_count"], 3)
+        self.assertEqual(breadth["advancer_count"], 1)
+        self.assertEqual(breadth["decliner_count"], 1)
+        self.assertEqual(breadth["flat_count"], 1)
+        self.assertAlmostEqual(breadth["advancer_pct"], 33.33)
+        self.assertAlmostEqual(breadth["decliner_pct"], 33.33)
+        self.assertAlmostEqual(breadth["avg_change_pct"], -0.3333)
+
+    def test_repo_config_risk_off_market_breadth_downgrades_large_move_buy(self):
+        config = self.repo_strategy_config()
+        engine = rt.TriggerEngine(strategy_config=config)
+        indicators = FakeIndicators(
+            score=1.0,
+            reasons=["短均線偏強", "RSI偏強(66)", "當日動量+7.2%", "5日動量+12.0%"],
+            factor_contributions=[
+                {"category": "trend", "direction": "BUY", "score_delta": 0.4, "reason": "短均線偏強"},
+                {"category": "rsi", "direction": "BUY", "score_delta": 0.3, "reason": "RSI偏強(66)"},
+                {
+                    "category": "same_session_momentum",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "當日動量+7.2%",
+                },
+                {"category": "momentum", "direction": "BUY", "score_delta": 0.2, "reason": "5日動量+12.0%"},
+            ],
+        )
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AMD",
+            indicators,
+            {
+                "price": 110,
+                "high": 111,
+                "low": 108,
+                "prev_close": 100,
+                "volume": 4_000,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 10.0,
+                "market_breadth": {
+                    "sample_count": 20,
+                    "advancer_pct": 20.0,
+                    "decliner_pct": 70.0,
+                    "avg_change_pct": -1.1,
+                },
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "急漲"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertTrue(alert["factor_confluence_valid"])
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertEqual(alert["market_breadth_status"], "risk_off")
+        self.assertEqual(alert["suppressed_directional_reason"], "market_breadth_risk_off")
+        self.assertIn("market_breadth_risk_off", alert["execution_blocked_reasons"])
+        self.assertIsNone(alert["entry_price"])
 
     def test_repo_config_disabled_buy_reversal_triggers_are_watch_only(self):
         config = self.repo_strategy_config()

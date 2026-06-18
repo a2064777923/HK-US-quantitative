@@ -55,6 +55,10 @@ MIN_AVG_DAILY_TURNOVER = {
     "HK": 100_000.0,
     "US": 100_000.0,
 }
+MARKET_BREADTH_MIN_SAMPLE = 10
+MARKET_BREADTH_RISK_OFF_MAX_ADVANCER_PCT = 35.0
+MARKET_BREADTH_RISK_OFF_MIN_DECLINER_PCT = 50.0
+MARKET_BREADTH_RISK_OFF_MAX_AVG_CHANGE_PCT = -0.6
 HK_SYMBOL_RE = re.compile(r"^\d{5}$")
 US_SYMBOL_RE = re.compile(r"^(?=.{1,10}$)[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?$")
 
@@ -106,6 +110,14 @@ def default_strategy_config():
         },
         "liquidity_model": {
             "min_avg_daily_turnover": dict(MIN_AVG_DAILY_TURNOVER)
+        },
+        "market_breadth_model": {
+            "enabled": False,
+            "block_new_buy_in_risk_off": True,
+            "min_sample_size": MARKET_BREADTH_MIN_SAMPLE,
+            "risk_off_max_advancer_pct": MARKET_BREADTH_RISK_OFF_MAX_ADVANCER_PCT,
+            "risk_off_min_decliner_pct": MARKET_BREADTH_RISK_OFF_MIN_DECLINER_PCT,
+            "risk_off_max_avg_change_pct": MARKET_BREADTH_RISK_OFF_MAX_AVG_CHANGE_PCT,
         },
         "emission": {
             "emit_unconfirmed_directional_as_watch": True
@@ -304,6 +316,7 @@ def strategy_config_digest(config):
         "momentum_breakout_model": config.get("momentum_breakout_model"),
         "risk_model": config.get("risk_model"),
         "liquidity_model": config.get("liquidity_model"),
+        "market_breadth_model": config.get("market_breadth_model"),
         "emission": config.get("emission"),
         "trigger_overrides": config.get("trigger_overrides"),
     }
@@ -325,6 +338,7 @@ def merge_strategy_config(base, override):
         "momentum_breakout_model",
         "risk_model",
         "liquidity_model",
+        "market_breadth_model",
         "emission",
         "trigger_overrides",
     ):
@@ -499,6 +513,42 @@ def normalize_strategy_config(config):
             value = default
         normalized_min_turnover[market] = value
     liquidity["min_avg_daily_turnover"] = normalized_min_turnover
+
+    breadth = config.setdefault("market_breadth_model", {})
+    breadth["enabled"] = as_bool(breadth.get("enabled"), False)
+    breadth["block_new_buy_in_risk_off"] = as_bool(
+        breadth.get("block_new_buy_in_risk_off"),
+        True,
+    )
+    breadth["min_sample_size"] = as_int(breadth.get("min_sample_size"), MARKET_BREADTH_MIN_SAMPLE)
+    if breadth["min_sample_size"] is None or breadth["min_sample_size"] < 1:
+        warnings.append("invalid_market_breadth_min_sample_size_using_default")
+        breadth["min_sample_size"] = MARKET_BREADTH_MIN_SAMPLE
+    breadth["risk_off_max_advancer_pct"] = as_float(
+        breadth.get("risk_off_max_advancer_pct"),
+        MARKET_BREADTH_RISK_OFF_MAX_ADVANCER_PCT,
+    )
+    if breadth["risk_off_max_advancer_pct"] is None or not 0 <= breadth["risk_off_max_advancer_pct"] <= 100:
+        warnings.append("invalid_market_breadth_risk_off_max_advancer_pct_using_default")
+        breadth["risk_off_max_advancer_pct"] = MARKET_BREADTH_RISK_OFF_MAX_ADVANCER_PCT
+    breadth["risk_off_min_decliner_pct"] = as_float(
+        breadth.get("risk_off_min_decliner_pct"),
+        MARKET_BREADTH_RISK_OFF_MIN_DECLINER_PCT,
+    )
+    if breadth["risk_off_min_decliner_pct"] is None or not 0 <= breadth["risk_off_min_decliner_pct"] <= 100:
+        warnings.append("invalid_market_breadth_risk_off_min_decliner_pct_using_default")
+        breadth["risk_off_min_decliner_pct"] = MARKET_BREADTH_RISK_OFF_MIN_DECLINER_PCT
+    breadth["risk_off_max_avg_change_pct"] = as_float(
+        breadth.get("risk_off_max_avg_change_pct"),
+        MARKET_BREADTH_RISK_OFF_MAX_AVG_CHANGE_PCT,
+    )
+    if (
+        breadth["risk_off_max_avg_change_pct"] is None
+        or breadth["risk_off_max_avg_change_pct"] < -20
+        or breadth["risk_off_max_avg_change_pct"] > 20
+    ):
+        warnings.append("invalid_market_breadth_risk_off_max_avg_change_pct_using_default")
+        breadth["risk_off_max_avg_change_pct"] = MARKET_BREADTH_RISK_OFF_MAX_AVG_CHANGE_PCT
 
     emission = config.setdefault("emission", {})
     emission["emit_unconfirmed_directional_as_watch"] = as_bool(
@@ -1108,6 +1158,85 @@ def quote_change_pct(quote_context):
     if not isinstance(quote_context, dict):
         return None
     return as_float(quote_context.get("change_pct"))
+
+def market_breadth_context_from_quotes(quotes, now=None):
+    grouped = defaultdict(list)
+    for quote in (quotes or {}).values():
+        normalized, _error = normalize_quote(quote)
+        if normalized is None:
+            continue
+        if now is not None:
+            fresh, _reason, _age = quote_freshness(normalized, now=now)
+            if not fresh:
+                continue
+        market = str(normalized.get("market") or "").upper()
+        change_pct = as_float(normalized.get("change_pct"))
+        if market in ("HK", "US") and change_pct is not None:
+            grouped[market].append(change_pct)
+
+    result = {}
+    for market, changes in grouped.items():
+        sample_count = len(changes)
+        if sample_count <= 0:
+            continue
+        advancers = sum(1 for value in changes if value > 0)
+        decliners = sum(1 for value in changes if value < 0)
+        flat = sample_count - advancers - decliners
+        result[market] = {
+            "schema": "rt_market_breadth_context_v1",
+            "market": market,
+            "sample_count": sample_count,
+            "advancer_count": advancers,
+            "decliner_count": decliners,
+            "flat_count": flat,
+            "advancer_pct": round(advancers / sample_count * 100.0, 2),
+            "decliner_pct": round(decliners / sample_count * 100.0, 2),
+            "avg_change_pct": round(sum(changes) / sample_count, 4),
+        }
+    return result
+
+def market_breadth_model_enabled(model):
+    return as_bool((model or {}).get("enabled"), False)
+
+def market_breadth_status(context, model):
+    if not market_breadth_model_enabled(model):
+        return "disabled"
+    if not isinstance(context, dict):
+        return "missing"
+    sample_count = as_int(context.get("sample_count"), 0) or 0
+    min_sample = as_int((model or {}).get("min_sample_size"), MARKET_BREADTH_MIN_SAMPLE) or MARKET_BREADTH_MIN_SAMPLE
+    if sample_count < min_sample:
+        return "insufficient_sample"
+    advancer_pct = as_float(context.get("advancer_pct"))
+    decliner_pct = as_float(context.get("decliner_pct"))
+    avg_change_pct = as_float(context.get("avg_change_pct"))
+    max_advancer = as_float(
+        (model or {}).get("risk_off_max_advancer_pct"),
+        MARKET_BREADTH_RISK_OFF_MAX_ADVANCER_PCT,
+    )
+    min_decliner = as_float(
+        (model or {}).get("risk_off_min_decliner_pct"),
+        MARKET_BREADTH_RISK_OFF_MIN_DECLINER_PCT,
+    )
+    max_avg_change = as_float(
+        (model or {}).get("risk_off_max_avg_change_pct"),
+        MARKET_BREADTH_RISK_OFF_MAX_AVG_CHANGE_PCT,
+    )
+    if advancer_pct is None or decliner_pct is None or avg_change_pct is None:
+        return "missing_metrics"
+    weak_breadth = advancer_pct <= max_advancer and decliner_pct >= min_decliner
+    broad_selloff = avg_change_pct <= max_avg_change and decliner_pct >= min_decliner
+    if weak_breadth or broad_selloff:
+        return "risk_off"
+    return "neutral"
+
+def market_breadth_blocks_new_buy(signal_type, context, model):
+    if str(signal_type or "").upper() != "BUY":
+        return False, market_breadth_status(context, model)
+    if not as_bool((model or {}).get("block_new_buy_in_risk_off"), True):
+        return False, market_breadth_status(context, model)
+    status = market_breadth_status(context, model)
+    return status == "risk_off", status
 
 def quote_momentum_breakout_model(quote_context):
     if not isinstance(quote_context, dict):
@@ -1827,6 +1956,14 @@ class TriggerEngine:
         context["momentum_breakout_model"] = self.momentum_breakout_model()
         return context
 
+    def market_breadth_model(self):
+        model = self.strategy_config.get("market_breadth_model")
+        return model if isinstance(model, dict) else {}
+
+    def market_breadth_decision(self, signal_type, quote):
+        context = quote.get("market_breadth") if isinstance(quote, dict) else None
+        return market_breadth_blocks_new_buy(signal_type, context, self.market_breadth_model())
+
     def risk_multiple(self, key, default):
         return as_float((self.strategy_config.get("risk_model") or {}).get(key), default) or default
 
@@ -2158,12 +2295,21 @@ class TriggerEngine:
             if signal_type in ("BUY", "SELL") and confirmed and risk_geometry_valid and not factor_confluence_valid:
                 emitted_signal_type = "WATCH"
                 suppressed_directional_reason = factor_confluence_reason
+            market_breadth_blocked, market_breadth_signal_status = self.market_breadth_decision(signal_type, quote)
+            if (
+                signal_type == "BUY"
+                and emitted_signal_type in ("BUY", "SELL")
+                and market_breadth_blocked
+            ):
+                emitted_signal_type = "WATCH"
+                suppressed_directional_reason = "market_breadth_risk_off"
 
             execution_candidate = (
                 emitted_signal_type in ("BUY", "SELL")
                 and confirmed
                 and risk_geometry_valid
                 and factor_confluence_valid
+                and not market_breadth_blocked
             )
             execution_blocked_reasons = []
             if signal_type not in ("BUY", "SELL"):
@@ -2179,6 +2325,8 @@ class TriggerEngine:
                     execution_blocked_reasons.append(f"risk_geometry_invalid:{risk_geometry_reason}")
                 if confirmed and not factor_confluence_valid:
                     execution_blocked_reasons.append(f"factor_confluence_invalid:{factor_confluence_reason}")
+                if signal_type == "BUY" and market_breadth_blocked:
+                    execution_blocked_reasons.append("market_breadth_risk_off")
 
             if execution_candidate and signal_type in emitted_directional_candidates:
                 emitted_signal_type = "WATCH"
@@ -2248,6 +2396,8 @@ class TriggerEngine:
                 "factor_confluence_categories": factor_confluence_categories,
                 "factor_confluence_supporting_count": len(factor_confluence_categories),
                 "factor_confluence_min_count": min_factor_count,
+                "market_breadth_status": market_breadth_signal_status,
+                "market_breadth": quote.get("market_breadth"),
                 "full_score": round(full_score, 3) if full_score is not None else None,
                 "full_reasons": full_reasons,
                 "factor_contributions": factor_contributions,
@@ -2518,6 +2668,7 @@ def main():
         # 全量條件檢查（每30秒一次）
         if now - last_full_scan >= FULL_SCAN_INTERVAL:
             trigger.alerts = []
+            market_breadth_by_market = market_breadth_context_from_quotes(all_quotes, now=dt)
             for sym, quote in all_quotes.items():
                 if sym in indicators:
                     quote, _quote_error = normalize_quote(quote)
@@ -2526,6 +2677,9 @@ def main():
                     fresh, _freshness_reason, _quote_age_seconds = quote_freshness(quote, now=dt)
                     if not fresh:
                         continue
+                    breadth = market_breadth_by_market.get(str(quote.get("market") or "").upper())
+                    if breadth:
+                        quote["market_breadth"] = breadth
                     # 用實時價格更新指標（增量）
                     indicators[sym].update_realtime(
                         quote["price"], quote["high"], quote["low"], quote["volume"]
