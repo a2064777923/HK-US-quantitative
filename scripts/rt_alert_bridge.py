@@ -36,11 +36,6 @@ PASSTHROUGH_ENV_KEYS = (
     "RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS",
     "RT_ORDER_PILOT_ALLOWED_MARKETS",
     "RT_ORDER_US_BROKER",
-    "RT_ORDER_REQUIRE_EXECUTION_READINESS",
-    "RT_ORDER_REQUIRE_STRATEGY_EVIDENCE",
-    "RT_ORDER_REQUIRE_HERMES_JUDGMENT",
-    "RT_ORDER_REQUIRE_MARKET_CONTEXT",
-    "RT_ORDER_REQUIRE_NO_SYMBOL_CONFLICT",
     "ALPACA_TRADING_BASE_URL",
     "APCA_API_KEY_ID",
     "APCA_API_SECRET_KEY",
@@ -49,6 +44,14 @@ PASSTHROUGH_ENV_KEYS = (
     "ALPACA_API_KEY",
     "ALPACA_SECRET_KEY",
     "ALPACA_BASE_URL",
+)
+
+REQUIRED_INTAKE_GATE_ENV = (
+    "RT_ORDER_REQUIRE_EXECUTION_READINESS",
+    "RT_ORDER_REQUIRE_STRATEGY_EVIDENCE",
+    "RT_ORDER_REQUIRE_HERMES_JUDGMENT",
+    "RT_ORDER_REQUIRE_MARKET_CONTEXT",
+    "RT_ORDER_REQUIRE_NO_SYMBOL_CONFLICT",
 )
 
 
@@ -224,10 +227,20 @@ def env_assignments(keys):
     return " ".join(assignments)
 
 
+def intake_env_assignments(mode):
+    assignments = []
+    passthrough = env_assignments(PASSTHROUGH_ENV_KEYS)
+    if passthrough:
+        assignments.append(passthrough)
+    if mode in ("alert-dry-run", "alert-sim"):
+        assignments.append(" ".join(f"{key}=1" for key in REQUIRED_INTAKE_GATE_ENV))
+    return " ".join(assignments)
+
+
 def run_order_intake(alert, mode):
     payload = json.dumps(alert, ensure_ascii=False)
     intake_mode = "execute" if mode == "alert-sim" else "dry-run"
-    passthrough = env_assignments(PASSTHROUGH_ENV_KEYS)
+    passthrough = intake_env_assignments(mode)
     prefix = f"{passthrough} " if passthrough else ""
     cmd = (
         f"cd /root || exit 1; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; "

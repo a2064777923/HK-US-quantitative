@@ -37,7 +37,7 @@ Execution modes:
 | `alert-sim` | Submit to simulation/paper only after all gates pass. Requires pilot flags and caps. |
 | `legacy-sim` | Compatibility path for the old simulation trader. Keep disabled unless intentionally reviewed. |
 
-Paper/simulation execute mode is fail-closed by default. To enable the pilot path, the runtime must explicitly set caps such as:
+Paper/simulation execute mode is fail-closed by default. The production server should currently run `alert-dry-run`, not `alert-sim`, while execution readiness is `BLOCKED` and Hermes trade-review eligibility is absent. To enable the pilot path later, the runtime must explicitly set caps such as:
 
 ```bash
 RT_ALERT_EXECUTION_MODE=alert-sim
@@ -46,6 +46,8 @@ RT_ORDER_PILOT_MAX_ORDER_NOTIONAL_HKD=5000
 RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=500
 RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=1
 ```
+
+The bridge also forces order-intake execute gates on when invoking `alert-dry-run` or `alert-sim`: `RT_ORDER_REQUIRE_EXECUTION_READINESS=1`, `RT_ORDER_REQUIRE_STRATEGY_EVIDENCE=1`, `RT_ORDER_REQUIRE_HERMES_JUDGMENT=1`, `RT_ORDER_REQUIRE_MARKET_CONTEXT=1`, and `RT_ORDER_REQUIRE_NO_SYMBOL_CONFLICT=1`. Do not pass `RT_ORDER_REQUIRE_*=0` through bridge jobs; a raw technical trigger without a matching Hermes review item must remain blocked.
 
 For US Alpaca paper:
 
@@ -229,6 +231,8 @@ Also scan for secrets before pushing. Placeholder names such as `FEISHU_APP_SECR
 
 ## Production Fixes 2026-06-18
 
+- After finding one Alpaca paper order created from a raw `NO_MATCH` technical signal while Hermes judgment was disabled, the server bridge cron was changed from `alert-sim` to `alert-dry-run`, `RT_ORDER_EXECUTE_PILOT_ENABLED=0`, `RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1`, and `RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS=0`.
+- Hardened `rt_alert_bridge.py` so bridge-launched intake always forces readiness, strategy evidence, Hermes judgment, market context, and symbol-conflict gates on for `alert-dry-run` and `alert-sim`.
 - Deployed `v5.2-risk-off-trigger-remediation-20260618` to reduce weak-market BUY noise through existing `trigger_overrides`; no execution gates were loosened.
 - Converted poor BUY reversal triggers (`布林下軌突破`, `RSI超賣`, `MA金叉`, `站上MA5`) into diagnostic WATCH-only rows.
 - Shadowed `布林上軌動量突破` and tightened `急漲` while evidence is retested.
