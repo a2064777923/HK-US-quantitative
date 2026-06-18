@@ -121,6 +121,9 @@ class SimulationPerformanceReportTests(unittest.TestCase):
         self.assertEqual(payload["closed_trade_attribution_by_symbol"][0]["symbol"], "09988")
         self.assertEqual(payload["closed_trade_signal_traceability"]["status"], "OK")
         self.assertEqual(payload["closed_trade_signal_traceability"]["fully_traceable_count"], 3)
+        self.assertEqual(payload["v5_hermes_evidence"]["status"], "OK")
+        self.assertEqual(payload["v5_hermes_evidence"]["sample_count"], 3)
+        self.assertTrue(payload["v5_hermes_evidence"]["promotion_eligible"])
         self.assertEqual(payload["summary"]["closed_trade_entry_traceable_pct"], 100.0)
         self.assertEqual(payload["remediation_plan"]["status"], "not_required")
         self.assertFalse(payload["remediation_plan"]["auto_applied"])
@@ -144,6 +147,9 @@ class SimulationPerformanceReportTests(unittest.TestCase):
         self.assertIn("simulation_trade_review_blocking_notes", payload["reason_codes"])
         self.assertIn("simulation_closed_trade_lineage_legacy_or_external", payload["reason_codes"])
         self.assertEqual(payload["closed_trade_signal_traceability"]["status"], "LEGACY_OR_EXTERNAL")
+        self.assertEqual(payload["v5_hermes_evidence"]["status"], "INSUFFICIENT")
+        self.assertEqual(payload["v5_hermes_evidence"]["sample_count"], 0)
+        self.assertFalse(payload["v5_hermes_evidence"]["promotion_eligible"])
         postmortem = payload["failure_postmortem"]
         self.assertEqual(postmortem["schema"], "simulation_failure_postmortem_v1")
         self.assertEqual(postmortem["status"], "ACTION_REQUIRED")
@@ -215,6 +221,9 @@ class SimulationPerformanceReportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "FAIL")
         self.assertEqual(payload["closed_trade_signal_traceability"]["status"], "LEGACY_OR_EXTERNAL")
         self.assertEqual(payload["closed_trade_signal_traceability"]["legacy_or_external_closed_trade_count"], 3)
+        self.assertEqual(payload["v5_hermes_evidence"]["status"], "INSUFFICIENT")
+        self.assertEqual(payload["v5_hermes_evidence"]["excluded_legacy_or_external_count"], 3)
+        self.assertIn("no_v5_hermes_traceable_closed_trade_sample", payload["v5_hermes_evidence"]["promotion_blockers"])
         self.assertIn("simulation_closed_trade_lineage_legacy_or_external", payload["reason_codes"])
         self.assertNotIn("closed_trade_signal_traceability_missing", payload["reason_codes"])
         self.assertNotIn("repair_sim_trade_signal_lineage_before_strategy_tuning", payload["recommendations"])
@@ -243,6 +252,45 @@ class SimulationPerformanceReportTests(unittest.TestCase):
         self.assertEqual(traceability["legacy_or_external_closed_trade_count"], 3)
         self.assertIn("simulation_closed_trade_lineage_legacy_or_external", payload["reason_codes"])
         self.assertNotIn("closed_trade_signal_traceability_missing", payload["reason_codes"])
+        self.assertEqual(payload["v5_hermes_evidence"]["sample_count"], 0)
+        self.assertEqual(payload["summary"]["v5_hermes_evidence"]["status"], "INSUFFICIENT")
+
+    def test_mixed_legacy_and_traceable_trades_only_count_traceable_v5_subset(self):
+        payload_input = portfolio_payload(return_pct=2.0, closed_pnl=450.0, win_rate=100.0)
+        review = payload_input["simulation_trade_review"]
+        review["closed_trade_count"] = 2
+        review["recent_closed"] = [
+            {
+                "symbol": "00700",
+                "pnl_hkd_est": 500,
+                "entry_order_ids": ["ord-buy-00700-a"],
+                "exit_order_id": "external-exit",
+                "closed_at": "2026-06-12T10:00:00",
+            },
+            {
+                "symbol": "LEGACY",
+                "pnl_hkd_est": -50,
+                "closed_at": "2026-06-12T10:05:00",
+            },
+        ]
+        payload = report.build_report(
+            payload_input,
+            order_state_payload={
+                "processed": {
+                    "sig-buy-00700-a": processed_decision("sig-buy-00700-a", "ord-buy-00700-a"),
+                },
+                "dry_runs": {},
+            },
+        )
+
+        self.assertEqual(payload["closed_trade_signal_traceability"]["status"], "DEGRADED")
+        self.assertEqual(payload["v5_hermes_evidence"]["status"], "OK")
+        self.assertEqual(payload["v5_hermes_evidence"]["sample_count"], 1)
+        self.assertEqual(payload["v5_hermes_evidence"]["pnl_hkd_est"], 500)
+        self.assertEqual(payload["v5_hermes_evidence"]["excluded_legacy_or_external_count"], 1)
+        self.assertEqual(payload["v5_hermes_evidence"]["excluded_untraceable_count"], 1)
+        self.assertFalse(payload["v5_hermes_evidence"]["promotion_eligible"])
+        self.assertIn("closed_trade_lineage_not_full_scope", payload["v5_hermes_evidence"]["promotion_blockers"])
 
 
 if __name__ == "__main__":

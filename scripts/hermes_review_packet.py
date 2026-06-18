@@ -368,6 +368,7 @@ def compact_context_payload(payload, keep_keys=None, list_limit=12):
         "performance",
         "portfolio",
         "simulation",
+        "v5_hermes_evidence",
         "contract",
         "apply_contract",
         "read_only",

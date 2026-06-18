@@ -168,6 +168,15 @@ def healthy_inputs():
                 "closed_win_rate_pct": 66.67,
                 "closed_pnl_hkd_est": 1200.0,
             },
+            "v5_hermes_evidence": {
+                "schema": "simulation_v5_hermes_performance_evidence_v1",
+                "status": "OK",
+                "sample_count": 3,
+                "pnl_hkd_est": 1200.0,
+                "win_rate_pct": 66.67,
+                "promotion_eligible": True,
+                "promotion_blockers": [],
+            },
             "reason_codes": [],
             "recommendations": ["simulation_performance_clean_continue_shadow_collection"],
             "remediation_plan": {
@@ -469,6 +478,8 @@ class ExecutionReadinessReportTests(unittest.TestCase):
             gate for gate in payload["blocking_gates"]
             if gate["gate"] == "simulation_performance_attribution"
         ][0]
+        self.assertEqual(gate["data"]["v5_hermes_evidence"]["status"], "OK")
+        self.assertEqual(gate["data"]["v5_hermes_evidence"]["sample_count"], 3)
         self.assertEqual(gate["data"]["status"], "FAIL")
         self.assertEqual(gate["data"]["remediation_plan"]["proposal_hash"], "simfail123456789")
         self.assertFalse(gate["data"]["remediation_plan"]["operator_contract"]["submits_orders"])

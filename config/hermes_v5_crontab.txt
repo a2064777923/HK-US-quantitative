@@ -195,7 +195,7 @@
 */10 * * * * /usr/bin/python3 /root/hermes_position_judgment_audit_report.py --output /tmp/hermes_position_judgment_audit_report.json --text >> /tmp/hermes_position_judgment_audit_report.log 2>&1
 
 # Standardized Hermes judgment packet. Review-only; does not submit orders.
-* * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/hermes_review_packet.py --output /tmp/hermes_signal_review_packet.json >> /tmp/hermes_review_packet.log 2>&1"
+* * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/hermes_review_packet.py --ephemeral-state --output /tmp/hermes_signal_review_packet.json >> /tmp/hermes_review_packet.log 2>&1"
 
 # Compatibility mode: preserves old bridge behavior by running quantmind_sim_trader.py
 # after actionable alerts. The legacy trader itself is disabled unless

@@ -980,6 +980,7 @@ def build_report(
         {
             "status": sim_perf_status,
             "summary": simulation_performance.get("summary") or {},
+            "v5_hermes_evidence": simulation_performance.get("v5_hermes_evidence") or {},
             "reason_codes": simulation_performance.get("reason_codes") or [],
             "recommendations": simulation_performance.get("recommendations") or [],
             "remediation_plan": compact_simulation_remediation(simulation_performance),

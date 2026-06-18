@@ -377,6 +377,97 @@ def build_closed_trade_signal_traceability(closed_trades, order_state_payload=No
     }
 
 
+def build_v5_hermes_evidence(traceability):
+    rows = traceability.get("sample") if isinstance(traceability, dict) else []
+    traceable_rows = [
+        row
+        for row in rows or []
+        if row.get("trace_status") in ("FULL", "ENTRY_ONLY") and row.get("entry_signals")
+    ]
+    sample_count = len(traceable_rows)
+    pnl_values = [as_float(row.get("pnl_hkd_est"), 0.0) or 0.0 for row in traceable_rows]
+    pnl_hkd = round(sum(pnl_values), 2)
+    win_count = sum(1 for value in pnl_values if value > 0)
+    loss_count = sum(1 for value in pnl_values if value <= 0)
+    win_rate = round(win_count / sample_count * 100.0, 2) if sample_count else None
+    excluded_legacy = int(traceability.get("legacy_or_external_closed_trade_count") or 0)
+    excluded_untraceable = int(traceability.get("untraceable_closed_trade_count") or 0)
+    lineage_status = traceability.get("status")
+    full_scope_lineage = lineage_status == "OK"
+
+    if not traceability or int(traceability.get("closed_trade_count") or 0) <= 0:
+        status = "NO_SAMPLE"
+        reason = "no_closed_trades"
+    elif sample_count <= 0:
+        status = "INSUFFICIENT"
+        reason = "no_closed_trade_entry_linked_to_v5_hermes_intake"
+    elif pnl_hkd <= MIN_CLOSED_PNL_HKD:
+        status = "FAIL"
+        reason = "v5_hermes_traceable_closed_pnl_not_positive"
+    elif win_rate is None or win_rate <= MIN_CLOSED_WIN_RATE_PCT:
+        status = "FAIL"
+        reason = "v5_hermes_traceable_win_rate_too_low"
+    else:
+        status = "OK"
+        reason = None
+
+    return {
+        "schema": "simulation_v5_hermes_performance_evidence_v1",
+        "status": status,
+        "reason": reason,
+        "read_only": True,
+        "submits_orders": False,
+        "scope": "closed_trades_with_entry_order_linked_to_rt_order_intake_processed",
+        "lineage_status": lineage_status,
+        "full_scope_lineage": full_scope_lineage,
+        "sample_count": sample_count,
+        "win_count": win_count,
+        "loss_count": loss_count,
+        "win_rate_pct": win_rate,
+        "pnl_hkd_est": pnl_hkd,
+        "excluded_legacy_or_external_count": excluded_legacy,
+        "excluded_untraceable_count": excluded_untraceable,
+        "promotion_eligible": status == "OK" and full_scope_lineage,
+        "promotion_blockers": [
+            blocker
+            for blocker, active in (
+                ("no_v5_hermes_traceable_closed_trade_sample", sample_count <= 0),
+                ("closed_trade_lineage_not_full_scope", not full_scope_lineage),
+                ("traceable_v5_hermes_pnl_not_positive", sample_count > 0 and pnl_hkd <= MIN_CLOSED_PNL_HKD),
+                (
+                    "traceable_v5_hermes_win_rate_too_low",
+                    sample_count > 0 and (win_rate is None or win_rate <= MIN_CLOSED_WIN_RATE_PCT),
+                ),
+            )
+            if active
+        ],
+        "sample": [
+            {
+                "symbol": row.get("symbol"),
+                "closed_at": row.get("closed_at"),
+                "pnl_hkd_est": row.get("pnl_hkd_est"),
+                "trace_status": row.get("trace_status"),
+                "entry_signal_ids": [
+                    signal.get("signal_id")
+                    for signal in row.get("entry_signals") or []
+                    if isinstance(signal, dict) and signal.get("signal_id")
+                ],
+                "entry_hermes_decisions": [
+                    signal.get("hermes_decision")
+                    for signal in row.get("entry_signals") or []
+                    if isinstance(signal, dict) and signal.get("hermes_decision")
+                ],
+            }
+            for row in traceable_rows[:10]
+        ],
+        "hermes_use": [
+            "Use this subset as v5/Hermes intake performance evidence only; it excludes legacy/external or unlinked trades.",
+            "Do not use legacy/external closed PnL to prove v5/Hermes strategy promotion.",
+            "Portfolio-level loss and open-risk checks remain authoritative risk blockers even when this subset is positive.",
+        ],
+    }
+
+
 def build_remediation_actions(status, summary, reasons, symbol_rows, open_risk_rows):
     actions = []
     reason_set = set(reasons or [])
@@ -740,6 +831,7 @@ def build_report(portfolio_payload=None, order_state_payload=None):
     symbol_rows = symbol_trade_attribution(closed_trades)
     open_risk_rows = open_position_risk_rows(sim_report)
     traceability = build_closed_trade_signal_traceability(closed_trades, order_state_payload=order_state_payload)
+    v5_hermes_evidence = build_v5_hermes_evidence(traceability)
 
     reasons = []
     sim_return = as_float(sim_report.get("return_pct_vs_initial"))
@@ -809,6 +901,14 @@ def build_report(portfolio_payload=None, order_state_payload=None):
             "legacy_or_external_closed_trade_count": traceability.get("legacy_or_external_closed_trade_count"),
             "reason_codes": traceability.get("reason_codes") or [],
         },
+        "v5_hermes_evidence": {
+            "status": v5_hermes_evidence.get("status"),
+            "sample_count": v5_hermes_evidence.get("sample_count"),
+            "win_rate_pct": v5_hermes_evidence.get("win_rate_pct"),
+            "pnl_hkd_est": v5_hermes_evidence.get("pnl_hkd_est"),
+            "promotion_eligible": v5_hermes_evidence.get("promotion_eligible"),
+            "promotion_blockers": v5_hermes_evidence.get("promotion_blockers") or [],
+        },
         "review_notes": review_notes,
     }
     recommendations = build_recommendations(
@@ -853,6 +953,7 @@ def build_report(portfolio_payload=None, order_state_payload=None):
         "summary": summary,
         "reason_codes": reasons,
         "closed_trade_signal_traceability": traceability,
+        "v5_hermes_evidence": v5_hermes_evidence,
         "closed_trade_attribution_by_symbol": symbol_rows,
         "worst_closed_symbols": symbol_rows[:5],
         "open_position_risk": open_risk_rows[:20],
@@ -864,6 +965,7 @@ def build_report(portfolio_payload=None, order_state_payload=None):
             "FAIL means Hermes should reject or hold new trade approvals unless an operator explicitly keeps the system in research-only mode.",
             "Use remediation_plan.proposal_hash as the review identifier when discussing simulation-loss recovery actions.",
             "Use failure_postmortem.hypotheses to record symbol-level lessons before changing strategy thresholds.",
+            "Use v5_hermes_evidence only for lineage-qualified v5/Hermes promotion evidence; it excludes legacy/external trades.",
             "This report is read-only and does not submit orders or change strategy settings.",
         ],
     }
@@ -902,6 +1004,17 @@ def build_text_report(payload):
                 entry=traceability.get("entry_traceable_count"),
                 total=traceability.get("closed_trade_count"),
                 reasons=",".join(traceability.get("reason_codes") or []),
+            )
+        )
+    evidence = payload.get("v5_hermes_evidence") or {}
+    if evidence:
+        lines.append(
+            "V5/Hermes evidence: status={status} sample={sample} pnl={pnl} win_rate={win_rate}% promotion={promotion}".format(
+                status=evidence.get("status"),
+                sample=evidence.get("sample_count"),
+                pnl=evidence.get("pnl_hkd_est"),
+                win_rate=evidence.get("win_rate_pct"),
+                promotion=evidence.get("promotion_eligible"),
             )
         )
     remediation = payload.get("remediation_plan") or {}

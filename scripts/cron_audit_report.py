@@ -265,8 +265,8 @@ REQUIRED_READ_ONLY_JOBS = [
     {
         "name": "hermes_review_packet",
         "tokens": ["hermes_review_packet.py", "/tmp/hermes_signal_review_packet.json"],
-        "why": "Hermes needs a fresh combined review packet",
-        "recommended_cron": "* * * * * /bin/bash -lc \"cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/hermes_review_packet.py --output /tmp/hermes_signal_review_packet.json >> /tmp/hermes_review_packet.log 2>&1\"",
+        "why": "Hermes needs a fresh combined review packet without mutating the order-intake ledger",
+        "recommended_cron": "* * * * * /bin/bash -lc \"cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/hermes_review_packet.py --ephemeral-state --output /tmp/hermes_signal_review_packet.json >> /tmp/hermes_review_packet.log 2>&1\"",
     },
     {
         "name": "rt_alert_bridge_notify",

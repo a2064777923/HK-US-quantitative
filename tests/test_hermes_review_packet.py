@@ -3978,6 +3978,19 @@ class HermesReviewPacketTests(unittest.TestCase):
             "summary": {"overall_status": "V5_REPLAY_RESEARCH_ONLY", "promotion_ready": False},
             "alerts": [{"signal_id": f"sig-{idx}", "payload": "x" * 1000} for idx in range(200)],
         }
+        simulation_performance = {
+            "schema": "simulation_performance_report_v1",
+            "status": "FAIL",
+            "summary": {"return_pct_vs_initial": -1.0},
+            "v5_hermes_evidence": {
+                "schema": "simulation_v5_hermes_performance_evidence_v1",
+                "status": "INSUFFICIENT",
+                "sample_count": 0,
+                "promotion_eligible": False,
+                "promotion_blockers": ["no_v5_hermes_traceable_closed_trade_sample"],
+            },
+            "huge_rows": [{"i": idx, "payload": "x" * 1000} for idx in range(200)],
+        }
 
         full = packet.build_packet(
             [alert()],
@@ -3987,6 +4000,7 @@ class HermesReviewPacketTests(unittest.TestCase):
             execution_readiness_payload=ready_execution_readiness(),
             strategy_learning_payload=bulky_strategy_learning,
             v5_local_replay_payload=bulky_replay,
+            simulation_performance_payload=simulation_performance,
             market_context_payload={"schema": "market_context_report_v1", "markets": {"HK": {"regime": "mixed"}}},
             data_health_payload={"schema": "data_health_report_v1", "status": "OK", "markets": {}},
             event_catalyst_payload={"schema": "event_catalyst_report_v1", "status": "OK", "candidates": []},
@@ -4004,6 +4018,8 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(compact["review_items"][0]["signal_id"], "sig-packet")
         self.assertEqual(compact["position_review"]["items"][0]["review_id"], "simulation:8:AAPL:2026-06-12:risk_review")
         self.assertEqual(compact["market_context"]["markets"]["HK"]["regime"], "mixed")
+        self.assertEqual(compact["simulation_performance"]["v5_hermes_evidence"]["status"], "INSUFFICIENT")
+        self.assertNotIn("huge_rows", compact["simulation_performance"])
         self.assertNotIn("portfolio_context", compact)
         self.assertNotIn("strategy_learning", compact)
         self.assertNotIn("v5_local_replay", compact)

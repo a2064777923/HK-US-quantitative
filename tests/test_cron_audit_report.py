@@ -161,6 +161,7 @@ class CronAuditReportTests(unittest.TestCase):
         self.assertIn("cron_audit_report.py", cron_audit_job["recommended_cron"])
         packet_job = [job for job in payload["missing_required_jobs"] if job["name"] == "hermes_review_packet"][0]
         self.assertIn("hermes_review_packet.py", packet_job["recommended_cron"])
+        self.assertIn("--ephemeral-state", packet_job["recommended_cron"])
         plan = payload["installation_plan"]
         self.assertEqual(plan["schema"], "read_only_cron_installation_plan_v1")
         self.assertEqual(plan["status"], "operator_review_required")
