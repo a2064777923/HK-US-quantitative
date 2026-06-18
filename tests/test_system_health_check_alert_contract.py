@@ -8,13 +8,41 @@ from scripts import system_health_check as health
 
 
 class SystemHealthAlertContractTests(unittest.TestCase):
+    def test_build_payload_declares_schema(self):
+        def add_ok(checks, name):
+            checks.append({"name": name, "status": "OK", "detail": "ok", "data": {}})
+
+        with patch.object(health, "latest_kline_check", return_value="2026-06-12"), patch.object(
+            health, "data_health_check", return_value={"schema": "data_health_report_v1", "markets": {}}
+        ), patch.object(health, "signal_check_from_data_health", return_value=True), patch.object(
+            health, "feature_run_check", side_effect=lambda checks: add_ok(checks, "feature_runs")
+        ), patch.object(
+            health, "positions_check", side_effect=lambda checks: add_ok(checks, "positions")
+        ), patch.object(
+            health, "portfolio_check", side_effect=lambda checks: add_ok(checks, "portfolio")
+        ), patch.object(
+            health, "simulation_ledger_check", side_effect=lambda checks: add_ok(checks, "simulation_ledger")
+        ), patch.object(
+            health, "alert_files_check", side_effect=lambda checks: add_ok(checks, "alert_files")
+        ), patch.object(
+            health, "process_check", side_effect=lambda checks: add_ok(checks, "rt_signal_engine_v5")
+        ):
+            payload = health.build_payload()
+
+        self.assertEqual(payload["schema"], "quantmind_system_health_v1")
+        self.assertEqual(payload["status"], "OK")
+
     def test_save_json_atomic_writes_payload(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "health.json"
-            health.save_json_atomic(str(path), {"status": "OK", "checked_at": "2026-06-12T10:00:00"})
+            health.save_json_atomic(
+                str(path),
+                {"schema": "quantmind_system_health_v1", "status": "OK", "checked_at": "2026-06-12T10:00:00"},
+            )
 
             loaded = json.loads(path.read_text(encoding="utf-8"))
 
+        self.assertEqual(loaded["schema"], "quantmind_system_health_v1")
         self.assertEqual(loaded["status"], "OK")
 
     def test_latest_kline_check_reads_canonical_daily_bars(self):

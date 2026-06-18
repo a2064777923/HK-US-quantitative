@@ -604,6 +604,7 @@ def build_payload():
 
     overall = max((check["status"] for check in checks), key=lambda s: SEVERITY[s])
     payload = {
+        "schema": "quantmind_system_health_v1",
         "status": overall,
         "checked_at": datetime.now().isoformat(timespec="seconds"),
         "checks": checks,

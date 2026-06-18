@@ -11,8 +11,8 @@ STALE_TIME = "2026-06-12T08:00:00"
 
 def healthy_inputs():
     return {
-        "system_health": {"status": "OK", "generated_at": FRESH_TIME},
-        "data_health": {"status": "OK", "generated_at": FRESH_TIME},
+        "system_health": {"schema": "quantmind_system_health_v1", "status": "OK", "generated_at": FRESH_TIME},
+        "data_health": {"schema": "data_health_report_v1", "status": "OK", "generated_at": FRESH_TIME},
         "outcome_report": {
             "generated_at": FRESH_TIME,
             "resolved_signal_count": 8,
@@ -398,6 +398,34 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         self.assertFalse(payload["ready_for_execute"])
         gate = [gate for gate in payload["warning_gates"] if gate["gate"] == "market_context"][0]
         self.assertIn("risk_off=HK", gate["detail"])
+
+    def test_warn_data_health_is_warning_not_block(self):
+        inputs = healthy_inputs()
+        inputs["data_health"]["status"] = "WARN"
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "WARN")
+        self.assertFalse(payload["ready_for_execute"])
+        self.assertEqual(
+            [gate for gate in payload["warning_gates"] if gate["gate"] == "data_health"][0]["status"],
+            "WARN",
+        )
+        self.assertNotIn("data_health", [gate["gate"] for gate in payload["blocking_gates"]])
+
+    def test_warn_system_health_is_warning_not_block(self):
+        inputs = healthy_inputs()
+        inputs["system_health"]["status"] = "WARN"
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "WARN")
+        self.assertFalse(payload["ready_for_execute"])
+        self.assertEqual(
+            [gate for gate in payload["warning_gates"] if gate["gate"] == "system_health"][0]["status"],
+            "WARN",
+        )
+        self.assertNotIn("system_health", [gate["gate"] for gate in payload["blocking_gates"]])
 
     def test_failed_hermes_judgment_audit_blocks(self):
         inputs = healthy_inputs()

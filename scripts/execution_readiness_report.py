@@ -145,6 +145,17 @@ def add_gate(gates, gate, status, detail, data=None):
     gates.append({"gate": gate, "status": status, "detail": detail, "data": data or {}})
 
 
+def report_status_gate_status(payload, expected_schema, ok_status="OK"):
+    if not isinstance(payload, dict) or payload.get("schema") != expected_schema:
+        return "BLOCK"
+    status = str(payload.get("status") or "MISSING").upper()
+    if status == ok_status:
+        return "PASS"
+    if status == "WARN":
+        return "WARN"
+    return "BLOCK"
+
+
 def worst_status(gates):
     statuses = [gate.get("status") for gate in gates]
     if "BLOCK" in statuses:
@@ -563,7 +574,7 @@ def build_report(
     add_gate(
         gates,
         "system_health",
-        "PASS" if health_status == "OK" else "BLOCK",
+        report_status_gate_status(system_health, "quantmind_system_health_v1"),
         f"system_health status is {health_status}",
         {"status": health_status, "generated_at": system_health.get("generated_at") or system_health.get("checked_at")},
     )
@@ -572,7 +583,7 @@ def build_report(
     add_gate(
         gates,
         "data_health",
-        "PASS" if data_status == "OK" else "BLOCK",
+        report_status_gate_status(data_health, "data_health_report_v1"),
         f"data_health status is {data_status}",
         {"status": data_status, "generated_at": data_health.get("generated_at")},
     )
