@@ -220,6 +220,30 @@ class SimulationPerformanceReportTests(unittest.TestCase):
         self.assertNotIn("repair_sim_trade_signal_lineage_before_strategy_tuning", payload["recommendations"])
         self.assertIn("collect_v5_intake_trade_lineage_before_promotion", payload["recommendations"])
 
+    def test_rejected_only_intake_state_does_not_make_legacy_trades_v5_lineage_failures(self):
+        payload = report.build_report(
+            portfolio_payload(),
+            order_state_payload={
+                "processed": {
+                    "sig-rejected": {
+                        "status": "rejected",
+                        "mode": "execute",
+                        "order_result": None,
+                        "alert": {"symbol": "00700", "signal_type": "BUY"},
+                    }
+                },
+                "dry_runs": {},
+            },
+        )
+
+        traceability = payload["closed_trade_signal_traceability"]
+        self.assertEqual(traceability["status"], "LEGACY_OR_EXTERNAL")
+        self.assertEqual(traceability["processed_decision_count"], 1)
+        self.assertEqual(traceability["processed_with_order_id_count"], 0)
+        self.assertEqual(traceability["legacy_or_external_closed_trade_count"], 3)
+        self.assertIn("simulation_closed_trade_lineage_legacy_or_external", payload["reason_codes"])
+        self.assertNotIn("closed_trade_signal_traceability_missing", payload["reason_codes"])
+
 
 if __name__ == "__main__":
     unittest.main()

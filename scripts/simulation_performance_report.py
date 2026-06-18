@@ -259,7 +259,7 @@ def classify_closed_trade_traceability(ids, entry_matches, exit_matches, order_i
     if not ids["all"] or not ids["entry"] or not ids["exit"]:
         return "LEGACY_OR_EXTERNAL"
     if not entry_matches and not exit_matches:
-        if order_index.get("processed_decision_count", 0) <= 0:
+        if order_index.get("processed_with_order_id_count", 0) <= 0:
             return "LEGACY_OR_EXTERNAL"
         return "UNMATCHED"
     if entry_matches and exit_matches:
