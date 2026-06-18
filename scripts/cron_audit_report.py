@@ -21,6 +21,12 @@ FEISHU_REQUIRED_ENV = ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID")
 
 REQUIRED_READ_ONLY_JOBS = [
     {
+        "name": "cron_audit",
+        "tokens": ["cron_audit_report.py", "/tmp/cron_audit_report.json"],
+        "why": "execution readiness requires a fresh cron audit before runtime wiring can be trusted",
+        "recommended_cron": "*/10 * * * * /usr/bin/python3 /root/cron_audit_report.py --output /tmp/cron_audit_report.json --text >> /tmp/cron_audit_report.log 2>&1",
+    },
+    {
         "name": "system_health",
         "tokens": ["system_health_check.py", "/tmp/quantmind_system_health.json"],
         "why": "fresh system health is required before execution can be trusted",

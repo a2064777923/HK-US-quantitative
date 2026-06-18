@@ -6,6 +6,7 @@ from scripts import cron_audit_report as report
 FULL_CRON = "\n".join(
     f"*/5 * * * * /usr/bin/python3 /root/{script} --output {output} --text"
     for script, output in [
+        ("cron_audit_report.py", "/tmp/cron_audit_report.json"),
         ("system_health_check.py", "/tmp/quantmind_system_health.json"),
         ("data_health_report.py", "/tmp/data_health_report.json"),
         ("data_source_inventory_report.py", "/tmp/data_source_inventory_report.json"),
@@ -72,6 +73,7 @@ class CronAuditReportTests(unittest.TestCase):
             FULL_CRON,
             available_scripts=[
                 "system_health_check.py",
+                "cron_audit_report.py",
                 "data_health_report.py",
                 "data_source_inventory_report.py",
                 "kline_source_granularity_report.py",
@@ -132,6 +134,7 @@ class CronAuditReportTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "WARN")
         missing = {job["name"] for job in payload["missing_required_jobs"]}
+        self.assertIn("cron_audit", missing)
         self.assertIn("hermes_review_packet", missing)
         self.assertIn("rt_signal_outcome", missing)
         self.assertIn("kline_gap_source_diagnostic", missing)
@@ -154,6 +157,8 @@ class CronAuditReportTests(unittest.TestCase):
         self.assertIn("simulation_postmortem_note_draft", missing)
         self.assertIn("operator_action_queue", missing)
         self.assertIn("rt_alert_bridge_notify", missing)
+        cron_audit_job = [job for job in payload["missing_required_jobs"] if job["name"] == "cron_audit"][0]
+        self.assertIn("cron_audit_report.py", cron_audit_job["recommended_cron"])
         packet_job = [job for job in payload["missing_required_jobs"] if job["name"] == "hermes_review_packet"][0]
         self.assertIn("hermes_review_packet.py", packet_job["recommended_cron"])
         plan = payload["installation_plan"]
