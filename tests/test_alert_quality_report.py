@@ -27,6 +27,13 @@ def alert(signal_id, symbol, side, price, trigger="MA", confirmed=True, score=0.
     }
 
 
+def stale_alert(signal_id, symbol, side, price, trigger="MA", confirmed=True, score=0.7, rr=2.0):
+    item = alert(signal_id, symbol, side, price, trigger=trigger, confirmed=confirmed, score=score, rr=rr)
+    item["generated_at"] = "2020-01-01T10:00:00"
+    item["execution_candidate"] = True
+    return item
+
+
 def watch(signal_id, symbol, price):
     item = alert(signal_id, symbol, "WATCH", price, trigger="volume", rr=None)
     item["stop_loss"] = None
@@ -95,6 +102,28 @@ class AlertQualityReportTests(unittest.TestCase):
         self.assertEqual(breakout["marked_count"], 1)
         self.assertEqual(breakout["avg_signed_move_pct"], 10.0)
 
+    def test_stale_alerts_do_not_trigger_strategy_threshold_warning(self):
+        payload = report.build_report(
+            [
+                stale_alert("s1", "TSLA", "SELL", 100, trigger="跌破MA5", score=-0.8),
+                stale_alert("s2", "AAPL", "BUY", 100, trigger="急漲", score=0.9),
+            ],
+            {},
+        )
+
+        self.assertEqual(payload["directional_quality"]["live_validation_pass_count"], 0)
+        self.assertEqual(payload["directional_quality"]["validation_pass_count"], 2)
+        self.assertEqual(payload["directional_quality"]["live_validation_fail_reasons"], {"alert_too_old": 2})
+        self.assertEqual(payload["directional_quality"]["quality_validation_fail_reasons"], {})
+        self.assertNotIn(
+            "directional_validation_pass_rate_below_50pct_review_v5_confirmation_thresholds",
+            payload["recommendations"],
+        )
+        self.assertIn(
+            "live_intake_validation_low_due_to_stale_alerts_do_not_change_strategy_thresholds",
+            payload["recommendations"],
+        )
+
     def test_symbol_conflicts_detects_buy_and_sell_same_symbol(self):
         payload = report.build_report(
             [
@@ -150,6 +179,23 @@ class AlertQualityReportTests(unittest.TestCase):
             "directional_alerts_missing_strategy_config_metadata_restart_v5_with_configured_strategy",
             payload["recommendations"],
         )
+
+    def test_current_sample_scope_uses_directional_candidates_not_only_emitted_directionals(self):
+        legacy = alert("old", "AAPL", "BUY", 100)
+        current = watch("new", "MSFT", 100)
+        current["candidate_signal_type"] = "BUY"
+        current["watchlist_id"] = "new-watchlist"
+        current["strategy_config_id"] = "new-strategy"
+
+        payload = report.build_report([legacy, current], {})
+
+        self.assertEqual(payload["sample_scope"]["mode"], "latest_strategy_config_and_watchlist")
+        self.assertEqual(payload["sample_scope"]["strategy_config_id"], "new-strategy")
+        self.assertEqual(payload["sample_scope"]["watchlist_id"], "new-watchlist")
+        self.assertEqual(payload["sample_scope"]["excluded_alert_count"], 1)
+        self.assertEqual(payload["sample_scope"]["directional_candidate_count"], 1)
+        self.assertEqual(payload["total_alert_count"], 1)
+        self.assertEqual(payload["directional_alert_count"], 0)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ except ImportError:
 ALERT_QUEUE_FILE = os.environ.get("RT_ALERT_QUEUE_FILE", "/tmp/rt_signal_alerts.jsonl")
 PACKET_FILE = os.environ.get("HERMES_REVIEW_PACKET_FILE", "/tmp/hermes_signal_review_packet.json")
 REPORT_FILE = os.environ.get("ALERT_QUALITY_REPORT_FILE", "/tmp/rt_alert_quality_report.json")
+QUALITY_IGNORED_VALIDATION_REASONS = {"alert_too_old"}
 
 
 def now_iso():
@@ -138,6 +139,10 @@ def validation_reasons(alerts):
     return result
 
 
+def quality_validation_reasons(reasons):
+    return [reason for reason in (reasons or []) if reason not in QUALITY_IGNORED_VALIDATION_REASONS]
+
+
 def packet_review_maps(packet):
     items = packet.get("review_items") if isinstance(packet, dict) else []
     by_id = {}
@@ -177,7 +182,7 @@ def infer_current_sample_scope(alerts, sample_scope_mode="current"):
             "latest_signal_id": None,
         }
     for alert in reversed(alerts):
-        if not hermes_review_packet.is_directional(alert):
+        if not hermes_review_packet.is_directional_candidate(alert):
             continue
         strategy_config_id = alert.get("strategy_config_id")
         watchlist_id = alert.get("watchlist_id")
@@ -210,6 +215,10 @@ def apply_sample_scope(alerts, sample_scope_mode="current"):
     scoped = [alert for alert in alerts if alert_matches_scope(alert, scope)]
     all_directional = [alert for alert in alerts if hermes_review_packet.is_directional(alert)]
     scoped_directional = [alert for alert in scoped if hermes_review_packet.is_directional(alert)]
+    all_directional_candidates = [alert for alert in alerts if hermes_review_packet.is_directional_candidate(alert)]
+    scoped_directional_candidates = [
+        alert for alert in scoped if hermes_review_packet.is_directional_candidate(alert)
+    ]
     scope.update(
         {
             "raw_alert_count_before_filter": len(alerts),
@@ -218,6 +227,10 @@ def apply_sample_scope(alerts, sample_scope_mode="current"):
             "directional_alert_count_before_filter": len(all_directional),
             "directional_alert_count": len(scoped_directional),
             "excluded_directional_alert_count": len(all_directional) - len(scoped_directional),
+            "directional_candidate_count_before_filter": len(all_directional_candidates),
+            "directional_candidate_count": len(scoped_directional_candidates),
+            "excluded_directional_candidate_count": len(all_directional_candidates)
+            - len(scoped_directional_candidates),
         }
     )
     return scoped, scope
@@ -232,7 +245,8 @@ def summarize_triggers(directional, validations, packet_maps):
     for (side, trigger), items in grouped.items():
         signal_ids = [intake.signal_id(alert) for alert in items]
         confirmed = [alert for alert in items if alert.get("confirmed") is True]
-        validation_pass = [sid for sid in signal_ids if not validations.get(sid)]
+        live_validation_pass = [sid for sid in signal_ids if not validations.get(sid)]
+        validation_pass = [sid for sid in signal_ids if not quality_validation_reasons(validations.get(sid))]
         packet_items = [packet_maps["by_id"].get(sid) for sid in signal_ids if packet_maps["by_id"].get(sid)]
         eligible = [item for item in packet_items if item.get("eligible_for_approval")]
         moves = [
@@ -247,6 +261,8 @@ def summarize_triggers(directional, validations, packet_maps):
                 "count": len(items),
                 "confirmed_count": len(confirmed),
                 "confirmed_rate_pct": rate(len(confirmed), len(items)),
+                "live_validation_pass_count": len(live_validation_pass),
+                "live_validation_pass_rate_pct": rate(len(live_validation_pass), len(items)),
                 "validation_pass_count": len(validation_pass),
                 "validation_pass_rate_pct": rate(len(validation_pass), len(items)),
                 "packet_review_count": len(packet_items),
@@ -286,8 +302,16 @@ def build_recommendations(summary):
         recs.append("directional_alerts_missing_watchlist_metadata_restart_v5_with_configured_watchlist")
     if missing_strategy:
         recs.append("directional_alerts_missing_strategy_config_metadata_restart_v5_with_configured_strategy")
+    live_fail_reasons = summary["directional_quality"].get("live_validation_fail_reasons") or {}
+    quality_fail_reasons = summary["directional_quality"].get("quality_validation_fail_reasons") or {}
     if summary["directional_quality"]["validation_pass_rate_pct"] < 50 and summary["counts"]["directional_alerts"]:
         recs.append("directional_validation_pass_rate_below_50pct_review_v5_confirmation_thresholds")
+    elif (
+        summary["directional_quality"].get("live_validation_pass_rate_pct", 100) < 50
+        and live_fail_reasons.get("alert_too_old")
+        and not quality_fail_reasons
+    ):
+        recs.append("live_intake_validation_low_due_to_stale_alerts_do_not_change_strategy_thresholds")
     if summary["packet_review"]["eligible_rate_pct"] < 25 and summary["packet_review"]["review_item_count"]:
         recs.append("packet_eligible_rate_below_25pct_keep_alert_sim_disabled")
     noisy = [
@@ -327,9 +351,12 @@ def build_report(alerts, packet=None, sample_scope_mode="current"):
     by_strategy_config_source = Counter(str(alert.get("strategy_config_source") or "missing") for alert in marked_alerts)
     by_strategy_config_id = Counter(str(alert.get("strategy_config_id") or "missing") for alert in marked_alerts)
     validation_fail_reasons = Counter()
+    quality_validation_fail_reasons = Counter()
     for reasons in validations.values():
         for reason in reasons:
             validation_fail_reasons[reason] += 1
+        for reason in quality_validation_reasons(reasons):
+            quality_validation_fail_reasons[reason] += 1
 
     confirmed_directional = [alert for alert in directional if alert.get("confirmed") is True]
     missing_watchlist_metadata = [
@@ -342,7 +369,8 @@ def build_report(alerts, packet=None, sample_scope_mode="current"):
         for alert in directional
         if not alert.get("strategy_config_id") or not alert.get("strategy_config_source")
     ]
-    validation_pass_count = len([sid for sid, reasons in validations.items() if not reasons])
+    live_validation_pass_count = len([sid for sid, reasons in validations.items() if not reasons])
+    validation_pass_count = len([sid for sid, reasons in validations.items() if not quality_validation_reasons(reasons)])
     marked_moves = [
         (alert.get("_mark") or {}).get("signed_move_pct")
         for alert in directional
@@ -388,6 +416,8 @@ def build_report(alerts, packet=None, sample_scope_mode="current"):
             "missing_watchlist_metadata_rate_pct": rate(len(missing_watchlist_metadata), directional_alert_count),
             "missing_strategy_config_metadata_count": len(missing_strategy_metadata),
             "missing_strategy_config_metadata_rate_pct": rate(len(missing_strategy_metadata), directional_alert_count),
+            "live_validation_pass_count": live_validation_pass_count,
+            "live_validation_pass_rate_pct": rate(live_validation_pass_count, directional_alert_count),
             "validation_pass_count": validation_pass_count,
             "validation_pass_rate_pct": rate(validation_pass_count, directional_alert_count),
             "avg_full_score": average([as_float(alert.get("full_score")) for alert in directional]),
@@ -395,7 +425,10 @@ def build_report(alerts, packet=None, sample_scope_mode="current"):
             "marked_count": len([m for m in marked_moves if m is not None]),
             "avg_signed_move_pct": average(marked_moves),
             "positive_mark_rate_pct": rate(len([m for m in marked_moves if m is not None and m > 0]), len([m for m in marked_moves if m is not None])),
-            "validation_fail_reasons": dict(validation_fail_reasons),
+            "live_validation_fail_reasons": dict(validation_fail_reasons),
+            "quality_validation_fail_reasons": dict(quality_validation_fail_reasons),
+            "quality_validation_ignored_reasons": sorted(QUALITY_IGNORED_VALIDATION_REASONS),
+            "validation_fail_reasons": dict(quality_validation_fail_reasons),
         },
         "packet_review": {
             "review_item_count": packet_review_count,
