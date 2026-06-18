@@ -554,7 +554,7 @@ def apply_sample_scope(alerts, sample_scope_mode="current"):
     return scoped, scope
 
 
-def alert_selection_stats(source_alerts, review_alerts, sample_scope=None):
+def alert_selection_stats(source_alerts, review_alerts, sample_scope=None, now=None):
     by_type = {}
     by_candidate_type = {}
     directional = 0
@@ -563,6 +563,13 @@ def alert_selection_stats(source_alerts, review_alerts, sample_scope=None):
     unconfirmed_directional = 0
     execution_candidate_directional = 0
     non_execution_candidate_directional = 0
+    fresh_directional = 0
+    stale_directional = 0
+    fresh_execution_candidate_directional = 0
+    stale_execution_candidate_directional = 0
+    scoped_alerts = source_alerts
+    if sample_scope is not None:
+        scoped_alerts = [alert for alert in source_alerts if alert_matches_scope(alert, sample_scope)]
     for alert in source_alerts:
         side = signal_side(alert)
         candidate = candidate_side(alert)
@@ -580,6 +587,20 @@ def alert_selection_stats(source_alerts, review_alerts, sample_scope=None):
                 execution_candidate_directional += 1
             else:
                 non_execution_candidate_directional += 1
+    for alert in scoped_alerts:
+        candidate = candidate_side(alert)
+        if candidate not in ("BUY", "SELL"):
+            continue
+        is_fresh = is_fresh_review_alert(alert, now=now)
+        if is_fresh:
+            fresh_directional += 1
+        else:
+            stale_directional += 1
+        if alert.get("execution_candidate") is True:
+            if is_fresh:
+                fresh_execution_candidate_directional += 1
+            else:
+                stale_execution_candidate_directional += 1
     return {
         "source_alert_count": len(source_alerts),
         "review_alert_count": len(review_alerts),
@@ -589,6 +610,10 @@ def alert_selection_stats(source_alerts, review_alerts, sample_scope=None):
         "unconfirmed_directional_count": unconfirmed_directional,
         "execution_candidate_directional_count": execution_candidate_directional,
         "non_execution_candidate_directional_count": non_execution_candidate_directional,
+        "fresh_directional_count": fresh_directional,
+        "stale_directional_count": stale_directional,
+        "fresh_execution_candidate_directional_count": fresh_execution_candidate_directional,
+        "stale_execution_candidate_directional_count": stale_execution_candidate_directional,
         "directional_not_selected_count": max(directional - len(review_alerts), 0),
         "by_signal_type": by_type,
         "by_candidate_signal_type": by_candidate_type,
@@ -4071,10 +4096,12 @@ def build_packet(
         source_reliability_payload,
         kline_gap_source_diagnostic_payload,
     )
+    generated_at = now_iso()
+    stats_now = parse_timestamp(generated_at)
     return {
         "schema": "hermes_signal_review_packet_v1",
         "packet_id": packet_id,
-        "generated_at": now_iso(),
+        "generated_at": generated_at,
         "execution_safety": {
             "review_only": True,
             "submits_orders": False,
@@ -4139,7 +4166,7 @@ def build_packet(
         "operator_action_queue": operator_action_queue_payload,
         "judgment_audit": judgment_audit_payload,
         "position_judgment_audit": position_judgment_audit_payload,
-        "alert_selection": alert_selection_stats(source_alerts, alerts, sample_scope=alert_sample_scope),
+        "alert_selection": alert_selection_stats(source_alerts, alerts, sample_scope=alert_sample_scope, now=stats_now),
         "review_items": items,
         "review_item_suppression": review_item_suppression_summary(
             alert_result_pairs,

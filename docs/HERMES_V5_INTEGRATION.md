@@ -564,6 +564,8 @@ cat /tmp/hermes_signal_review_packet.json
 
 When selected alerts are all stale or otherwise observation-only, `review_items[]` is intentionally empty and the packet exposes `review_item_suppression`. Hermes and operators should read `review_item_suppression.status`, `reason_counts`, and `recommendations` before treating an empty packet as a broken review path. `ALL_SELECTED_ALERTS_SUPPRESSED` with `alert_too_old` means the correct action is to wait for fresh confirmed alerts or run packet generation during the relevant market session; Hermes should not write trade judgments for those stale observations.
 
+`alert_selection` now separates current-scope freshness from historical queue totals. `execution_candidate_directional_count` covers the scanned source alerts, while `fresh_execution_candidate_directional_count` and `stale_execution_candidate_directional_count` apply the packet freshness window after scoping to the latest strategy config and watchlist. If `review_alert_count=0` and `fresh_execution_candidate_directional_count=0` but `stale_execution_candidate_directional_count>0`, the review path is not necessarily broken: the actionable technical candidates aged out before Hermes packet generation. Operators should wait for a fresh market-session signal or rerun the packet during session, not approve a stale candidate from totals alone.
+
 For readiness freshness gates, keep a machine-readable system health snapshot at the default path:
 
 ```bash

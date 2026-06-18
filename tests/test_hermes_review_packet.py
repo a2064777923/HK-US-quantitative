@@ -4459,6 +4459,54 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(payload["alert_selection"]["execution_candidate_directional_count"], 1)
         self.assertEqual(payload["alert_selection"]["non_execution_candidate_directional_count"], 2)
 
+    def test_alert_selection_stats_exposes_stale_execution_candidates(self):
+        old = alert("old")
+        old.update(
+            {
+                "generated_at": "2026-06-18T10:00:00",
+                "strategy_config_id": "cfg-current",
+                "watchlist_id": "wl-current",
+                "execution_candidate": True,
+            }
+        )
+        fresh = alert("fresh")
+        fresh.update(
+            {
+                "generated_at": "2026-06-18T10:45:00",
+                "strategy_config_id": "cfg-current",
+                "watchlist_id": "wl-current",
+                "execution_candidate": True,
+            }
+        )
+        out_of_scope = alert("out-of-scope")
+        out_of_scope.update(
+            {
+                "generated_at": "2026-06-18T10:45:00",
+                "strategy_config_id": "cfg-old",
+                "watchlist_id": "wl-current",
+                "execution_candidate": True,
+            }
+        )
+        scope = {
+            "mode": "latest_strategy_config_and_watchlist",
+            "strategy_config_id": "cfg-current",
+            "watchlist_id": "wl-current",
+        }
+
+        stats = packet.alert_selection_stats(
+            [old, fresh, out_of_scope],
+            [fresh],
+            sample_scope=scope,
+            now=datetime(2026, 6, 18, 11, 1, 0),
+        )
+
+        self.assertEqual(stats["directional_count"], 3)
+        self.assertEqual(stats["execution_candidate_directional_count"], 3)
+        self.assertEqual(stats["fresh_directional_count"], 1)
+        self.assertEqual(stats["stale_directional_count"], 1)
+        self.assertEqual(stats["fresh_execution_candidate_directional_count"], 1)
+        self.assertEqual(stats["stale_execution_candidate_directional_count"], 1)
+
     def test_archive_packet_writes_snapshot_by_packet_id(self):
         payload = {
             "schema": "hermes_signal_review_packet_v1",
