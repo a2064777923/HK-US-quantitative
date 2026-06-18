@@ -883,7 +883,8 @@ class RtSignalOutcomeReportTests(unittest.TestCase):
             ],
         }
 
-        payload = report.build_report([legacy, current], klines_by_symbol=klines, horizons=(1,))
+        with patch.object(report.rt_runtime_scope, "current_runtime_sample_scope", return_value={"mode": "runtime_scope_unavailable"}):
+            payload = report.build_report([legacy, current], klines_by_symbol=klines, horizons=(1,))
 
         self.assertEqual(payload["sample_scope"]["mode"], "latest_strategy_config_and_watchlist")
         self.assertEqual(payload["sample_scope"]["excluded_alert_count"], 1)
@@ -896,6 +897,28 @@ class RtSignalOutcomeReportTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["missing_strategy_config_metadata_count"], 0)
         self.assertEqual(payload["by_strategy_config"][0]["key"], "cfg-a")
         self.assertEqual(payload["by_watchlist"][0]["key"], "wl-a")
+
+    def test_current_sample_scope_prefers_runtime_strategy_watchlist_over_latest_old_alert(self):
+        runtime = alert("runtime", "MSFT", "BUY", strategy_config_id="cfg-runtime", watchlist_id="wl-current")
+        old_latest = alert("old-latest", "AAPL", "BUY", strategy_config_id="cfg-old", watchlist_id="wl-current")
+        klines = {
+            "AAPL": [{"date": "2026-06-11", "open": 100, "high": 112, "low": 99, "close": 110}],
+            "MSFT": [{"date": "2026-06-11", "open": 100, "high": 112, "low": 99, "close": 110}],
+        }
+        runtime_scope = {
+            "mode": "runtime_strategy_config_and_watchlist",
+            "strategy_config_id": "cfg-runtime",
+            "watchlist_id": "wl-current",
+        }
+
+        with patch.object(report.rt_runtime_scope, "current_runtime_sample_scope", return_value=runtime_scope):
+            payload = report.build_report([runtime, old_latest], klines_by_symbol=klines, horizons=(1,))
+
+        self.assertEqual(payload["sample_scope"]["mode"], "runtime_strategy_config_and_watchlist")
+        self.assertEqual(payload["sample_scope"]["strategy_config_id"], "cfg-runtime")
+        self.assertEqual(payload["sample_scope"]["excluded_alert_count"], 1)
+        self.assertEqual(payload["raw_alert_count"], 1)
+        self.assertEqual(payload["evaluated_signal_count"], 1)
 
 
 if __name__ == "__main__":

@@ -9,8 +9,10 @@ from datetime import datetime
 
 try:
     import rt_order_intake as intake
+    import rt_runtime_scope
 except ImportError:
     from scripts import rt_order_intake as intake
+    from scripts import rt_runtime_scope
 
 
 ALERT_QUEUE_FILE = os.environ.get("RT_ALERT_QUEUE_FILE", "/tmp/rt_signal_alerts.jsonl")
@@ -243,6 +245,9 @@ def infer_current_sample_scope(alerts, sample_scope_mode=DEFAULT_SAMPLE_SCOPE_MO
             "watchlist_id": None,
             "latest_signal_id": None,
         }
+    runtime_scope = rt_runtime_scope.current_runtime_sample_scope()
+    if rt_runtime_scope.filters_strategy_watchlist(runtime_scope):
+        return runtime_scope
     latest = None
     latest_key = ""
     for alert in alerts.values():
@@ -272,7 +277,7 @@ def infer_current_sample_scope(alerts, sample_scope_mode=DEFAULT_SAMPLE_SCOPE_MO
 
 
 def row_matches_scope(row, scope):
-    if (scope or {}).get("mode") != "latest_strategy_config_and_watchlist":
+    if not rt_runtime_scope.filters_strategy_watchlist(scope):
         return True
     return (
         str(row.get("strategy_config_id") or "") == scope.get("strategy_config_id")

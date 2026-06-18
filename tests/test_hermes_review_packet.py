@@ -4,6 +4,7 @@ import os
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts import hermes_judgment_audit_report as audit
 from scripts import hermes_review_packet as packet
@@ -4411,7 +4412,8 @@ class HermesReviewPacketTests(unittest.TestCase):
         current_watch = downgraded_directional_watch("current-watch")
         plain_watch = watch_alert("plain-watch")
 
-        scoped, scope = packet.apply_sample_scope([old, plain_watch, current_watch], sample_scope_mode="current")
+        with patch.object(packet.rt_runtime_scope, "current_runtime_sample_scope", return_value={"mode": "runtime_scope_unavailable"}):
+            scoped, scope = packet.apply_sample_scope([old, plain_watch, current_watch], sample_scope_mode="current")
 
         self.assertEqual(scope["mode"], "latest_strategy_config_and_watchlist")
         self.assertEqual(scope["strategy_config_id"], "cfg-current")
@@ -4429,7 +4431,8 @@ class HermesReviewPacketTests(unittest.TestCase):
         current = alert("current")
         current.update({"strategy_config_id": "cfg-current", "watchlist_id": "wl"})
 
-        selected = packet.select_review_alerts([old, current_earlier, current], limit=10)
+        with patch.object(packet.rt_runtime_scope, "current_runtime_sample_scope", return_value={"mode": "runtime_scope_unavailable"}):
+            selected = packet.select_review_alerts([old, current_earlier, current], limit=10)
 
         self.assertEqual([item["signal_id"] for item in selected], ["current-earlier", "current"])
 
@@ -4439,6 +4442,24 @@ class HermesReviewPacketTests(unittest.TestCase):
             sample_scope_mode="all",
         )
         self.assertEqual([item["signal_id"] for item in selected_all], ["old", "current-earlier", "current"])
+
+    def test_sample_scope_prefers_runtime_strategy_watchlist_over_latest_old_alert(self):
+        runtime = alert("runtime")
+        runtime.update({"strategy_config_id": "cfg-runtime", "watchlist_id": "wl-current"})
+        old_latest = alert("old-latest")
+        old_latest.update({"strategy_config_id": "cfg-old", "watchlist_id": "wl-current"})
+        runtime_scope = {
+            "mode": "runtime_strategy_config_and_watchlist",
+            "strategy_config_id": "cfg-runtime",
+            "watchlist_id": "wl-current",
+        }
+
+        with patch.object(packet.rt_runtime_scope, "current_runtime_sample_scope", return_value=runtime_scope):
+            scoped, scope = packet.apply_sample_scope([runtime, old_latest], sample_scope_mode="current")
+
+        self.assertEqual(scope["mode"], "runtime_strategy_config_and_watchlist")
+        self.assertEqual([item["signal_id"] for item in scoped], ["runtime"])
+        self.assertEqual(scope["excluded_alert_count"], 1)
 
     def test_packet_alert_selection_counts_source_noise(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}

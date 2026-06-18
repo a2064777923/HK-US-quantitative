@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts import hermes_judgment_audit_report as audit
 from scripts import strategy_learning_report as learning
@@ -446,12 +447,17 @@ class StrategyLearningReportTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            payload = learning.build_report(
-                alert_queue_file=str(alerts),
-                judgment_file=str(judgments),
-                intake_state_file=str(state),
-                outcome_report_file=str(outcomes),
-            )
+            with patch.object(
+                learning.rt_runtime_scope,
+                "current_runtime_sample_scope",
+                return_value={"mode": "runtime_scope_unavailable"},
+            ):
+                payload = learning.build_report(
+                    alert_queue_file=str(alerts),
+                    judgment_file=str(judgments),
+                    intake_state_file=str(state),
+                    outcome_report_file=str(outcomes),
+                )
             all_payload = learning.build_report(
                 alert_queue_file=str(alerts),
                 judgment_file=str(judgments),
@@ -470,6 +476,66 @@ class StrategyLearningReportTests(unittest.TestCase):
         self.assertEqual(payload["intake_coverage"]["coverage_pct"], 100.0)
         self.assertEqual(all_payload["sample_scope"]["mode"], "all_joined_signals")
         self.assertEqual(all_payload["join_counts"]["joined_signal_count"], 2)
+
+    def test_default_sample_scope_prefers_runtime_strategy_watchlist_over_latest_old_alert(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            alerts = root / "alerts.jsonl"
+            judgments = root / "judgments.jsonl"
+            state = root / "state.json"
+            outcomes = root / "outcome.json"
+            runtime_alert = alert("runtime", "RSI")
+            runtime_alert.update(
+                {"strategy_config_id": "cfg-runtime", "watchlist_id": "wl-current", "generated_at": "2026-06-12T09:00:00"}
+            )
+            old_latest = alert("old-latest", "MA")
+            old_latest.update(
+                {"strategy_config_id": "cfg-old", "watchlist_id": "wl-current", "generated_at": "2026-06-12T10:00:00"}
+            )
+            write_jsonl(alerts, [runtime_alert, old_latest])
+            write_jsonl(judgments, [])
+            state.write_text(
+                json.dumps(
+                    {
+                        "dry_runs": {
+                            "runtime": intake_decision("runtime", "dry_run"),
+                            "old-latest": intake_decision("old-latest", "dry_run"),
+                        },
+                        "processed": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            outcomes.write_text(
+                json.dumps(
+                    {
+                        "schema": "rt_signal_outcome_report_v1",
+                        "evaluations": [
+                            outcome("runtime", 2.0, "RSI"),
+                            outcome("old-latest", -1.0, "MA"),
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            runtime_scope = {
+                "mode": "runtime_strategy_config_and_watchlist",
+                "strategy_config_id": "cfg-runtime",
+                "watchlist_id": "wl-current",
+            }
+
+            with patch.object(learning.rt_runtime_scope, "current_runtime_sample_scope", return_value=runtime_scope):
+                payload = learning.build_report(
+                    alert_queue_file=str(alerts),
+                    judgment_file=str(judgments),
+                    intake_state_file=str(state),
+                    outcome_report_file=str(outcomes),
+                )
+
+        self.assertEqual(payload["sample_scope"]["mode"], "runtime_strategy_config_and_watchlist")
+        self.assertEqual(payload["sample_scope"]["strategy_config_id"], "cfg-runtime")
+        self.assertEqual(payload["sample_scope"]["excluded_joined_signal_count"], 1)
+        self.assertEqual(payload["overall"]["avg_signed_return_pct"], 2.0)
 
     def test_intake_coverage_reports_missing_decisions_without_dominant_blocker(self):
         rows = [

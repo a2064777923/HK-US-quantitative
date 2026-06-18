@@ -17,18 +17,21 @@ from datetime import datetime, timedelta
 try:
     import portfolio_report
     import rt_order_intake as intake
+    import rt_runtime_scope
     import stock_universe_hygiene_promote as universe_promote
     import system_health_check
 except ImportError:
     try:
         from scripts import portfolio_report
         from scripts import rt_order_intake as intake
+        from scripts import rt_runtime_scope
         from scripts import stock_universe_hygiene_promote as universe_promote
         from scripts import system_health_check
     except ImportError:
         universe_promote = None
         from scripts import portfolio_report
         from scripts import rt_order_intake as intake
+        from scripts import rt_runtime_scope
         from scripts import system_health_check
 
 
@@ -508,6 +511,9 @@ def infer_current_sample_scope(alerts, sample_scope_mode="current"):
             "watchlist_id": None,
             "latest_signal_id": None,
         }
+    runtime_scope = rt_runtime_scope.current_runtime_sample_scope()
+    if rt_runtime_scope.filters_strategy_watchlist(runtime_scope):
+        return runtime_scope
     for alert in reversed(alerts):
         if not is_directional_candidate(alert):
             continue
@@ -529,7 +535,7 @@ def infer_current_sample_scope(alerts, sample_scope_mode="current"):
 
 
 def alert_matches_scope(alert, scope):
-    if (scope or {}).get("mode") != "latest_strategy_config_and_watchlist":
+    if not rt_runtime_scope.filters_strategy_watchlist(scope):
         return True
     return (
         str(alert.get("strategy_config_id") or "") == scope.get("strategy_config_id")

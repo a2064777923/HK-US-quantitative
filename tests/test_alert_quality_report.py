@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from scripts import alert_quality_report as report
 
@@ -210,7 +211,8 @@ class AlertQualityReportTests(unittest.TestCase):
             legacy.pop(key)
         current = alert("new", "MSFT", "BUY", 100)
 
-        payload = report.build_report([legacy, current], {})
+        with patch.object(report.rt_runtime_scope, "current_runtime_sample_scope", return_value={"mode": "runtime_scope_unavailable"}):
+            payload = report.build_report([legacy, current], {})
 
         self.assertEqual(payload["sample_scope"]["mode"], "latest_strategy_config_and_watchlist")
         self.assertEqual(payload["sample_scope"]["excluded_alert_count"], 1)
@@ -235,7 +237,8 @@ class AlertQualityReportTests(unittest.TestCase):
         current["watchlist_id"] = "new-watchlist"
         current["strategy_config_id"] = "new-strategy"
 
-        payload = report.build_report([legacy, current], {})
+        with patch.object(report.rt_runtime_scope, "current_runtime_sample_scope", return_value={"mode": "runtime_scope_unavailable"}):
+            payload = report.build_report([legacy, current], {})
 
         self.assertEqual(payload["sample_scope"]["mode"], "latest_strategy_config_and_watchlist")
         self.assertEqual(payload["sample_scope"]["strategy_config_id"], "new-strategy")
@@ -244,6 +247,30 @@ class AlertQualityReportTests(unittest.TestCase):
         self.assertEqual(payload["sample_scope"]["directional_candidate_count"], 1)
         self.assertEqual(payload["total_alert_count"], 1)
         self.assertEqual(payload["directional_alert_count"], 0)
+
+    def test_current_sample_scope_prefers_runtime_strategy_watchlist_over_latest_old_alert(self):
+        old = alert("old", "AAPL", "BUY", 100)
+        old["strategy_config_id"] = "cfg-old"
+        old["watchlist_id"] = "wl-current"
+        runtime_watch = watch("runtime-watch", "MSFT", 100)
+        runtime_watch["candidate_signal_type"] = "BUY"
+        runtime_watch["strategy_config_id"] = "cfg-runtime"
+        runtime_watch["watchlist_id"] = "wl-current"
+        runtime_scope = {
+            "mode": "runtime_strategy_config_and_watchlist",
+            "strategy_config_id": "cfg-runtime",
+            "watchlist_id": "wl-current",
+            "strategy_config_version": "v5.5-test",
+        }
+
+        with patch.object(report.rt_runtime_scope, "current_runtime_sample_scope", return_value=runtime_scope):
+            payload = report.build_report([runtime_watch, old], {})
+
+        self.assertEqual(payload["sample_scope"]["mode"], "runtime_strategy_config_and_watchlist")
+        self.assertEqual(payload["sample_scope"]["strategy_config_id"], "cfg-runtime")
+        self.assertEqual(payload["sample_scope"]["strategy_config_version"], "v5.5-test")
+        self.assertEqual(payload["sample_scope"]["excluded_alert_count"], 1)
+        self.assertEqual(payload["total_alert_count"], 1)
 
 
 if __name__ == "__main__":

@@ -16,8 +16,10 @@ from datetime import datetime, timedelta
 
 try:
     import rt_order_intake as intake
+    import rt_runtime_scope
 except ImportError:
     from scripts import rt_order_intake as intake
+    from scripts import rt_runtime_scope
 
 
 DB_CONTAINER = os.environ.get("QM_DB_CONTAINER", "quantmind-db")
@@ -1143,6 +1145,9 @@ def infer_current_sample_scope(alerts, sample_scope_mode="current"):
             "watchlist_id": None,
             "latest_signal_id": None,
         }
+    runtime_scope = rt_runtime_scope.current_runtime_sample_scope()
+    if rt_runtime_scope.filters_strategy_watchlist(runtime_scope):
+        return runtime_scope
     for alert in reversed(alerts):
         if not is_directional_candidate(alert):
             continue
@@ -1164,7 +1169,7 @@ def infer_current_sample_scope(alerts, sample_scope_mode="current"):
 
 
 def alert_matches_scope(alert, scope):
-    if (scope or {}).get("mode") != "latest_strategy_config_and_watchlist":
+    if not rt_runtime_scope.filters_strategy_watchlist(scope):
         return True
     return (
         str(alert.get("strategy_config_id") or "") == scope.get("strategy_config_id")
