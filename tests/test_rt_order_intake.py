@@ -978,6 +978,8 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertEqual(result["status"], "submitted")
             self.assertEqual(result["order_backend"], "alpaca-paper")
             self.assertEqual(result["order_result"]["id"], "alpaca-order")
+            self.assertEqual(result["order_result"]["client_order_id"], "qm-sig-alpaca-paper")
+            self.assertEqual(result["plan"]["client_order_id"], "qm-sig-alpaca-paper")
             alpaca_submit.assert_called_once_with("AAPL", "buy", result["plan"]["quantity"], "sig-alpaca-paper")
             qm_submit.assert_not_called()
 
@@ -1065,6 +1067,8 @@ class RtOrderIntakeTests(unittest.TestCase):
         self.assertEqual(result["status"], "submitted")
         self.assertEqual(result["plan"]["quantity"], 3)
         self.assertEqual(result["original_plan"]["quantity"], 175)
+        self.assertEqual(result["plan"]["client_order_id"], "qm-sig-alpaca-capped")
+        self.assertEqual(result["order_result"]["client_order_id"], "qm-sig-alpaca-capped")
         alpaca_submit.assert_called_once_with("BAC", "buy", 3, "sig-alpaca-capped")
 
     def test_alpaca_client_order_id_is_traceable_and_bounded(self):
@@ -1072,6 +1076,33 @@ class RtOrderIntakeTests(unittest.TestCase):
         self.assertTrue(cid.startswith("qm-"))
         self.assertLessEqual(len(cid), 48)
         self.assertNotIn(":", cid)
+
+    def test_alpaca_submit_returns_requested_client_order_id_when_api_omits_it(self):
+        with patch.object(intake, "alpaca_request", return_value={"id": "broker-id"}) as request:
+            result = intake.submit_alpaca_paper_order("BAC", "buy", 3, "sig-client-id")
+
+        self.assertEqual(result["id"], "broker-id")
+        self.assertEqual(result["client_order_id"], "qm-sig-client-id")
+        self.assertEqual(result["broker"], "alpaca-paper")
+        sent = request.call_args.kwargs["data"]
+        self.assertEqual(sent["client_order_id"], "qm-sig-client-id")
+
+    def test_execute_rejects_when_required_gate_is_disabled(self):
+        intake.REQUIRE_EXECUTION_READINESS = False
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-disabled-readiness")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            with patch.object(intake, "submit_order") as submit:
+                result = intake.process_alert(alert, "execute", state, state_file, judgment_file)
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertIn("execute_gate_contract_failed", result["reasons"])
+        self.assertIn("execution_readiness_gate_disabled", result["execute_gate_contract"]["reasons"])
+        submit.assert_not_called()
 
     def test_us_alpaca_paper_requires_credentials(self):
         intake.US_ORDER_BROKER = "alpaca-paper"

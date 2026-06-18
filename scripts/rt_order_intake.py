@@ -454,18 +454,20 @@ def alpaca_client_order_id(signal_id_value):
 
 
 def submit_alpaca_paper_order(symbol, side, quantity, signal_id_value=None):
+    client_order_id = alpaca_client_order_id(signal_id_value)
     order = {
         "symbol": symbol,
         "side": side.lower(),
         "type": "market",
         "time_in_force": "day",
         "qty": str(int(quantity)),
-        "client_order_id": alpaca_client_order_id(signal_id_value),
+        "client_order_id": client_order_id,
     }
     result = alpaca_request("/orders", method="POST", data=order)
     if isinstance(result, dict):
         result = dict(result)
         result.setdefault("broker", "alpaca-paper")
+        result.setdefault("client_order_id", client_order_id)
     return result
 
 
@@ -491,6 +493,26 @@ def submit_order_to_backend(token, backend, plan):
             plan.get("signal_id"),
         )
     return submit_order(token, plan["symbol"], plan["side"], plan["quantity"], plan["price_reference"])
+
+
+def execute_gate_contract(mode):
+    if mode != "execute":
+        return True, {"status": "NOT_REQUIRED"}
+    reasons = []
+    if not REQUIRE_EXECUTION_READINESS:
+        reasons.append("execution_readiness_gate_disabled")
+    if not REQUIRE_STRATEGY_EVIDENCE:
+        reasons.append("strategy_evidence_gate_disabled")
+    if not REQUIRE_HERMES_JUDGMENT:
+        reasons.append("hermes_judgment_gate_disabled")
+    if not REQUIRE_MARKET_CONTEXT:
+        reasons.append("market_context_gate_disabled")
+    if not REQUIRE_NO_SYMBOL_CONFLICT:
+        reasons.append("symbol_conflict_gate_disabled")
+    return not reasons, {
+        "status": "PASS" if not reasons else "REJECTED",
+        "reasons": reasons,
+    }
 
 
 def health_gate(mode):
@@ -1522,6 +1544,18 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
             "previous": state["processed"][sid],
         }
 
+    contract_ok, execute_contract = execute_gate_contract(mode)
+    if not contract_ok:
+        decision = {
+            "signal_id": sid,
+            "status": "rejected",
+            "reasons": ["execute_gate_contract_failed"],
+            "execute_gate_contract": execute_contract,
+            "checked_at": now_iso(),
+        }
+        record_decision(state, sid, decision, state_file, mode)
+        return decision
+
     validation_errors = validate_alert(alert)
     if validation_errors:
         decision = {
@@ -1640,6 +1674,8 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
         record_decision(state, sid, decision, state_file, mode)
         return decision
     plan["signal_id"] = sid
+    if backend == "alpaca-paper":
+        plan["client_order_id"] = alpaca_client_order_id(sid)
 
     hermes_ok, plan, hermes_gate = evaluate_hermes_judgment(alert, plan, context, mode, judgment_file)
     if not hermes_ok:
@@ -1689,6 +1725,8 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
         pilot_cap = pilot_cap_gate
     if pilot_capped_plan is not None:
         pilot_plan = pilot_capped_plan
+    if backend == "alpaca-paper":
+        pilot_plan["client_order_id"] = alpaca_client_order_id(sid)
     pilot_ok, pilot_gate = pilot_execution_gate(alert, pilot_plan, state, mode)
 
     base = {
@@ -1743,6 +1781,9 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
     record_processed(state, sid, base, state_file)
     try:
         result = submit_order_to_backend(token, backend, pilot_plan)
+        if backend == "alpaca-paper" and isinstance(result, dict):
+            result = dict(result)
+            result.setdefault("client_order_id", pilot_plan.get("client_order_id"))
         final = dict(base)
         final.update({"status": "submitted", "order_result": result, "submitted_at": now_iso()})
         record_processed(state, sid, final, state_file)
