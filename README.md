@@ -108,6 +108,8 @@ The packet combines:
 - execution readiness blockers;
 - user/simulation `position_review` items.
 
+Data health includes a `trade_relevant_scope` slice for the current watchlist, user holdings, and simulation holdings. This lets Hermes see whether broad-universe data warnings affect trade-relevant symbols; it is read-only context and does not override readiness or intake gates.
+
 Hermes judgments are advisory artifacts. Position review decisions must stay advisory and must not be confused with user-broker order instructions.
 By default, trade `review_items` are selected only from fresh confirmed directional alerts within the order-intake freshness window. Stale alerts remain in `/tmp/rt_signal_alerts.jsonl`, outcome reports, and non-trade diagnostics, but they are not re-fed to Hermes as current trade-approval work. Operators can run `hermes_review_packet.py --include-stale` for debugging old alerts.
 

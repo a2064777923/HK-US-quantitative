@@ -222,6 +222,11 @@ def base_component(name, path, expected_schema, payload, now, timestamp_keys, ma
 
 def apply_data_health(component, payload):
     markets = payload.get("markets") if isinstance(payload.get("markets"), dict) else {}
+    trade_relevant_scope = (
+        payload.get("trade_relevant_scope")
+        if isinstance(payload.get("trade_relevant_scope"), dict)
+        else {}
+    )
     source_counts = Counter()
     missing_source = 0
     repair_source = 0
@@ -237,6 +242,23 @@ def apply_data_health(component, payload):
         "missing_daily_latest_source_count": missing_source,
         "repair_daily_latest_count": repair_source,
     }
+    if trade_relevant_scope:
+        scopes = trade_relevant_scope.get("scopes") if isinstance(trade_relevant_scope.get("scopes"), list) else []
+        component["coverage"]["trade_relevant_scope"] = {
+            "schema": trade_relevant_scope.get("schema"),
+            "status": trade_relevant_scope.get("status"),
+            "summary": trade_relevant_scope.get("summary") if isinstance(trade_relevant_scope.get("summary"), dict) else {},
+            "scopes": [
+                {
+                    "scope": row.get("scope"),
+                    "status": row.get("status"),
+                    "symbol_count": row.get("symbol_count"),
+                    "warnings": row.get("warnings") or [],
+                }
+                for row in scopes[:8]
+                if isinstance(row, dict)
+            ],
+        }
     if missing_source:
         component["reasons"].append("daily_latest_data_source_missing")
     if repair_source:

@@ -4028,6 +4028,33 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertIn("v5_local_replay", compact["omitted_top_level_context"])
         self.assertEqual(compact["strategy_learning_brief"]["schema"], "hermes_strategy_learning_brief_v1")
 
+    def test_compact_packet_preserves_trade_relevant_data_health_scope(self):
+        full = {
+            "schema": "hermes_signal_review_packet_v1",
+            "packet_id": "packet-data-scope",
+            "data_health": {
+                "schema": "data_health_report_v1",
+                "status": "WARN",
+                "markets": {"HK": {"status": "WARN", "sample_stale_symbols": ["00959"]}},
+                "trade_relevant_scope": {
+                    "schema": "data_health_trade_relevant_scope_v1",
+                    "status": "OK",
+                    "summary": {"combined_symbol_count": 2, "status_counts": {"OK": 3}},
+                    "scopes": [
+                        {"scope": "watchlist", "status": "OK", "symbol_count": 1},
+                        {"scope": "user_positions", "status": "OK", "symbol_count": 1},
+                    ],
+                },
+            },
+        }
+
+        compact = packet.compact_packet(full)
+
+        scoped = compact["data_health"]["trade_relevant_scope"]
+        self.assertEqual(scoped["schema"], "data_health_trade_relevant_scope_v1")
+        self.assertEqual(scoped["status"], "OK")
+        self.assertEqual(scoped["summary"]["combined_symbol_count"], 2)
+
     def test_kline_daily_gap_repair_is_visible_but_does_not_relax_eligibility(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
         portfolio = {"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []}

@@ -184,6 +184,44 @@ class DataHealthReportTests(unittest.TestCase):
         text = report.build_text_report(payload)
         self.assertIn("daily_gap_remediation:", text)
 
+    def test_trade_relevant_scope_separates_watchlist_and_positions_from_broad_universe(self):
+        stocks = [stock("HK", "00700"), stock("HK", "00959"), stock("US", "PDD")]
+        rows = (
+            history("HK", "00700", "2026-06-12")
+            + history("US", "PDD", "2026-06-12")
+            + history("HK", "00959", "2025-06-25", latest_minute_date="2026-06-12")
+        )
+
+        with patch.object(report, "load_watchlist_symbols", return_value=({"HK": ["00700"]}, [])), patch.object(
+            report,
+            "fetch_open_position_symbols",
+            side_effect=[
+                ({"US": ["PDD"]}, []),
+                ({}, []),
+            ],
+        ):
+            payload = report.build_report(
+                stock_rows=stocks,
+                kline_rows=rows,
+                signal_rows=[signal("HK", "2026-06-12"), signal("US", "2026-06-12", count=1)],
+                feature_run_rows=[feature(expected=3, ready=3)],
+                current_dt=datetime(2026, 6, 12, 17, 0),
+            )
+
+        self.assertEqual(payload["status"], "WARN")
+        scoped = payload["trade_relevant_scope"]
+        self.assertEqual(scoped["schema"], "data_health_trade_relevant_scope_v1")
+        self.assertEqual(scoped["status"], "WARN")
+        self.assertFalse(scoped["submits_orders"])
+        by_scope = {item["scope"]: item for item in scoped["scopes"]}
+        self.assertEqual(by_scope["watchlist"]["status"], "OK")
+        self.assertEqual(by_scope["watchlist"]["symbol_count"], 1)
+        self.assertEqual(by_scope["user_positions"]["status"], "OK")
+        self.assertEqual(by_scope["user_positions"]["symbol_count"], 1)
+        self.assertEqual(by_scope["simulation_positions"]["status"], "WARN")
+        self.assertIn("scope_has_no_symbols", by_scope["simulation_positions"]["warnings"])
+        self.assertIn("trade_relevant_scope:", report.build_text_report(payload))
+
     def test_flags_repair_latest_data_sources_as_warning_context(self):
         stocks = [stock("HK", "00700"), stock("HK", "01918")]
         rows = history("HK", "00700", "2026-06-12", latest_minute_date="2026-06-12") + history(

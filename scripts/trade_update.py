@@ -190,7 +190,10 @@ def fetch_open_position(cur, portfolio_id, symbol):
         """
         SELECT id, quantity, avg_cost, total_cost, current_price, currency
         FROM positions
-        WHERE portfolio_id = %s AND symbol = %s AND status = 'holding'
+        WHERE portfolio_id = %s
+          AND symbol = %s
+          AND status = 'holding'
+          AND COALESCE(quantity, 0) > 0
         ORDER BY id DESC
         LIMIT 1
         """,
@@ -453,7 +456,9 @@ def cmd_list(args):
             """
             SELECT symbol, quantity, avg_cost, current_price, unrealized_pnl_rate, exchange, status, currency
             FROM positions
-            WHERE portfolio_id = %s AND status = 'holding'
+            WHERE portfolio_id = %s
+              AND status = 'holding'
+              AND COALESCE(quantity, 0) > 0
             ORDER BY exchange, symbol
             """,
             (portfolio_id,),

@@ -238,6 +238,33 @@ class SourceReliabilityReportTests(unittest.TestCase):
         self.assertTrue(result["source"]["read_only"])
         self.assertFalse(result["source"]["submits_orders"])
 
+    def test_data_health_trade_relevant_scope_is_preserved_as_coverage_context(self):
+        inputs = ok_payloads()
+        inputs["data_health"] = payload(
+            "data_health_report_v1",
+            status="WARN",
+            trade_relevant_scope={
+                "schema": "data_health_trade_relevant_scope_v1",
+                "status": "WARN",
+                "summary": {"combined_symbol_count": 12, "status_counts": {"WARN": 1, "OK": 2}},
+                "scopes": [
+                    {"scope": "watchlist", "status": "WARN", "symbol_count": 95, "warnings": []},
+                    {"scope": "user_positions", "status": "OK", "symbol_count": 12, "warnings": []},
+                ],
+            },
+        )
+
+        result = report.build_report(inputs, now=NOW)
+        data_health = [row for row in result["components"] if row["name"] == "data_health"][0]
+        scoped = data_health["coverage"]["trade_relevant_scope"]
+
+        self.assertEqual(result["status"], "DEGRADED")
+        self.assertEqual(scoped["schema"], "data_health_trade_relevant_scope_v1")
+        self.assertEqual(scoped["status"], "WARN")
+        self.assertEqual(scoped["summary"]["combined_symbol_count"], 12)
+        self.assertEqual(scoped["scopes"][1]["scope"], "user_positions")
+        self.assertEqual(scoped["scopes"][1]["status"], "OK")
+
     def test_partial_fundamentals_degrade_source_reliability(self):
         inputs = ok_payloads()
         inputs["fundamentals_context"] = payload(

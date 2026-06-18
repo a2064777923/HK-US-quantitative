@@ -40,6 +40,8 @@ KLINE_DAILY_GAP_REPAIR_COMMAND = os.environ.get(
     "DATA_HEALTH_KLINE_DAILY_GAP_REPAIR_COMMAND",
     "/usr/bin/python3 /root/kline_daily_gap_repair.py --output /tmp/kline_daily_gap_repair.json --text",
 )
+WATCHLIST_FILE = os.environ.get("RT_SIGNAL_WATCHLIST_FILE", "/root/rt_signal_watchlist.json")
+SIM_PORTFOLIO_ID = int(os.environ.get("QM_SIM_PORTFOLIO_ID", os.environ.get("QM_PORTFOLIO_ID", "8")))
 
 SEVERITY = {"OK": 0, "WARN": 1, "FAIL": 2}
 _COLUMN_CACHE = {}
@@ -117,6 +119,92 @@ def rows(stdout):
 
 def sql_quote(value):
     return str(value).replace("'", "''")
+
+
+def normalize_symbol(symbol):
+    return str(symbol or "").strip().upper()
+
+
+def normalize_market(market):
+    market = str(market or "").strip().upper()
+    return market if market in ("HK", "US") else None
+
+
+def market_for_symbol(symbol, exchange=None):
+    exchange = str(exchange or "").strip().upper()
+    symbol = normalize_symbol(symbol)
+    if exchange in ("HK", "HKEX", "SEHK") or (symbol.isdigit() and len(symbol) == 5):
+        return "HK"
+    if exchange in ("US", "NASDAQ", "NYSE", "AMEX"):
+        return "US"
+    return "HK" if symbol.isdigit() and len(symbol) == 5 else "US"
+
+
+def user_portfolio_ids(default=(3,)):
+    ids = []
+    seen = set()
+    for name in ("QM_HOLDINGS_PORTFOLIO_ID", "QM_USER_PORTFOLIO_ID", "QM_USER_PORTFOLIO_IDS"):
+        raw = os.environ.get(name, "")
+        for item in str(raw).split(","):
+            item = item.strip()
+            if item.isdigit() and int(item) not in seen:
+                ids.append(int(item))
+                seen.add(int(item))
+    return ids or list(default)
+
+
+def symbols_by_market(rows):
+    grouped = defaultdict(set)
+    for row in rows or []:
+        symbol = normalize_symbol(row.get("symbol"))
+        market = normalize_market(row.get("market")) or market_for_symbol(symbol, row.get("exchange"))
+        if symbol and market:
+            grouped[market].add(symbol)
+    return {market: sorted(symbols) for market, symbols in sorted(grouped.items())}
+
+
+def load_watchlist_symbols(path=WATCHLIST_FILE):
+    if not path or not os.path.exists(path):
+        return {}, [f"watchlist_file_missing:{path}"]
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception as exc:
+        return {}, [f"watchlist_file_unreadable:{exc}"]
+    markets = payload.get("markets") if isinstance(payload, dict) else {}
+    grouped = defaultdict(set)
+    if isinstance(markets, dict):
+        for market, section in markets.items():
+            normalized_market = normalize_market(market)
+            symbols = section.get("symbols") if isinstance(section, dict) else section
+            if not normalized_market or not isinstance(symbols, list):
+                continue
+            for symbol in symbols:
+                normalized = normalize_symbol(symbol)
+                if normalized:
+                    grouped[normalized_market].add(normalized)
+    return {market: sorted(symbols) for market, symbols in sorted(grouped.items())}, []
+
+
+def fetch_open_position_symbols(portfolio_ids, statuses=("holding", "active")):
+    portfolio_ids = [int(item) for item in portfolio_ids if str(item).isdigit() or isinstance(item, int)]
+    if not portfolio_ids or not table_columns("positions"):
+        return {}, []
+    placeholders = ",".join(str(item) for item in portfolio_ids)
+    status_values = ",".join(f"'{sql_quote(status)}'" for status in statuses)
+    exchange_expr = first_existing("positions", ("exchange", "market"), "''")
+    r = psql(
+        f"""
+        SELECT symbol, {exchange_expr}
+        FROM positions
+        WHERE portfolio_id IN ({placeholders})
+          AND status IN ({status_values})
+          AND COALESCE(quantity, 0) > 0
+        """
+    )
+    if r.returncode != 0:
+        return {}, [f"position_symbol_query_failed:{r.stderr.strip()}"]
+    return symbols_by_market({"symbol": row[0], "exchange": row[1] if len(row) > 1 else ""} for row in rows(r.stdout)), []
 
 
 def table_columns(table):
@@ -660,6 +748,90 @@ def summarize_market(market, symbols, kline_points, signal_rows, current_dt=None
     }
 
 
+def filtered_kline_rows(kline_rows, symbols_by_market_filter):
+    wanted = {
+        (market, normalize_symbol(symbol))
+        for market, symbols in (symbols_by_market_filter or {}).items()
+        for symbol in symbols
+    }
+    if not wanted:
+        return []
+    result = []
+    for row in kline_rows or []:
+        symbol = normalize_symbol(row.get("symbol"))
+        market = normalize_market(row.get("market")) or market_for_symbol(symbol, row.get("exchange"))
+        if (market, symbol) in wanted:
+            result.append(row)
+    return result
+
+
+def scope_summary(name, symbols_by_market_filter, kline_points, signal_rows, current_dt=None, warnings=None):
+    warnings = list(warnings or [])
+    markets = {
+        market: summarize_market(market, sorted(set(symbols)), kline_points, signal_rows, current_dt=current_dt)
+        for market, symbols in sorted((symbols_by_market_filter or {}).items())
+        if symbols
+    }
+    if not markets:
+        status = "WARN"
+        warnings.append("scope_has_no_symbols")
+    else:
+        status = max_status([summary["status"] for summary in markets.values()])
+        if warnings and status == "OK":
+            status = "WARN"
+    recommendations = build_recommendations(markets, {"status": "OK"}) if markets else [f"{name}:review_empty_trade_relevant_scope"]
+    return {
+        "schema": "data_health_trade_relevant_scope_item_v1",
+        "scope": name,
+        "status": status,
+        "symbol_count": sum(len(symbols) for symbols in (symbols_by_market_filter or {}).values()),
+        "markets": markets,
+        "warnings": warnings,
+        "recommendations": recommendations,
+    }
+
+
+def build_trade_relevant_scope(kline_rows, signal_rows, current_dt=None):
+    watchlist, watchlist_warnings = load_watchlist_symbols()
+    user_positions, user_warnings = fetch_open_position_symbols(user_portfolio_ids(), statuses=("holding",))
+    sim_positions, sim_warnings = fetch_open_position_symbols([SIM_PORTFOLIO_ID], statuses=("active", "holding"))
+    combined = defaultdict(set)
+    for source in (watchlist, user_positions, sim_positions):
+        for market, symbols in (source or {}).items():
+            combined[market].update(symbols)
+
+    scoped_kline_rows = filtered_kline_rows(kline_rows, combined)
+    scoped_points = normalize_kline_points(scoped_kline_rows)
+    scopes = [
+        scope_summary("watchlist", watchlist, scoped_points, signal_rows, current_dt=current_dt, warnings=watchlist_warnings),
+        scope_summary("user_positions", user_positions, scoped_points, signal_rows, current_dt=current_dt, warnings=user_warnings),
+        scope_summary("simulation_positions", sim_positions, scoped_points, signal_rows, current_dt=current_dt, warnings=sim_warnings),
+    ]
+    status = max_status([scope["status"] for scope in scopes])
+    return {
+        "schema": "data_health_trade_relevant_scope_v1",
+        "status": status,
+        "read_only": True,
+        "submits_orders": False,
+        "changes_portfolio": False,
+        "changes_strategy": False,
+        "scopes": scopes,
+        "summary": {
+            "scope_count": len(scopes),
+            "combined_symbol_count": sum(len(symbols) for symbols in combined.values()),
+            "status_counts": dict(Counter(scope["status"] for scope in scopes)),
+            "watchlist_file": WATCHLIST_FILE,
+            "user_portfolio_ids": user_portfolio_ids(),
+            "simulation_portfolio_id": SIM_PORTFOLIO_ID,
+        },
+        "hermes_use": [
+            "This is a scoped read-only slice for symbols that Hermes and the engine currently care about.",
+            "It does not override broad data_health.status, readiness gates, or rt_order_intake execution gates.",
+            "Use it to distinguish broad-universe data degradation from watchlist or open-position data degradation.",
+        ],
+    }
+
+
 def feature_run_timing_notes(latest, current_dt):
     notes = []
     trade_date = parse_date(latest.get("trade_date"))
@@ -1138,6 +1310,7 @@ def build_report(stock_rows=None, kline_rows=None, signal_rows=None, feature_run
     if warnings and status == "OK":
         status = "WARN"
     gap_remediation = daily_gap_remediation(markets)
+    trade_relevant_scope = build_trade_relevant_scope(kline_rows, signal_rows, current_dt=current_dt)
     payload = {
         "schema": "data_health_report_v1",
         "generated_at": now_iso(),
@@ -1154,6 +1327,7 @@ def build_report(stock_rows=None, kline_rows=None, signal_rows=None, feature_run
         "markets": markets,
         "feature_run": feature_run,
         "daily_gap_remediation": gap_remediation,
+        "trade_relevant_scope": trade_relevant_scope,
         "recommendations": build_recommendations(markets, feature_run),
         "warnings": warnings,
     }
@@ -1179,6 +1353,19 @@ def build_text_report(payload):
                 f"repair_daily_latest={source_quality.get('repair_daily_latest_count', 0)} "
                 f"missing_daily_source={source_quality.get('missing_daily_latest_source_count', 0)} "
                 f"minute_sources={source_quality.get('minute_latest_source_counts', {})}"
+            )
+    scoped = payload.get("trade_relevant_scope") or {}
+    if scoped:
+        summary = scoped.get("summary") or {}
+        lines.append(
+            f"trade_relevant_scope: status={scoped.get('status')} "
+            f"combined_symbols={summary.get('combined_symbol_count')} "
+            f"status_counts={summary.get('status_counts', {})}"
+        )
+        for scope in scoped.get("scopes") or []:
+            lines.append(
+                f"  {scope.get('scope')}: status={scope.get('status')} "
+                f"symbols={scope.get('symbol_count')} warnings={','.join(scope.get('warnings') or []) or 'none'}"
             )
     feature = payload.get("feature_run") or {}
     latest = feature.get("latest") or {}

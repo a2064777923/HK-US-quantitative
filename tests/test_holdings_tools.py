@@ -150,6 +150,59 @@ class TradeUpdateTests(unittest.TestCase):
         self.assertTrue(conn.committed)
         self.assertTrue(conn.closed)
 
+    def test_fetch_open_position_requires_positive_quantity(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+
+            def fetchone(self):
+                return None
+
+        cur = Cursor()
+
+        trade_update.fetch_open_position(cur, 3, "SPCX")
+
+        sql, params = cur.calls[0]
+        self.assertIn("status = 'holding'", sql)
+        self.assertIn("COALESCE(quantity, 0) > 0", sql)
+        self.assertEqual(params, (3, "SPCX"))
+
+    def test_list_only_prints_positive_open_holdings(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+
+            def fetchall(self):
+                return []
+
+        class Connection:
+            def __init__(self):
+                self.cur = Cursor()
+
+            def cursor(self):
+                return self.cur
+
+            def close(self):
+                pass
+
+        conn = Connection()
+        args = argparse.Namespace(portfolio_id=3)
+
+        with patch.object(trade_update, "get_connection", return_value=conn), contextlib.redirect_stdout(io.StringIO()):
+            code = trade_update.cmd_list(args)
+
+        self.assertEqual(code, 0)
+        sql, params = conn.cur.calls[0]
+        self.assertIn("status = 'holding'", sql)
+        self.assertIn("COALESCE(quantity, 0) > 0", sql)
+        self.assertEqual(params, (3,))
+
     def test_buy_adjusts_available_cash_by_default(self):
         class Cursor:
             def __init__(self):
