@@ -33,7 +33,7 @@ POSITION_REVIEW_ROLES = {
     if item.strip()
 }
 POSITION_REVIEW_LIMIT = int(os.environ.get("RT_POSITION_REVIEW_LIMIT", "20"))
-POSITION_REVIEW_REMINDER_HOURS = float(os.environ.get("RT_POSITION_REVIEW_REMINDER_HOURS", "6"))
+POSITION_REVIEW_REMINDER_HOURS = float(os.environ.get("RT_POSITION_REVIEW_REMINDER_HOURS", "24"))
 
 PASSTHROUGH_ENV_KEYS = (
     "RT_ORDER_EXECUTE_PILOT_ENABLED",
@@ -690,7 +690,7 @@ def unique_alerts(alerts):
 
 def mark_position_reviews_sent(sent, items):
     now_epoch = time.time()
-    existing = [row for row in sent if isinstance(row, dict)]
+    existing = compact_position_review_sent(sent)
     existing_keys = {position_review_thread_key(row) for row in existing if position_review_thread_key(row)}
     for item in items:
         review_id = item.get("review_id")
@@ -710,6 +710,24 @@ def mark_position_reviews_sent(sent, items):
         existing.append(row)
         existing_keys.add(thread_key)
     write_position_review_sent(existing)
+
+
+def compact_position_review_sent(sent):
+    latest_by_thread = {}
+    passthrough = []
+    for row in sent:
+        if not isinstance(row, dict):
+            continue
+        thread_key = position_review_thread_key(row)
+        if not thread_key:
+            passthrough.append(row)
+            continue
+        current = latest_by_thread.get(thread_key)
+        if current is None or sent_record_time(row) >= sent_record_time(current):
+            latest_by_thread[thread_key] = row
+    compacted = passthrough + list(latest_by_thread.values())
+    compacted.sort(key=sent_record_time)
+    return compacted[-1000:]
 
 
 def main():
@@ -736,6 +754,10 @@ def main():
         position_sent = []
     if not isinstance(position_sent, list):
         position_sent = []
+    compacted_position_sent = compact_position_review_sent(position_sent)
+    if compacted_position_sent != position_sent:
+        write_position_review_sent(compacted_position_sent)
+    position_sent = compacted_position_sent
     pending_reviews = pending_position_reviews(packet, position_sent)
 
     if not new_alerts and not pending_reviews:

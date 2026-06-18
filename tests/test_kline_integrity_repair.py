@@ -125,7 +125,7 @@ class KlineIntegrityRepairTests(unittest.TestCase):
             "process_batch",
             side_effect=AssertionError("HK batch should not run"),
         ), patch.object(kline_batch, "process_us_symbols", return_value=(2, 0)) as process_us:
-            ok = kline_batch.run_update("us")
+            ok = kline_batch.run_update("us", now=datetime(2026, 6, 18, 6, 0))
 
         self.assertTrue(ok)
         process_us.assert_called_once_with(["AAPL", "MSFT"])

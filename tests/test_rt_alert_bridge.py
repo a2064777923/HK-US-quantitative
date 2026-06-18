@@ -497,6 +497,124 @@ class RtAlertBridgeTests(unittest.TestCase):
 
         self.assertEqual(pending, [])
 
+    def test_position_review_default_reminder_is_daily(self):
+        bridge = self.load_bridge(
+            RT_ALERT_REMOTE="local",
+            RT_ALERT_EXECUTION_MODE="notify",
+        )
+        packet = self.packet_with_position_review()
+        item = packet["position_review"]["items"][0]
+        item["review_thread_key"] = "user:3:AAPL"
+        sent_rows = [
+            {
+                "review_thread_key": "user:3:AAPL",
+                "review_id": "user:3:AAPL:2026-06-12:risk_review",
+                "symbol": "AAPL",
+                "urgency": "high",
+                "recommended_action": "risk_review",
+                "sent_at_epoch": 1000,
+            }
+        ]
+
+        pending = bridge.pending_position_reviews(packet, sent_rows, now_epoch=1000 + 7 * 3600)
+
+        self.assertEqual(pending, [])
+
+    def test_compact_position_review_sent_keeps_latest_per_thread(self):
+        bridge = self.load_bridge(
+            RT_ALERT_REMOTE="local",
+            RT_ALERT_EXECUTION_MODE="notify",
+        )
+        sent_rows = [
+            {
+                "review_id": "user:3:AAPL:2026-06-12:risk_review",
+                "symbol": "AAPL",
+                "urgency": "medium",
+                "recommended_action": "risk_review",
+                "sent_at_epoch": 1000,
+            },
+            {
+                "review_thread_key": "user:3:AAPL",
+                "review_id": "user:3:AAPL:2026-06-13:exit_review",
+                "symbol": "AAPL",
+                "urgency": "high",
+                "recommended_action": "exit_review",
+                "sent_at_epoch": 1100,
+            },
+            {
+                "review_thread_key": "user:3:MSFT",
+                "review_id": "user:3:MSFT:2026-06-13:risk_review",
+                "symbol": "MSFT",
+                "urgency": "medium",
+                "recommended_action": "risk_review",
+                "sent_at_epoch": 1050,
+            },
+        ]
+
+        compacted = bridge.compact_position_review_sent(sent_rows)
+
+        self.assertEqual([row["review_id"] for row in compacted], [
+            "user:3:MSFT:2026-06-13:risk_review",
+            "user:3:AAPL:2026-06-13:exit_review",
+        ])
+
+    def test_main_compacts_position_sent_even_when_alerts_are_present(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            alert_sent = Path(td) / "alert_sent.json"
+            review_sent = Path(td) / "position_sent.json"
+            packet_file = Path(td) / "packet.json"
+            packet = self.packet_with_position_review()
+            packet["execution_readiness"] = {
+                "schema": "execution_readiness_report_v1",
+                "status": "BLOCKED",
+                "ready_for_execute": False,
+            }
+            packet_file.write_text(json.dumps(packet), encoding="utf-8")
+            queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            review_sent.write_text(
+                json.dumps(
+                    [
+                        {
+                            "review_id": "user:3:AAPL:2026-06-12:risk_review",
+                            "symbol": "AAPL",
+                            "urgency": "medium",
+                            "recommended_action": "risk_review",
+                            "sent_at_epoch": 1000,
+                        },
+                        {
+                            "review_thread_key": "user:3:AAPL",
+                            "review_id": "user:3:AAPL:2026-06-13:exit_review",
+                            "symbol": "AAPL",
+                            "urgency": "high",
+                            "recommended_action": "exit_review",
+                            "sent_at_epoch": 1100,
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(alert_sent),
+                RT_POSITION_REVIEW_SENT_FILE=str(review_sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="notify",
+                RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS="0",
+                RT_ALERT_MARK_INELIGIBLE_SENT="0",
+                RT_POSITION_REVIEW_REMINDER_HOURS="0",
+            )
+
+            with patch("builtins.print") as printed:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            printed.assert_not_called()
+            compacted = json.loads(review_sent.read_text(encoding="utf-8"))
+            self.assertEqual(len(compacted), 1)
+            self.assertEqual(compacted[0]["review_id"], "user:3:AAPL:2026-06-13:exit_review")
+
     def test_position_review_thread_allows_immediate_risk_escalation(self):
         bridge = self.load_bridge(
             RT_ALERT_REMOTE="local",
