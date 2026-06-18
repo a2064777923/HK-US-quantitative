@@ -511,13 +511,18 @@ def fmt_pct(value):
 def build_position_review_output(items, packet):
     audit = packet.get("position_judgment_audit") if isinstance(packet.get("position_judgment_audit"), dict) else {}
     coverage = audit.get("coverage") if isinstance(audit.get("coverage"), dict) else {}
+    high_count = sum(1 for item in items if str(item.get("urgency") or "").lower() == "high")
+    medium_count = sum(1 for item in items if str(item.get("urgency") or "").lower() == "medium")
+    roles = sorted({str(item.get("role") or "?").lower() for item in items})
+    roles_text = ",".join(roles) if roles else "?"
     lines = [
         "🧭 **Hermes持倉審核待辦（不下單）**",
         "此區只提示持倉風險與審核要求，不代表已通過 Hermes 交易審批，也不會提交模擬或券商訂單。",
+        f"本次提醒持倉：{len(items)}（high={high_count}, medium={medium_count}, roles={roles_text}）",
     ]
     unjudged = coverage.get("unjudged_high_urgency_review_count")
-    if unjudged is not None:
-        lines.append(f"未審核高優先級持倉：{unjudged}")
+    if unjudged is not None and unjudged != high_count:
+        lines.append(f"packet全局未審核高優先級：{unjudged}（可能包含本次已過濾角色）")
     for item in items:
         position = item.get("position") if isinstance(item.get("position"), dict) else {}
         latest_signal = item.get("latest_signal") if isinstance(item.get("latest_signal"), dict) else {}

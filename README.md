@@ -74,7 +74,7 @@ Each v5 alert declares its timeframe basis:
 
 Executable alerts must be confirmed directional BUY/SELL candidates with valid entry, stop, take-profit, risk/reward, liquidity, and execution-candidate fields. Diagnostic `WATCH` rows may still carry candidate geometry for review, but order intake rejects them as non-executable.
 
-v5 treats same-day repeated states as one event. For the same market `signal_date`, symbol, emitted side, and trigger, the engine writes one alert and persists a session key in `/tmp/rt_signal_state.json`; cooldown remains a short-term guard, not permission to re-send the same stale condition every 30 minutes. A later alert is allowed on the next market signal date, or when the emitted side changes, for example a diagnostic `WATCH` later becoming a confirmed `BUY`.
+v5 treats same-day repeated states as one event. For the same market `signal_date`, symbol, emitted side, and trigger, the engine writes one alert and persists a session key in `/tmp/rt_signal_state.json`; cooldown remains a short-term guard, not permission to re-send the same stale condition every 30 minutes. On startup, v5 also backfills these session keys from recent `/tmp/rt_signal_alerts.jsonl` rows, so a service restart or deploy does not re-announce already observed same-day conditions. A later alert is allowed on the next market signal date, or when the emitted side changes, for example a diagnostic `WATCH` later becoming a confirmed `BUY`.
 
 v5.2 does not globally loosen execution gates. A `急漲` row may carry `candidate_signal_type=BUY`, but it remains `WATCH` unless full-score confirmation, factor confluence, risk geometry, liquidity, and execution-candidate checks pass. `布林上軌動量突破` replaces the old unconditional upper-band SELL interpretation only when same-session or recent momentum supports a breakout context; weak or overbought upper-band touches still remain SELL/WATCH diagnostics.
 
@@ -133,6 +133,7 @@ python3 scripts/rt_alert_bridge.py
 The bridge marks emitted alerts or position reviews as sent only after Feishu delivery succeeds. Safety-gate-blocked technical triggers are suppressed by default and marked locally so they do not repeat-spam Feishu.
 For trade-signal notifications, the default also requires `RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1`: the matching Hermes packet item must be eligible and execution readiness must be READY. This prevents raw technical triggers from being presented as operation signals during blocked or risk-off system states.
 Position-review notifications default to `RT_POSITION_REVIEW_ROLES=user`, include `high,medium` urgency, and cap at 20 items. Simulation holdings still remain in the Hermes packet and reports, but they are not mixed into the operator Feishu stream unless `RT_POSITION_REVIEW_ROLES=simulation` or `all` is set explicitly. These notifications are titled as `Hermes持倉審核待辦（不下單）`, include `order_submission=false`, and remain advisory-only.
+The position-review message summary counts only the items that passed the active role and urgency filters; packet-level global counts may include filtered simulation or diagnostic context and must not be read as submitted orders.
 
 ## Recommended Server Jobs
 

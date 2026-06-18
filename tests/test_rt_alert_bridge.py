@@ -432,6 +432,45 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("不代表已通過 Hermes 交易審批", text)
             self.assertIn("order_submission=false", text)
 
+    def test_position_review_summary_counts_filtered_items_not_global_coverage(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            alert_sent = Path(td) / "alert_sent.json"
+            review_sent = Path(td) / "position_sent.json"
+            packet_file = Path(td) / "packet.json"
+            packet = self.packet_with_position_review()
+            packet["position_judgment_audit"]["coverage"]["unjudged_high_urgency_review_count"] = 7
+            simulation_item = json.loads(json.dumps(packet["position_review"]["items"][0]))
+            simulation_item.update(
+                {
+                    "review_id": "simulation:8:SIM:2026-06-12:risk_review",
+                    "portfolio_id": 8,
+                    "role": "simulation",
+                    "symbol": "SIM",
+                }
+            )
+            packet["position_review"]["items"].append(simulation_item)
+            queue.write_text("", encoding="utf-8")
+            packet_file.write_text(json.dumps(packet), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(alert_sent),
+                RT_POSITION_REVIEW_SENT_FILE=str(review_sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="notify",
+            )
+
+            with patch("builtins.print") as printed:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            text = printed.call_args.args[0]
+            self.assertIn("本次提醒持倉：1（high=1, medium=0, roles=user）", text)
+            self.assertIn("packet全局未審核高優先級：7", text)
+            self.assertIn("AAPL", text)
+            self.assertNotIn("SIM", text)
+
     def test_position_review_suppresses_simulation_role_by_default(self):
         with tempfile.TemporaryDirectory() as td:
             queue = Path(td) / "alerts.jsonl"

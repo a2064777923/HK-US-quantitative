@@ -17,6 +17,13 @@ except Exception:  # pragma: no cover - Python versions without zoneinfo
     ZoneInfo = None
 
 # ========== 配置 ==========
+def env_int(name, default):
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 POLL_INTERVAL = 3       # 每3秒拉一次報價
 FULL_SCAN_INTERVAL = 30 # 每30秒做一次全量條件檢查
 SIGNAL_COOLDOWN = 1800  # 同一信號30分鐘內唔重複觸發
@@ -24,6 +31,7 @@ ALERT_FILE = "/tmp/rt_signal_alert.json"
 ALERT_QUEUE_FILE = "/tmp/rt_signal_alerts.jsonl"
 STATE_FILE = "/tmp/rt_signal_state.json"
 SESSION_KEY_RETENTION_DAYS = 7
+STATE_BACKFILL_ALERT_QUEUE_LIMIT = env_int("RT_SIGNAL_STATE_BACKFILL_ALERT_QUEUE_LIMIT", 5000)
 WATCHLIST_FILE = os.environ.get("RT_SIGNAL_WATCHLIST_FILE", "/root/rt_signal_watchlist.json")
 STRATEGY_CONFIG_FILE = os.environ.get("RT_SIGNAL_STRATEGY_CONFIG_FILE", "/root/rt_signal_strategy_config.json")
 MAX_QUOTE_AGE_SECONDS = 15 * 60
@@ -1688,6 +1696,47 @@ def alert_signal_date(quote_time=None, generated_at=None, market=None):
     return generated_at.strftime("%Y%m%d")
 
 
+def parse_generated_at_epoch(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.timestamp()
+    except Exception:
+        return None
+
+
+def signal_date_from_alert(alert):
+    if not isinstance(alert, dict):
+        return None
+    signal_id = str(alert.get("signal_id") or "")
+    prefix = signal_id.split(":", 1)[0]
+    if re.match(r"^\d{8}$", prefix):
+        return prefix
+    generated_at = None
+    try:
+        generated_at = datetime.fromisoformat(str(alert.get("generated_at")).replace("Z", "+00:00"))
+    except Exception:
+        generated_at = None
+    return alert_signal_date(
+        alert.get("quote_time") or alert.get("time"),
+        generated_at=generated_at,
+        market=alert.get("market"),
+    )
+
+
+def alert_session_key_from_record(alert):
+    if not isinstance(alert, dict):
+        return None
+    symbol = str(alert.get("symbol") or "").strip().upper()
+    signal_type = str(alert.get("signal_type") or "").strip().upper()
+    trigger_name = str(alert.get("trigger") or "").strip()
+    signal_date = signal_date_from_alert(alert)
+    if not (symbol and signal_type and trigger_name and signal_date):
+        return None
+    return f"{signal_date}:{symbol}:{signal_type}:{trigger_name}"
+
+
 # ========== 條件觸發器 ==========
 class TriggerEngine:
     """條件觸發器 — 只有滿足條件先觸發完整分析"""
@@ -2277,6 +2326,58 @@ def normalize_state(payload):
         state["date"] = date
     return state
 
+
+def read_recent_alert_queue(path=None, limit=None):
+    path = path or ALERT_QUEUE_FILE
+    try:
+        limit = int(limit if limit is not None else STATE_BACKFILL_ALERT_QUEUE_LIMIT)
+    except (TypeError, ValueError):
+        limit = STATE_BACKFILL_ALERT_QUEUE_LIMIT
+    if limit <= 0:
+        return []
+
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                rows.append(line)
+                if len(rows) > limit:
+                    rows.pop(0)
+    except Exception:
+        return []
+
+    alerts = []
+    for line in rows:
+        try:
+            alert = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(alert, dict):
+            alerts.append(alert)
+    return alerts
+
+
+def backfill_emitted_session_keys_from_alert_queue(
+    existing=None,
+    path=None,
+    now=None,
+    retention_days=SESSION_KEY_RETENTION_DAYS,
+):
+    merged = sanitize_timestamp_mapping(existing)
+    added = 0
+    fallback_epoch = time.time()
+    for alert in read_recent_alert_queue(path=path):
+        key = alert_session_key_from_record(alert)
+        if not key or key in merged:
+            continue
+        merged[key] = parse_generated_at_epoch(alert.get("generated_at")) or fallback_epoch
+        added += 1
+    return prune_emitted_session_keys(merged, now=now, retention_days=retention_days), added
+
+
 def load_state():
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
@@ -2373,7 +2474,13 @@ def main():
     )
     state = load_state()
     trigger.cooldowns = state.get("cooldowns", {})
-    trigger.emitted_session_keys = prune_emitted_session_keys(state.get("emitted_session_keys", {}))
+    trigger.emitted_session_keys, backfilled_session_key_count = backfill_emitted_session_keys_from_alert_queue(
+        state.get("emitted_session_keys", {})
+    )
+    if backfilled_session_key_count:
+        state["emitted_session_keys"] = trigger.emitted_session_keys
+        save_state(state)
+        log(f"回填同日去重狀態: {backfilled_session_key_count} keys from alert queue")
 
     last_full_scan = 0
     cycle = 0

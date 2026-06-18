@@ -308,6 +308,49 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             },
         )
 
+    def test_backfill_emitted_session_keys_from_alert_queue_prevents_restart_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            queue = Path(tmpdir) / "alerts.jsonl"
+            queue.write_text(
+                "\n".join(
+                    [
+                        "{bad json",
+                        json.dumps(
+                            {
+                                "signal_id": "20260618:00148:急漲:BUY:247465",
+                                "symbol": "00148",
+                                "signal_type": "BUY",
+                                "trigger": "急漲",
+                                "generated_at": "2026-06-18T11:37:49",
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "signal_id": "20260618:00288:跌破MA5:SELL:989863",
+                                "symbol": "00288",
+                                "signal_type": "SELL",
+                                "trigger": "跌破MA5",
+                                "generated_at": "2026-06-18T11:46:17",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            merged, added = rt.backfill_emitted_session_keys_from_alert_queue(
+                {"20260618:00148:BUY:急漲": 1},
+                path=str(queue),
+                now=datetime(2026, 6, 18, 12, 0, 0),
+            )
+
+        self.assertEqual(added, 1)
+        self.assertIn("20260618:00148:BUY:急漲", merged)
+        self.assertIn("20260618:00288:SELL:跌破MA5", merged)
+
     def test_realtime_score_volume_uses_session_adjusted_cumulative_ratio(self):
         ind = rt.IncrementalIndicators("AAPL")
         for _ in range(30):
