@@ -1,7 +1,7 @@
 {
   "schema": "rt_signal_strategy_config_v1",
-  "version": "v5.1-momentum-breakout-20260616",
-  "description": "Realtime v5.1 strategy config. Adds guarded momentum-breakout BUY candidates while keeping execution, liquidity, RR, and Hermes review gates unchanged.",
+  "version": "v5.2-risk-off-trigger-remediation-20260618",
+  "description": "Realtime v5.2 risk-off remediation. Noisy or underperforming BUY triggers are diagnostic WATCH only unless later evidence supports re-enabling; Hermes, readiness, liquidity, RR, and intake gates remain unchanged.",
   "signal_cooldown_seconds": 1800,
   "volume_anomaly_ratio": 3.0,
   "confirmation_thresholds": {
@@ -38,5 +38,59 @@
   "emission": {
     "emit_unconfirmed_directional_as_watch": true
   },
-  "trigger_overrides": {}
+  "trigger_overrides": {
+    "BUY:布林下軌突破": {
+      "enabled": false,
+      "review_mode": "disabled_pending_rework",
+      "strategy_review_reasons": [
+        "trigger_avg_return_not_positive",
+        "trigger_win_rate_below_45"
+      ]
+    },
+    "BUY:RSI超賣": {
+      "enabled": false,
+      "review_mode": "disabled_pending_rework",
+      "strategy_review_reasons": [
+        "trigger_avg_return_not_positive",
+        "trigger_win_rate_below_45"
+      ]
+    },
+    "BUY:MA金叉": {
+      "enabled": false,
+      "review_mode": "disabled_pending_rework",
+      "strategy_review_reasons": [
+        "trigger_avg_return_not_positive",
+        "trigger_win_rate_below_45"
+      ]
+    },
+    "BUY:站上MA5": {
+      "enabled": false,
+      "review_mode": "disabled_pending_rework",
+      "strategy_review_reasons": [
+        "trigger_avg_return_not_positive",
+        "trigger_win_rate_below_45"
+      ]
+    },
+    "BUY:布林上軌動量突破": {
+      "enabled": true,
+      "review_mode": "shadow_only_pending_sample",
+      "min_full_score": 0.75,
+      "cooldown_seconds": 3600,
+      "strategy_review_reasons": [
+        "trigger_win_rate_below_45",
+        "validation_pass_rate_below_50",
+        "packet_eligible_rate_below_25",
+        "negative_intraday_queue_mark"
+      ]
+    },
+    "BUY:急漲": {
+      "enabled": true,
+      "review_mode": "tightened_pending_retest",
+      "min_full_score": 0.75,
+      "cooldown_seconds": 7200,
+      "strategy_review_reasons": [
+        "validation_pass_rate_below_50"
+      ]
+    }
+  }
 }

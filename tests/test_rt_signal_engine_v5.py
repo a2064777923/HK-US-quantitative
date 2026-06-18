@@ -62,6 +62,10 @@ class FakeIndicators:
 
 
 class RtSignalEngineV5Tests(unittest.TestCase):
+    def repo_strategy_config(self):
+        config_path = Path(__file__).resolve().parents[1] / "config" / "rt_signal_strategy_config.json"
+        return json.loads(config_path.read_text(encoding="utf-8"))
+
     def test_realtime_updates_do_not_mutate_daily_history(self):
         ind = rt.IncrementalIndicators("00700")
         for i in range(40):
@@ -1977,6 +1981,91 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIsNotNone(ma5_alert["candidate_entry_price"])
         self.assertIsNotNone(ma5_alert["candidate_stop_loss"])
         self.assertIsNotNone(ma5_alert["candidate_take_profit"])
+
+    def test_repo_strategy_config_shadows_noisy_buy_triggers(self):
+        config = self.repo_strategy_config()
+        normalized, warnings = rt.normalize_strategy_config(config)
+        self.assertEqual(warnings, [])
+        self.assertEqual(normalized["version"], "v5.2-risk-off-trigger-remediation-20260618")
+
+        expected_modes = {
+            "BUY:布林下軌突破": "disabled_pending_rework",
+            "BUY:RSI超賣": "disabled_pending_rework",
+            "BUY:MA金叉": "disabled_pending_rework",
+            "BUY:站上MA5": "disabled_pending_rework",
+            "BUY:布林上軌動量突破": "shadow_only_pending_sample",
+            "BUY:急漲": "tightened_pending_retest",
+        }
+        overrides = normalized["trigger_overrides"]
+        for key, mode in expected_modes.items():
+            self.assertEqual(overrides[key]["review_mode"], mode)
+
+        self.assertFalse(overrides["BUY:布林下軌突破"]["enabled"])
+        self.assertFalse(overrides["BUY:RSI超賣"]["enabled"])
+        self.assertFalse(overrides["BUY:MA金叉"]["enabled"])
+        self.assertFalse(overrides["BUY:站上MA5"]["enabled"])
+        self.assertEqual(overrides["BUY:布林上軌動量突破"]["min_full_score"], 0.75)
+        self.assertEqual(overrides["BUY:急漲"]["min_full_score"], 0.75)
+
+    def test_repo_config_disabled_buy_reversal_triggers_are_watch_only(self):
+        config = self.repo_strategy_config()
+
+        cases = [
+            ("RSI超賣", {"rsi_14": 20, "ma5": None, "ma10": None, "ma20": None}, {"price": 100, "change_pct": 0}),
+            ("布林下軌突破", {"bb_lower": 101, "bb_upper": 140, "rsi_14": None}, {"price": 100, "change_pct": 0}),
+            ("站上MA5", {}, {"price": 101, "change_pct": 0}),
+        ]
+
+        for trigger_name, indicator_attrs, quote_patch in cases:
+            with self.subTest(trigger=trigger_name):
+                engine = rt.TriggerEngine(strategy_config=config)
+                indicators = FakeIndicators(score=0.9)
+                for key, value in indicator_attrs.items():
+                    setattr(indicators, key, value)
+                quote = {
+                    "price": quote_patch["price"],
+                    "volume": 1000,
+                    "market": "US",
+                    "time": "2026-06-11 14:00:00",
+                    "change_pct": quote_patch["change_pct"],
+                }
+
+                engine.check("AAPL", indicators, quote)
+
+                alert = [item for item in engine.alerts if item["trigger"] == trigger_name][0]
+                self.assertTrue(alert["confirmed"])
+                self.assertEqual(alert["signal_type"], "WATCH")
+                self.assertEqual(alert["candidate_signal_type"], "BUY")
+                self.assertFalse(alert["execution_candidate"])
+                self.assertEqual(alert["suppressed_directional_reason"], "strategy_review_disabled_pending_rework")
+                self.assertIn("strategy_review_disabled_pending_rework", alert["execution_blocked_reasons"])
+
+    def test_repo_config_upper_band_momentum_buy_is_shadow_only(self):
+        config = self.repo_strategy_config()
+        engine = rt.TriggerEngine(strategy_config=config)
+        indicators = FakeIndicators(score=0.9)
+        indicators.bb_upper = 99
+        indicators.bb_lower = 80
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 1000,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 3.0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "布林上軌動量突破"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertEqual(alert["trigger_review_mode"], "shadow_only_pending_sample")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertEqual(alert["suppressed_directional_reason"], "strategy_review_shadow_only")
 
     def test_strategy_config_string_false_can_disable_trigger(self):
         engine = rt.TriggerEngine(

@@ -490,7 +490,10 @@ def fmt_pct(value):
 def build_position_review_output(items, packet):
     audit = packet.get("position_judgment_audit") if isinstance(packet.get("position_judgment_audit"), dict) else {}
     coverage = audit.get("coverage") if isinstance(audit.get("coverage"), dict) else {}
-    lines = ["🧭 **Hermes持倉風險審核**"]
+    lines = [
+        "🧭 **Hermes持倉審核待辦（不下單）**",
+        "此區只提示持倉風險與審核要求，不代表已通過 Hermes 交易審批，也不會提交模擬或券商訂單。",
+    ]
     unjudged = coverage.get("unjudged_high_urgency_review_count")
     if unjudged is not None:
         lines.append(f"未審核高優先級持倉：{unjudged}")
@@ -502,7 +505,7 @@ def build_position_review_output(items, packet):
         lines.append("")
         lines.append(
             f"⚠️ **{item.get('symbol','?')}** {item.get('role','?')} "
-            f"urgency={item.get('urgency','?')} action={item.get('recommended_action','?')}"
+            f"urgency={item.get('urgency','?')} review_action={item.get('recommended_action','?')}"
         )
         lines.append(
             "├─ 持倉：qty={qty} pnl={pnl} stop_distance={stop}".format(
@@ -525,7 +528,7 @@ def build_position_review_output(items, packet):
                 review_id=item.get("review_id")
             )
         )
-        lines.append("└─ 審核要求：context_review五項=true；position_attention_acknowledged=true；allowed=hold|watch|reduce|exit|trail_stop")
+        lines.append("└─ 審核要求：context_review五項=true；position_attention_acknowledged=true；allowed=hold|watch|reduce|exit|trail_stop；order_submission=false")
     return "\n".join(lines)
 
 

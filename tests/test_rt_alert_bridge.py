@@ -418,7 +418,10 @@ class RtAlertBridgeTests(unittest.TestCase):
                 json.loads(review_sent.read_text(encoding="utf-8"))[0]["review_id"],
                 "simulation:8:AAPL:2026-06-12:risk_review",
             )
-            self.assertIn("Hermes持倉風險審核", printed.call_args.args[0])
+            text = printed.call_args.args[0]
+            self.assertIn("Hermes持倉審核待辦（不下單）", text)
+            self.assertIn("不代表已通過 Hermes 交易審批", text)
+            self.assertIn("order_submission=false", text)
 
     def test_position_review_includes_medium_urgency_by_default(self):
         with tempfile.TemporaryDirectory() as td:
@@ -458,7 +461,8 @@ class RtAlertBridgeTests(unittest.TestCase):
             text = printed.call_args.args[0]
             self.assertIn("SPCX", text)
             self.assertIn("urgency=medium", text)
-            self.assertIn("take_profit_or_trailing_stop_review", text)
+            self.assertIn("review_action=take_profit_or_trailing_stop_review", text)
+            self.assertNotIn(" action=take_profit_or_trailing_stop_review", text)
 
     def test_feishu_failure_with_position_review_does_not_mark_watch_alert_sent(self):
         with tempfile.TemporaryDirectory() as td:

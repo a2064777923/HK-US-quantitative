@@ -7,10 +7,10 @@ This repository is not configured for automatic real-money trading. Real broker 
 ## Current Status
 
 - `scripts/rt_signal_engine_v5.py` is the intended realtime signal source.
-- Current strategy config is `v5.1-momentum-breakout-20260616`.
+- Current strategy config is `v5.2-risk-off-trigger-remediation-20260618`.
 - v5 scans HK/US watchlists, polls realtime quotes, and writes alerts to `/tmp/rt_signal_alerts.jsonl`.
 - Signal scoring uses completed daily OHLCV history plus one realtime quote bar.
-- v5.1 adds guarded short-term momentum breakout handling: large positive same-session moves can become BUY candidates, and upper Bollinger-band breaks are BUY candidates only when momentum context supports breakout continuation.
+- v5.2 keeps the guarded momentum breakout model, but risk-off remediation now downgrades noisy or underperforming BUY triggers to diagnostic `WATCH` unless later evidence supports re-enabling.
 - Minute/hour data is read-only context for Hermes and quality reports; it is not the core v5 scoring authority.
 - `scripts/rt_alert_bridge.py` defaults to notify-only mode.
 - The alert bridge is fail-closed: a BUY/SELL raw trigger is not sent as an operator trade candidate unless v5 marks `execution_candidate=true`, Hermes review marks the matching item `eligible_for_approval=true`, and execution readiness is `READY` with `ready_for_execute=true`.
@@ -72,7 +72,15 @@ Each v5 alert declares its timeframe basis:
 
 Executable alerts must be confirmed directional BUY/SELL candidates with valid entry, stop, take-profit, risk/reward, liquidity, and execution-candidate fields. Diagnostic `WATCH` rows may still carry candidate geometry for review, but order intake rejects them as non-executable.
 
-v5.1 does not globally loosen execution gates. A `急漲` row may now carry `candidate_signal_type=BUY`, but it remains `WATCH` unless full-score confirmation, factor confluence, risk geometry, liquidity, and execution-candidate checks pass. `布林上軌動量突破` replaces the old unconditional upper-band SELL interpretation only when same-session or recent momentum supports a breakout context; weak or overbought upper-band touches still remain SELL/WATCH diagnostics.
+v5.2 does not globally loosen execution gates. A `急漲` row may carry `candidate_signal_type=BUY`, but it remains `WATCH` unless full-score confirmation, factor confluence, risk geometry, liquidity, and execution-candidate checks pass. `布林上軌動量突破` replaces the old unconditional upper-band SELL interpretation only when same-session or recent momentum supports a breakout context; weak or overbought upper-band touches still remain SELL/WATCH diagnostics.
+
+The live v5.2 config uses `trigger_overrides` to reduce weak-market BUY noise:
+
+- `BUY:布林下軌突破`, `BUY:RSI超賣`, `BUY:MA金叉`, and `BUY:站上MA5` are `disabled_pending_rework`, so they remain diagnostic `WATCH` rows and cannot become execution candidates.
+- `BUY:布林上軌動量突破` is `shadow_only_pending_sample`, so strong breakout contexts are observed but not sent to execution review.
+- `BUY:急漲` is tightened with a higher score threshold and longer cooldown while evidence is retested.
+
+SELL and position-risk reviews are not globally disabled. In weak markets they may still appear frequently, but trade-signal delivery still requires Hermes item eligibility plus execution readiness `READY`.
 
 ## Hermes Review Layer
 
@@ -120,7 +128,7 @@ python3 scripts/rt_alert_bridge.py
 
 The bridge marks emitted alerts or position reviews as sent only after Feishu delivery succeeds. Safety-gate-blocked technical triggers are suppressed by default and marked locally so they do not repeat-spam Feishu.
 For trade-signal notifications, the default also requires `RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1`: the matching Hermes packet item must be eligible and execution readiness must be READY. This prevents raw technical triggers from being presented as operation signals during blocked or risk-off system states.
-Position-review notifications include `high,medium` urgency by default and cap at 20 items, so user holdings such as `SPCX` are not hidden behind simulation-only or high-risk rows. These notifications remain advisory-only and do not submit orders.
+Position-review notifications include `high,medium` urgency by default and cap at 20 items, so user holdings such as `SPCX` are not hidden behind simulation-only or high-risk rows. These notifications are titled as `Hermes持倉審核待辦（不下單）`, include `order_submission=false`, and remain advisory-only.
 
 ## Recommended Server Jobs
 
@@ -213,10 +221,19 @@ Also scan for secrets before pushing. Placeholder names such as `FEISHU_APP_SECR
 
 ## Known Gaps
 
+- As of the 2026-06-18 server audit, the live stack is running but not execution-ready: execution readiness remains `BLOCKED`, Hermes eligible trade items are `0`, simulation performance is failing, and Alpaca paper intake must remain blocked by gates until those reports recover.
 - Dynamic target adjustment, trailing-stop movement, add/reduce, and T-trading are advisory review items, not an automated position-management engine.
 - v5 core scoring is daily-history plus realtime quote; intraday data is contextual evidence.
 - Full visual backtest dashboards are not the primary artifact yet.
 - Strategy promotion should remain blocked unless execution readiness, forward outcomes, Hermes audit-pass learning, and simulation performance support it.
+
+## Production Fixes 2026-06-18
+
+- Deployed `v5.2-risk-off-trigger-remediation-20260618` to reduce weak-market BUY noise through existing `trigger_overrides`; no execution gates were loosened.
+- Converted poor BUY reversal triggers (`布林下軌突破`, `RSI超賣`, `MA金叉`, `站上MA5`) into diagnostic WATCH-only rows.
+- Shadowed `布林上軌動量突破` and tightened `急漲` while evidence is retested.
+- Clarified Feishu position-review copy so holding risk reminders cannot be mistaken for approved operation signals.
+- Updated the v5 systemd template to source `/root/.quantmind_env` and `/root/.env` with shell semantics instead of systemd `EnvironmentFile`, avoiding ignored `export KEY=...` lines and secret-bearing journal warnings.
 
 ## Production Fixes 2026-06-16
 
