@@ -7,10 +7,10 @@ This repository is not configured for automatic real-money trading. Real broker 
 ## Current Status
 
 - `scripts/rt_signal_engine_v5.py` is the intended realtime signal source.
-- Current strategy config is `v5.2-risk-off-trigger-remediation-20260618`.
+- Current strategy config is `v5.4-quality-ranked-same-scan-candidates-20260618`.
 - v5 scans HK/US watchlists, polls realtime quotes, and writes alerts to `/tmp/rt_signal_alerts.jsonl`.
 - Signal scoring uses completed daily OHLCV history plus one realtime quote bar.
-- v5.2 keeps the guarded momentum breakout model, but risk-off remediation now downgrades noisy or underperforming BUY triggers to diagnostic `WATCH` unless later evidence supports re-enabling.
+- v5.4 keeps the guarded momentum breakout model, downgrades noisy or underperforming BUY triggers to diagnostic `WATCH` unless later evidence supports re-enabling, and ranks same-symbol same-scan executable candidates so the kept BUY/SELL candidate is based on trigger priority, factor confluence, score strength, and risk/reward rather than watchlist trigger order.
 - Minute/hour data is read-only context for Hermes and quality reports; it is not the core v5 scoring authority.
 - `scripts/rt_alert_bridge.py` defaults to notify-only mode.
 - The alert bridge is fail-closed: a BUY/SELL raw trigger is not sent as an operator trade candidate unless v5 marks `execution_candidate=true`, Hermes review marks the matching item `eligible_for_approval=true`, and execution readiness is `READY` with `ready_for_execute=true`.
@@ -76,9 +76,10 @@ Executable alerts must be confirmed directional BUY/SELL candidates with valid e
 
 v5 treats same-day repeated states as one event. For the same market `signal_date`, symbol, emitted side, and trigger, the engine writes one alert and persists a session key in `/tmp/rt_signal_state.json`; cooldown remains a short-term guard, not permission to re-send the same stale condition every 30 minutes. On startup, v5 also backfills these session keys from recent `/tmp/rt_signal_alerts.jsonl` rows, so a service restart or deploy does not re-announce already observed same-day conditions. A later alert is allowed on the next market signal date, or when the emitted side changes, for example a diagnostic `WATCH` later becoming a confirmed `BUY`.
 
-v5.2 does not globally loosen execution gates. A `急漲` row may carry `candidate_signal_type=BUY`, but it remains `WATCH` unless full-score confirmation, factor confluence, risk geometry, liquidity, and execution-candidate checks pass. `布林上軌動量突破` replaces the old unconditional upper-band SELL interpretation only when same-session or recent momentum supports a breakout context; weak or overbought upper-band touches still remain SELL/WATCH diagnostics.
+v5.4 does not globally loosen execution gates. A `急漲` row may carry `candidate_signal_type=BUY`, but it remains `WATCH` unless full-score confirmation, factor confluence, risk geometry, liquidity, and execution-candidate checks pass. `布林上軌動量突破` replaces the old unconditional upper-band SELL interpretation only when same-session or recent momentum supports a breakout context; weak or overbought upper-band touches still remain SELL/WATCH diagnostics.
+When a single symbol emits multiple executable BUY or SELL candidates in the same scan, v5.4 keeps the higher-quality candidate and marks lower-ranked same-direction rows as `same_scan_directional_duplicate` diagnostics. Candidates already blocked by the same-session or cooldown dedup state are skipped instead of being re-emitted as WATCH rows.
 
-The live v5.2 config uses `trigger_overrides` to reduce weak-market BUY noise:
+The live v5.4 config uses `trigger_overrides` to reduce weak-market BUY noise:
 
 - `BUY:布林下軌突破`, `BUY:RSI超賣`, `BUY:MA金叉`, and `BUY:站上MA5` are `disabled_pending_rework`, so they remain diagnostic `WATCH` rows and cannot become execution candidates.
 - `BUY:布林上軌動量突破` is `shadow_only_pending_sample`, so strong breakout contexts are observed but not sent to execution review.
@@ -240,7 +241,7 @@ Also scan for secrets before pushing. Placeholder names such as `FEISHU_APP_SECR
 - Changed Feishu position-review delivery to default to `role=user` only, keeping simulation holdings available to Hermes in packet/report context without mixing them into operator-facing holding reminders.
 - Added v5 session-level alert de-duplication so persistent conditions such as `跌破MA5`, `RSI超賣`, or Bollinger-band breaches do not re-enter the alert queue every cooldown bucket on the same market signal date.
 - Updated cron audit logic so a fail-closed `alert-dry-run` bridge with packet eligibility required, ineligible signal notifications suppressed, and pilot execution disabled satisfies operator delivery wiring; loose dry-run lines still do not count.
-- Deployed `v5.2-risk-off-trigger-remediation-20260618` to reduce weak-market BUY noise through existing `trigger_overrides`; no execution gates were loosened.
+- Deployed `v5.4-quality-ranked-same-scan-candidates-20260618` to reduce weak-market BUY noise through existing `trigger_overrides` and replace same-scan first-trigger wins with quality-ranked candidate selection; no execution gates were loosened.
 - Converted poor BUY reversal triggers (`布林下軌突破`, `RSI超賣`, `MA金叉`, `站上MA5`) into diagnostic WATCH-only rows.
 - Shadowed `布林上軌動量突破` and tightened `急漲` while evidence is retested.
 - Clarified Feishu position-review copy so holding risk reminders cannot be mistaken for approved operation signals.

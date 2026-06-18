@@ -2073,7 +2073,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         config = self.repo_strategy_config()
         normalized, warnings = rt.normalize_strategy_config(config)
         self.assertEqual(warnings, [])
-        self.assertEqual(normalized["version"], "v5.3-market-breadth-buy-guard-20260618")
+        self.assertEqual(normalized["version"], "v5.4-quality-ranked-same-scan-candidates-20260618")
 
         expected_modes = {
             "BUY:布林下軌突破": "disabled_pending_rework",
@@ -2488,7 +2488,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertTrue(ma5_alerts[1]["confirmed"])
         self.assertTrue(ma5_alerts[1]["execution_candidate"])
 
-    def test_same_scan_duplicate_directional_candidates_are_diagnostic_watch(self):
+    def test_same_scan_duplicate_directional_candidates_select_best_trigger(self):
         engine = rt.TriggerEngine()
         indicators = FakeIndicators(score=0.8)
         indicators.rsi_14 = 20
@@ -2517,12 +2517,12 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         )
         executable = [item for item in buy_candidates if item["execution_candidate"]]
         self.assertEqual(len(executable), 1)
-        self.assertEqual(executable[0]["trigger"], "RSI超賣")
+        self.assertEqual(executable[0]["trigger"], "站上MA5")
         self.assertEqual(executable[0]["signal_type"], "BUY")
         self.assertIsNone(executable[0]["suppressed_directional_reason"])
 
         duplicates = [item for item in buy_candidates if not item["execution_candidate"]]
-        self.assertEqual([item["trigger"] for item in duplicates], ["布林下軌突破", "站上MA5"])
+        self.assertEqual([item["trigger"] for item in duplicates], ["RSI超賣", "布林下軌突破"])
         for alert in duplicates:
             self.assertTrue(alert["confirmed"])
             self.assertEqual(alert["signal_type"], "WATCH")
@@ -2534,6 +2534,39 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             self.assertIsNotNone(alert["candidate_entry_price"])
             self.assertIsNotNone(alert["candidate_stop_loss"])
             self.assertIsNotNone(alert["candidate_take_profit"])
+
+    def test_same_scan_selection_skips_session_blocked_best_trigger(self):
+        engine = rt.TriggerEngine()
+        engine.emitted_session_keys["20260611:AAPL:BUY:站上MA5"] = 1_000_000
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.bb_upper = 120
+        indicators.bb_lower = 102
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 101,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        buy_candidates = [
+            item for item in engine.alerts
+            if item["candidate_signal_type"] == "BUY"
+        ]
+        self.assertEqual(
+            [item["trigger"] for item in buy_candidates],
+            ["RSI超賣", "布林下軌突破"],
+        )
+        executable = [item for item in buy_candidates if item["execution_candidate"]]
+        self.assertEqual(len(executable), 1)
+        self.assertEqual(executable[0]["trigger"], "布林下軌突破")
+        self.assertEqual(executable[0]["signal_type"], "BUY")
 
     def test_unconfirmed_same_scan_directional_does_not_consume_duplicate_slot(self):
         engine = rt.TriggerEngine(

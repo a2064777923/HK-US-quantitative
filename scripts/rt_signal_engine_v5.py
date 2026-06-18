@@ -59,6 +59,23 @@ MARKET_BREADTH_MIN_SAMPLE = 10
 MARKET_BREADTH_RISK_OFF_MAX_ADVANCER_PCT = 35.0
 MARKET_BREADTH_RISK_OFF_MIN_DECLINER_PCT = 50.0
 MARKET_BREADTH_RISK_OFF_MAX_AVG_CHANGE_PCT = -0.6
+TRIGGER_EXECUTION_PRIORITY = {
+    "BUY": {
+        "急漲": 60,
+        "布林上軌動量突破": 55,
+        "站上MA5": 45,
+        "MA金叉": 40,
+        "布林下軌突破": 25,
+        "RSI超賣": 20,
+    },
+    "SELL": {
+        "MA死叉": 55,
+        "跌破MA5": 45,
+        "急跌": 40,
+        "RSI超買": 25,
+        "布林上軌突破": 20,
+    },
+}
 HK_SYMBOL_RE = re.compile(r"^\d{5}$")
 US_SYMBOL_RE = re.compile(r"^(?=.{1,10}$)[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?$")
 
@@ -1238,6 +1255,10 @@ def market_breadth_blocks_new_buy(signal_type, context, model):
     status = market_breadth_status(context, model)
     return status == "risk_off", status
 
+def trigger_execution_priority(signal_type, trigger_name):
+    priorities = TRIGGER_EXECUTION_PRIORITY.get(str(signal_type or "").upper()) or {}
+    return int(priorities.get(str(trigger_name or ""), 0))
+
 def quote_momentum_breakout_model(quote_context):
     if not isinstance(quote_context, dict):
         return {}
@@ -2179,7 +2200,7 @@ class TriggerEngine:
             triggered.append((direction, f"{change_pct:+.1f}%", "WATCH"))
 
         # 冷卻期檢查 + 觸發
-        emitted_directional_candidates = set()
+        candidate_rows = []
         for trigger_name, detail, signal_type in triggered:
             trigger_review_mode = self.trigger_review_mode(signal_type, trigger_name)
             trigger_disabled_observation = self.trigger_disabled_observation(signal_type, trigger_name)
@@ -2328,11 +2349,124 @@ class TriggerEngine:
                 if signal_type == "BUY" and market_breadth_blocked:
                     execution_blocked_reasons.append("market_breadth_risk_off")
 
-            if execution_candidate and signal_type in emitted_directional_candidates:
-                emitted_signal_type = "WATCH"
-                suppressed_directional_reason = "same_scan_directional_duplicate"
-                execution_candidate = False
-                execution_blocked_reasons.append("same_scan_directional_duplicate")
+            market = quote.get("market", "")
+            generated_at = datetime.now()
+            signal_date = alert_signal_date(quote.get("time"), generated_at=generated_at, market=market)
+            directional_session_key = self.alert_session_key(symbol, emitted_signal_type, trigger_name, signal_date)
+            directional_cooldown_key = self.alert_cooldown_key(symbol, emitted_signal_type, trigger_name)
+            directional_on_cooldown = (
+                directional_cooldown_key in self.cooldowns
+                and now - self.cooldowns[directional_cooldown_key] < cooldown_seconds
+            )
+            directional_emission_allowed = (
+                directional_session_key not in self.emitted_session_keys
+                and not directional_on_cooldown
+            )
+            directional_score = abs(full_score) if signal_type in ("BUY", "SELL") and full_score is not None else 0.0
+            rr_rank = candidate_rr_ratio if candidate_rr_ratio is not None else 0.0
+            candidate_rows.append(
+                {
+                    "execution_quality_rank": (
+                        1 if execution_candidate and directional_emission_allowed else 0,
+                        trigger_execution_priority(signal_type, trigger_name),
+                        len(factor_confluence_categories),
+                        directional_score,
+                        rr_rank,
+                    ),
+                    "trigger_name": trigger_name,
+                    "detail": detail,
+                    "signal_type": signal_type,
+                    "trigger_review_mode": trigger_review_mode,
+                    "trigger_disabled_observation": trigger_disabled_observation,
+                    "trigger_shadow_only": trigger_shadow_only,
+                    "cooldown_seconds": cooldown_seconds,
+                    "atr": atr,
+                    "confirmed": confirmed,
+                    "risk_geometry_valid": risk_geometry_valid,
+                    "risk_geometry_reason": risk_geometry_reason,
+                    "liquidity_geometry_valid": liquidity_geometry_valid,
+                    "liquidity_geometry_reason": liquidity_geometry_reason,
+                    "factor_confluence_valid": factor_confluence_valid,
+                    "factor_confluence_reason": factor_confluence_reason,
+                    "factor_confluence_categories": factor_confluence_categories,
+                    "min_factor_count": min_factor_count,
+                    "market_breadth_blocked": market_breadth_blocked,
+                    "market_breadth_signal_status": market_breadth_signal_status,
+                    "emitted_signal_type": emitted_signal_type,
+                    "suppressed_directional_reason": suppressed_directional_reason,
+                    "execution_candidate": execution_candidate,
+                    "execution_blocked_reasons": execution_blocked_reasons,
+                    "candidate_entry_price": candidate_entry_price,
+                    "candidate_stop_loss": candidate_stop_loss,
+                    "candidate_take_profit": candidate_take_profit,
+                    "candidate_rr_ratio": candidate_rr_ratio,
+                    "avg_daily_turnover": avg_daily_turnover,
+                    "min_avg_daily_turnover": min_avg_daily_turnover,
+                    "min_rr_ratio": min_rr_ratio,
+                    "market": market,
+                    "generated_at": generated_at,
+                    "signal_date": signal_date,
+                    "directional_emission_allowed": directional_emission_allowed,
+                }
+            )
+
+        selected_execution_by_direction = {}
+        for row in candidate_rows:
+            if (
+                row["execution_candidate"]
+                and row["directional_emission_allowed"]
+                and row["signal_type"] in ("BUY", "SELL")
+            ):
+                direction = row["signal_type"]
+                current = selected_execution_by_direction.get(direction)
+                if current is None or row["execution_quality_rank"] > current["execution_quality_rank"]:
+                    selected_execution_by_direction[direction] = row
+
+        for row in candidate_rows:
+            trigger_name = row["trigger_name"]
+            detail = row["detail"]
+            signal_type = row["signal_type"]
+            trigger_review_mode = row["trigger_review_mode"]
+            trigger_disabled_observation = row["trigger_disabled_observation"]
+            trigger_shadow_only = row["trigger_shadow_only"]
+            cooldown_seconds = row["cooldown_seconds"]
+            atr = row["atr"]
+            confirmed = row["confirmed"]
+            risk_geometry_valid = row["risk_geometry_valid"]
+            risk_geometry_reason = row["risk_geometry_reason"]
+            liquidity_geometry_valid = row["liquidity_geometry_valid"]
+            liquidity_geometry_reason = row["liquidity_geometry_reason"]
+            factor_confluence_valid = row["factor_confluence_valid"]
+            factor_confluence_reason = row["factor_confluence_reason"]
+            factor_confluence_categories = row["factor_confluence_categories"]
+            min_factor_count = row["min_factor_count"]
+            market_breadth_signal_status = row["market_breadth_signal_status"]
+            emitted_signal_type = row["emitted_signal_type"]
+            suppressed_directional_reason = row["suppressed_directional_reason"]
+            execution_candidate = row["execution_candidate"]
+            execution_blocked_reasons = list(row["execution_blocked_reasons"])
+            candidate_entry_price = row["candidate_entry_price"]
+            candidate_stop_loss = row["candidate_stop_loss"]
+            candidate_take_profit = row["candidate_take_profit"]
+            candidate_rr_ratio = row["candidate_rr_ratio"]
+            avg_daily_turnover = row["avg_daily_turnover"]
+            min_avg_daily_turnover = row["min_avg_daily_turnover"]
+            min_rr_ratio = row["min_rr_ratio"]
+            market = row["market"]
+            generated_at = row["generated_at"]
+            signal_date = row["signal_date"]
+
+            selected_execution = selected_execution_by_direction.get(signal_type)
+            if execution_candidate and signal_type in ("BUY", "SELL"):
+                if not row["directional_emission_allowed"]:
+                    continue
+                if selected_execution is None:
+                    continue
+                if selected_execution is not row:
+                    emitted_signal_type = "WATCH"
+                    suppressed_directional_reason = "same_scan_directional_duplicate"
+                    execution_candidate = False
+                    execution_blocked_reasons.append("same_scan_directional_duplicate")
 
             if execution_candidate:
                 entry_price = candidate_entry_price
@@ -2345,9 +2479,6 @@ class TriggerEngine:
                 take_profit = None
                 rr_ratio = None
 
-            market = quote.get("market", "")
-            generated_at = datetime.now()
-            signal_date = alert_signal_date(quote.get("time"), generated_at=generated_at, market=market)
             session_key = self.alert_session_key(symbol, emitted_signal_type, trigger_name, signal_date)
             if session_key in self.emitted_session_keys:
                 continue
@@ -2357,8 +2488,6 @@ class TriggerEngine:
                 continue
             self.cooldowns[key] = now
             self.emitted_session_keys[session_key] = now
-            if execution_candidate:
-                emitted_directional_candidates.add(signal_type)
 
             self.alerts.append({
                 "signal_id": self.alert_signal_id(
