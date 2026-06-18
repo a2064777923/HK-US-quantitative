@@ -126,6 +126,22 @@ class UpdatePortfolioPricesTests(unittest.TestCase):
         self.assertIn("current_capital = 3500.0", update_sql)
         self.assertIn("total_value = 3500.0", update_sql)
 
+    def test_hk_realtime_price_parses_tencent_quote(self):
+        class Response:
+            def read(self):
+                return 'v_hk00700="00700~Tencent Holdings~Tencent~528.000~520.000~"'.encode("gbk")
+
+        with patch.object(updater.urllib.request, "urlopen", return_value=Response()):
+            self.assertEqual(updater.fetch_hk_realtime_price("700"), 528.0)
+
+    def test_us_realtime_price_parses_sina_quote(self):
+        class Response:
+            def read(self):
+                return 'var hq_str_gb_pdd="Pinduoduo Inc,79.86,1.23,80.00"'.encode("gb18030")
+
+        with patch.object(updater.urllib.request, "urlopen", return_value=Response()):
+            self.assertEqual(updater.fetch_us_realtime_price("PDD"), 79.86)
+
 
 if __name__ == "__main__":
     unittest.main()

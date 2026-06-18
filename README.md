@@ -165,7 +165,8 @@ Refresh position price snapshots for both the simulation and user portfolio. The
 
 ```cron
 */15 9-16 * * 1-5 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=8 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update.log 2>&1"
-*/15 9-16 * * 1-5 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1"
+*/15 9-16,21-23 * * 1-5 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1"
+*/15 0-5 * * 2-6 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1"
 ```
 
 ## User Holdings Source Of Truth
@@ -281,7 +282,7 @@ Also scan for secrets before pushing. Placeholder names such as `FEISHU_APP_SECR
 
 - Deployed `v5.5-buy-realtime-alignment-20260618`: BUY candidates now require non-negative same-session `change_pct` by default before remaining executable.
 - Hardened `portfolio_report.py` against stale/wrong DB prices by falling back to latest daily K-line when `positions.current_price` differs from the latest K-line by more than `QM_MAX_DB_PRICE_TO_KLINE_RATIO` (default `3.0`) and flagging the fallback for Hermes.
-- Made `update_portfolio_prices.py` portfolio-id configurable via `QM_PRICE_UPDATE_PORTFOLIO_ID`, then refreshed portfolio `3` DB price snapshots so user holdings such as PDD/ARAY/NOK/BABA are no longer valued from stale or mis-scaled prices. Portfolio `3` now refreshes `status='holding'` rows only; portfolio `8` keeps `active/holding` compatibility for simulation state.
+- Made `update_portfolio_prices.py` portfolio-id configurable via `QM_PRICE_UPDATE_PORTFOLIO_ID`, then refreshed portfolio `3` DB price snapshots so user holdings such as PDD/ARAY/NOK/BABA are no longer valued from stale or mis-scaled prices. Portfolio `3` now refreshes `status='holding'` rows only, prefers realtime HK/US quote endpoints before daily-kline fallback, and its reviewed cron covers HK day session plus US night session; portfolio `8` keeps `active/holding` compatibility for simulation state.
 - Added reviewed cron lines for portfolio `3` and portfolio `8` price snapshots; these update valuation fields only and do not mutate holdings or submit orders.
 - After finding one Alpaca paper order created from a raw `NO_MATCH` technical signal while Hermes judgment was disabled, the server bridge cron was changed from `alert-sim` to `alert-dry-run`, `RT_ORDER_EXECUTE_PILOT_ENABLED=0`, `RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1`, and `RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS=0`.
 - Hardened `rt_alert_bridge.py` so bridge-launched intake always forces readiness, strategy evidence, Hermes judgment, market context, and symbol-conflict gates on for `alert-dry-run` and `alert-sim`.

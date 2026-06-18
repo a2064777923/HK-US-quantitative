@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
+"""Refresh portfolio position price snapshots.
+
+HK holdings prefer Tencent realtime quotes. US holdings prefer Sina realtime
+quotes, then fall back to Tencent daily-kline snapshots if realtime is
+unavailable. The script updates valuation fields only.
 """
-修復版：用騰訊API更新持倉價格（唔再依賴被封嘅Sina）
-"""
-import os, subprocess, json, urllib.request
+import os, subprocess, json, re, urllib.request
 from datetime import datetime
 
 USD_TO_HKD = float(os.environ.get("USD_TO_HKD", "7.80"))
@@ -145,6 +148,53 @@ def fetch_tencent_price(code, market="hk"):
         pass
     return None
 
+def normalize_hk_symbol(symbol):
+    text = str(symbol or "").strip().upper()
+    return text.zfill(5) if text.isdigit() and len(text) < 5 else text
+
+def fetch_hk_realtime_price(symbol):
+    """Tencent realtime quote endpoint used before daily-kline fallback."""
+    code = normalize_hk_symbol(symbol)
+    req = urllib.request.Request(
+        f"http://qt.gtimg.cn/q=hk{code}",
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.qq.com"},
+    )
+    try:
+        data = urllib.request.urlopen(req, timeout=10).read().decode("gbk", errors="ignore")
+        match = re.search(r'v_hk(\d+)="(.*)"', data)
+        if not match:
+            return None
+        fields = match.group(2).split("~")
+        if len(fields) <= 3:
+            return None
+        price = float(fields[3]) if fields[3] else 0
+        return price if price > 0 else None
+    except Exception:
+        return None
+
+def sina_code(symbol):
+    return "gb_" + str(symbol or "").strip().lower().replace(".", "_").replace("-", "_")
+
+def fetch_us_realtime_price(symbol):
+    """Sina realtime US quote endpoint used before daily-kline fallback."""
+    code = sina_code(symbol)
+    req = urllib.request.Request(
+        f"http://hq.sinajs.cn/list={code}",
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"},
+    )
+    try:
+        data = urllib.request.urlopen(req, timeout=10).read().decode("gb18030", errors="ignore")
+        match = re.search(r'var hq_str_gb_[a-z0-9_]+="(.*)"', data, re.IGNORECASE)
+        if not match:
+            return None
+        fields = match.group(1).split(",")
+        if len(fields) < 2:
+            return None
+        price = float(fields[1]) if fields[1] else 0
+        return price if price > 0 else None
+    except Exception:
+        return None
+
 def fetch_us_price(symbol):
     """美股：嘗試多個suffix"""
     for suffix in [".OQ", ".N", ""]:
@@ -220,9 +270,9 @@ def update_redis_prices():
         
         # Determine market
         if is_hk_symbol(sym):
-            px = fetch_tencent_price(sym, "hk")
+            px = fetch_hk_realtime_price(sym) or fetch_tencent_price(sym, "hk")
         else:
-            px = fetch_us_price(sym)
+            px = fetch_us_realtime_price(sym) or fetch_us_price(sym)
         
         if px and px > 0:
             cost = pos['cost']
