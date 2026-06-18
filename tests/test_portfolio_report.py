@@ -454,8 +454,43 @@ class PortfolioReportTests(unittest.TestCase):
 
         self.assertEqual(payload["item_count"], 1)
         self.assertEqual(payload["counts_by_urgency"]["high"], 1)
-        self.assertEqual(payload["items"][0]["recommended_action"], "exit_review")
+        self.assertEqual(payload["items"][0]["recommended_action"], "reduce_or_exit_review")
+        self.assertEqual(
+            payload["items"][0]["advisory_plan"]["primary_action"],
+            "review_reduce_half_or_exit_if_context_worsens",
+        )
+        self.assertEqual(payload["items"][0]["advisory_plan"]["reduce_fraction_hint"], 0.5)
         self.assertTrue(payload["items"][0]["execution_policy"]["requires_separate_order_path"])
+
+    def test_stop_breach_with_major_loss_still_maps_to_exit_review(self):
+        position = {
+            "symbol": "00700",
+            "name": "Tencent",
+            "quantity": 100,
+            "current_price": 240,
+            "market_value_hkd": 24000,
+            "unrealized_pnl_hkd": -7000,
+            "unrealized_pnl_pct": -22.0,
+            "stop_distance_pct": -1.0,
+            "valuation_price_source": "db_current_price",
+            "kline_date": "2026-06-12",
+            "market": "HK",
+            "priority": "high",
+            "recommendation": "stop_loss_review",
+            "recommendation_reasons": ["price_below_signal_stop_loss", "position_loss_below_minus_20pct"],
+            "signal": {
+                "side": "SELL",
+                "score": -0.7,
+                "trade_date": "2026-06-12",
+                "risk_flags": [],
+                "order_prices": {"stop_loss": 285, "take_profit": 250},
+            },
+        }
+
+        item = report.build_position_review_item({"portfolio_id": 8, "role": "simulation"}, position)
+
+        self.assertEqual(item["recommended_action"], "exit_review")
+        self.assertEqual(item["advisory_plan"]["primary_action"], "review_exit_all_or_fast_reduce")
 
     def test_large_unrealized_loss_overrides_hold_signal_for_position_review(self):
         position = {

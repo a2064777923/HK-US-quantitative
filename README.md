@@ -15,7 +15,7 @@ This repository is not configured for automatic real-money trading. Real broker 
 - `scripts/rt_alert_bridge.py` defaults to notify-only mode.
 - The alert bridge is fail-closed: a BUY/SELL raw trigger is not sent as an operator trade candidate unless v5 marks `execution_candidate=true`, Hermes review marks the matching item `eligible_for_approval=true`, and execution readiness is `READY` with `ready_for_execute=true`.
 - `scripts/portfolio_report.py` produces advisory `position_review` items for user and simulation holdings, including large unrealized losses and daily holding moves that need trailing-stop/take-profit/reduction review.
-- Each position review includes an advisory plan with candidate action, add permission, quantity hint, and stop/target/trailing references for Hermes/operator review. It is not lot-adjusted and never submits orders.
+- Each position review includes an advisory plan with candidate action, add permission, quantity hint, and stop/target/trailing references for Hermes/operator review. Full-exit drafts are reserved for major loss pressure; ordinary SELL or shallow stop pressure becomes reduce/exit review. The hint is not lot-adjusted and never submits orders.
 - `scripts/rt_order_intake.py` is the gated paper/simulation intake path.
 - HK simulated orders use the QuantMind simulation API.
 - US paper orders may use Alpaca paper only when explicitly enabled.

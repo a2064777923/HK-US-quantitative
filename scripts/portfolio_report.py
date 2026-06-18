@@ -859,14 +859,17 @@ def position_review_action(position):
     side = (position.get("signal") or {}).get("side")
     reasons = set(position.get("recommendation_reasons") or [])
     pnl_pct = position.get("unrealized_pnl_pct", 0)
-    if position.get("recommendation") == "stop_loss_review" or (
-        position.get("stop_distance_pct") is not None and position.get("stop_distance_pct") <= 0
-    ):
-        return "exit_review"
     if pnl_pct <= -20 or "position_loss_below_minus_20pct" in reasons:
         return "exit_review"
-    if side == "SELL" and pnl_pct <= 0:
+    stop_breached = position.get("recommendation") == "stop_loss_review" or (
+        position.get("stop_distance_pct") is not None and position.get("stop_distance_pct") <= 0
+    )
+    if stop_breached and pnl_pct <= -8:
         return "exit_review"
+    if stop_breached:
+        return "reduce_or_exit_review"
+    if side == "SELL" and pnl_pct <= 0:
+        return "reduce_or_exit_review"
     if side == "SELL":
         return "reduce_or_exit_review"
     if pnl_pct <= -8 or "position_loss_below_minus_8pct" in reasons:
