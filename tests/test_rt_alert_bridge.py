@@ -109,6 +109,7 @@ class RtAlertBridgeTests(unittest.TestCase):
                             "advisory_only": True,
                             "submits_orders": False,
                             "primary_action": "review_reduce_half_or_exit_if_context_worsens",
+                            "reference_price_scope": "latest_signal_geometry_not_position_order",
                             "add_allowed_after_review": False,
                             "manual_max_quantity_hint": 5,
                             "reference_prices": {
@@ -586,6 +587,9 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("審核草案：review_reduce_half_or_exit_if_context_worsens", text)
             self.assertIn("add_allowed=False", text)
             self.assertIn("qty_hint=5", text)
+            self.assertIn("sig_stop_ref=180", text)
+            self.assertIn("sig_target_ref=220", text)
+            self.assertNotIn(" stop=180", text)
             self.assertNotIn(" action=take_profit_or_trailing_stop_review", text)
 
     def test_feishu_failure_with_position_review_does_not_mark_watch_alert_sent(self):

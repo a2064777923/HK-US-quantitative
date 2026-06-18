@@ -459,7 +459,12 @@ class PortfolioReportTests(unittest.TestCase):
             payload["items"][0]["advisory_plan"]["primary_action"],
             "review_reduce_half_or_exit_if_context_worsens",
         )
+        self.assertEqual(
+            payload["items"][0]["advisory_plan"]["reference_price_scope"],
+            "latest_signal_geometry_not_position_order",
+        )
         self.assertEqual(payload["items"][0]["advisory_plan"]["reduce_fraction_hint"], 0.5)
+        self.assertEqual(payload["items"][0]["advisory_plan"]["reference_prices"]["signal_side"], "SELL")
         self.assertTrue(payload["items"][0]["execution_policy"]["requires_separate_order_path"])
 
     def test_stop_breach_with_major_loss_still_maps_to_exit_review(self):

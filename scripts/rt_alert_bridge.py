@@ -561,7 +561,7 @@ def build_position_review_output(items, packet):
         if advisory_plan:
             refs = advisory_plan.get("reference_prices") if isinstance(advisory_plan.get("reference_prices"), dict) else {}
             lines.append(
-                "├─ 審核草案：{action} add_allowed={add_allowed} qty_hint={qty} stop={stop} target={target} trail_floor={trail}".format(
+                "├─ 審核草案：{action} add_allowed={add_allowed} qty_hint={qty} sig_stop_ref={stop} sig_target_ref={target} trail_floor={trail}".format(
                     action=advisory_plan.get("primary_action", "?"),
                     add_allowed=advisory_plan.get("add_allowed_after_review", "?"),
                     qty=fmt_optional(advisory_plan.get("manual_max_quantity_hint")),

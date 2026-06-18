@@ -15,7 +15,7 @@ This repository is not configured for automatic real-money trading. Real broker 
 - `scripts/rt_alert_bridge.py` defaults to notify-only mode.
 - The alert bridge is fail-closed: a BUY/SELL raw trigger is not sent as an operator trade candidate unless v5 marks `execution_candidate=true`, Hermes review marks the matching item `eligible_for_approval=true`, and execution readiness is `READY` with `ready_for_execute=true`.
 - `scripts/portfolio_report.py` produces advisory `position_review` items for user and simulation holdings, including large unrealized losses and daily holding moves that need trailing-stop/take-profit/reduction review.
-- Each position review includes an advisory plan with candidate action, add permission, quantity hint, and stop/target/trailing references for Hermes/operator review. Full-exit drafts are reserved for major loss pressure; ordinary SELL or shallow stop pressure becomes reduce/exit review. The hint is not lot-adjusted and never submits orders.
+- Each position review includes an advisory plan with candidate action, add permission, quantity hint, latest-signal geometry references, and optional trailing references for Hermes/operator review. Full-exit drafts are reserved for major loss pressure; ordinary SELL or shallow stop pressure becomes reduce/exit review. The hint is not lot-adjusted and never submits orders.
 - `scripts/rt_order_intake.py` is the gated paper/simulation intake path.
 - HK simulated orders use the QuantMind simulation API.
 - US paper orders may use Alpaca paper only when explicitly enabled.
@@ -136,7 +136,7 @@ python3 scripts/rt_alert_bridge.py
 
 The bridge marks emitted alerts or position reviews as sent only after Feishu delivery succeeds. Safety-gate-blocked technical triggers are suppressed by default and marked locally so they do not repeat-spam Feishu.
 For trade-signal notifications, the default also requires `RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1`: the matching Hermes packet item must be eligible and execution readiness must be READY. This prevents raw technical triggers from being presented as operation signals during blocked or risk-off system states.
-Position-review notifications default to `RT_POSITION_REVIEW_ROLES=user`, include `high,medium` urgency, and cap at 20 items. Simulation holdings still remain in the Hermes packet and reports, but they are not mixed into the operator Feishu stream unless `RT_POSITION_REVIEW_ROLES=simulation` or `all` is set explicitly. These notifications are titled as `Hermes持倉審核待辦（不下單）`, include `order_submission=false`, and remain advisory-only. The `審核草案` line is a structured review aid, not an order ticket.
+Position-review notifications default to `RT_POSITION_REVIEW_ROLES=user`, include `high,medium` urgency, and cap at 20 items. Simulation holdings still remain in the Hermes packet and reports, but they are not mixed into the operator Feishu stream unless `RT_POSITION_REVIEW_ROLES=simulation` or `all` is set explicitly. These notifications are titled as `Hermes持倉審核待辦（不下單）`, include `order_submission=false`, and remain advisory-only. The `審核草案` line is a structured review aid, not an order ticket; `sig_stop_ref` and `sig_target_ref` are latest-signal geometry references, not broker order prices for the held long position.
 The position-review message summary counts only the items that passed the active role and urgency filters; packet-level global counts may include filtered simulation or diagnostic context and must not be read as submitted orders.
 
 ## Recommended Server Jobs
@@ -197,6 +197,8 @@ When adding to an existing position, `trade_update.py add` keeps valuation field
 The `positions` table stores HKD-valued `market_value`/`unrealized_pnl` snapshots, while `avg_cost`, `total_cost`, and `current_price` remain quote-currency prices. `trade_update.py` preserves that convention, including USD-to-HKD valuation for US holdings.
 
 Hermes portfolio context and user-portfolio price refreshes intentionally read/update only `status='holding'` user rows. A portfolio is treated as user-owned when its id appears in `QM_HOLDINGS_PORTFOLIO_ID`, `QM_USER_PORTFOLIO_ID`, or `QM_USER_PORTFOLIO_IDS`; if none are configured, portfolio `3` is the user-holding default. User-portfolio price refresh follows the same source-of-truth rule: if `positions` has no open user holdings, it skips valuation and never rebuilds from `sim_trades`. Full sells mark the row `closed` and clear open quantity/valuation fields, so historical closed rows cannot be mistaken for current exposure. The simulation portfolio `8` path remains compatible with both `active` and `holding` rows, and may still rebuild from `sim_trades` when positions are empty because older simulation jobs used both states.
+
+Do not treat server-only legacy files such as `/root/portfolio_config.py` as a holdings source. The reviewed path is DB `positions` plus the tracked helper scripts above; stale server constants are audit residue unless a future job explicitly imports them.
 
 Readiness refresh, useful after deploy or missing cron:
 
