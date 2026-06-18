@@ -27,6 +27,7 @@ def env_int(name, default):
 POLL_INTERVAL = 3       # 每3秒拉一次報價
 FULL_SCAN_INTERVAL = 30 # 每30秒做一次全量條件檢查
 SIGNAL_COOLDOWN = 1800  # 同一信號30分鐘內唔重複觸發
+USER_HOLDINGS_REFRESH_SECONDS = env_int("RT_SIGNAL_USER_HOLDINGS_REFRESH_SECONDS", 300)
 ALERT_FILE = "/tmp/rt_signal_alert.json"
 ALERT_QUEUE_FILE = "/tmp/rt_signal_alerts.jsonl"
 STATE_FILE = "/tmp/rt_signal_state.json"
@@ -79,6 +80,8 @@ TRIGGER_EXECUTION_PRIORITY = {
 }
 HK_SYMBOL_RE = re.compile(r"^\d{5}$")
 US_SYMBOL_RE = re.compile(r"^(?=.{1,10}$)[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?$")
+HK_EXCHANGES = {"HK", "HKEX", "SEHK", "SZSE", "SSE"}
+US_EXCHANGES = {"US", "NASDAQ", "NYSE", "AMEX"}
 
 # 股票池 — 港股+美股
 HK_WATCHLIST = [
@@ -282,6 +285,108 @@ def normalize_symbol_list(value, market=None, rejected=None):
         seen.add(symbol)
         symbols.append(symbol)
     return symbols
+
+def normalize_holding_symbol(symbol, market=None):
+    symbol = str(symbol or "").strip().upper()
+    market = str(market or "").strip().upper()
+    if symbol.isdigit() and (market == "HK" or len(symbol) < 5):
+        return symbol.zfill(5)
+    return symbol
+
+def user_portfolio_ids(env=None, default=(3,)):
+    env = env if env is not None else os.environ
+    ids = []
+    seen = set()
+    for name in ("QM_HOLDINGS_PORTFOLIO_ID", "QM_USER_PORTFOLIO_ID", "QM_USER_PORTFOLIO_IDS"):
+        raw = env.get(name, "")
+        for item in str(raw).split(","):
+            item = item.strip()
+            if item.isdigit() and int(item) not in seen:
+                ids.append(int(item))
+                seen.add(int(item))
+    return ids or list(default)
+
+def market_for_holding(symbol, exchange=None):
+    exchange = str(exchange or "").strip().upper()
+    symbol = str(symbol or "").strip().upper()
+    if exchange in HK_EXCHANGES or (symbol.isdigit() and len(symbol) <= 5):
+        return "HK"
+    if exchange in US_EXCHANGES:
+        return "US"
+    return infer_market_from_symbol(symbol)
+
+def parse_position_rows(raw):
+    parsed = []
+    for line in str(raw or "").splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("|")
+        symbol = parts[0].strip() if parts else ""
+        exchange = parts[1].strip() if len(parts) > 1 else ""
+        parsed.append({"symbol": symbol, "exchange": exchange})
+    return parsed
+
+def user_holding_symbols(env=None, enabled=None):
+    env = env if env is not None else os.environ
+    if enabled is None:
+        enabled = as_bool(env.get("RT_SIGNAL_INCLUDE_USER_HOLDINGS"), True)
+    portfolio_ids = user_portfolio_ids(env)
+    payload = {
+        "enabled": bool(enabled),
+        "source": "db_positions",
+        "portfolio_ids": portfolio_ids,
+        "status_filter": "holding",
+        "quantity_filter": "positive",
+        "symbols": {"HK": [], "US": []},
+        "warnings": [],
+    }
+    if not enabled:
+        return payload
+    if not portfolio_ids:
+        payload["warnings"].append("user_holdings_portfolio_ids_missing")
+        return payload
+
+    id_list = ",".join(str(int(item)) for item in portfolio_ids)
+    raw = db(
+        f"""
+        SELECT symbol, COALESCE(exchange, '')
+        FROM positions
+        WHERE portfolio_id IN ({id_list})
+          AND status = 'holding'
+          AND COALESCE(quantity, 0) > 0
+        ORDER BY exchange, symbol
+        """
+    )
+    rejected = {"HK": [], "US": []}
+    for row in parse_position_rows(raw):
+        market = market_for_holding(row.get("symbol"), row.get("exchange"))
+        symbol = normalize_holding_symbol(row.get("symbol"), market=market)
+        if market not in ("HK", "US") or not valid_watchlist_symbol(symbol, market=market):
+            if market in rejected:
+                rejected[market].append(symbol or str(row.get("symbol") or ""))
+            else:
+                payload["warnings"].append(f"user_holding_unknown_market:{row.get('symbol')}")
+            continue
+        if symbol not in payload["symbols"][market]:
+            payload["symbols"][market].append(symbol)
+    for market, symbols in rejected.items():
+        if symbols:
+            sample = ",".join(symbols[:5])
+            suffix = f":{len(symbols)}" if len(symbols) > 5 else ""
+            payload["warnings"].append(f"user_holding_invalid_symbols:{market}:{sample}{suffix}")
+    return payload
+
+def merge_watchlist_overlay(base_symbols, overlay_symbols):
+    merged = list(base_symbols or [])
+    seen = set(merged)
+    added = []
+    for symbol in overlay_symbols or []:
+        if symbol in seen:
+            continue
+        merged.append(symbol)
+        seen.add(symbol)
+        added.append(symbol)
+    return merged, added
 
 def symbols_from_watchlist_payload(payload, market, rejected=None):
     if not isinstance(payload, dict):
@@ -689,7 +794,7 @@ def load_strategy_config(env=None, file_path=None):
     }
     return config, context
 
-def load_watchlists(env=None, file_path=None):
+def load_watchlists(env=None, file_path=None, include_user_holdings=None):
     env = env if env is not None else os.environ
     file_path = file_path if file_path is not None else env.get("RT_SIGNAL_WATCHLIST_FILE", WATCHLIST_FILE)
     watchlists = {"HK": list(HK_WATCHLIST), "US": list(US_WATCHLIST)}
@@ -721,6 +826,18 @@ def load_watchlists(env=None, file_path=None):
         else:
             warnings.append(f"watchlist_env_empty:{env_key}")
 
+    if include_user_holdings is None:
+        include_user_holdings = as_bool(env.get("RT_SIGNAL_INCLUDE_USER_HOLDINGS"), env is os.environ)
+    base_counts = {market: len(watchlists[market]) for market in ("HK", "US")}
+    holdings = user_holding_symbols(env=env, enabled=include_user_holdings)
+    overlay_added = {}
+    for market in ("HK", "US"):
+        watchlists[market], overlay_added[market] = merge_watchlist_overlay(
+            watchlists[market],
+            (holdings.get("symbols") or {}).get(market) or [],
+        )
+    warnings.extend(holdings.get("warnings") or [])
+
     context = {
         "schema": "rt_signal_watchlist_runtime_v1",
         "watchlist_id": watchlist_digest(watchlists),
@@ -729,24 +846,88 @@ def load_watchlists(env=None, file_path=None):
         "markets": {
             market: {
                 "source": sources[market],
+                "overlays": ["user_holdings"]
+                if ((holdings.get("symbols") or {}).get(market) or [])
+                else [],
+                "base_count": base_counts[market],
                 "count": len(watchlists[market]),
+                "user_holding_added_count": len(overlay_added[market]),
+                "user_holding_added_sample": overlay_added[market][:10],
                 "sample": watchlists[market][:10],
             }
             for market in ("HK", "US")
+        },
+        "user_holdings_overlay": {
+            "enabled": holdings.get("enabled"),
+            "source": holdings.get("source"),
+            "portfolio_ids": holdings.get("portfolio_ids"),
+            "status_filter": holdings.get("status_filter"),
+            "quantity_filter": holdings.get("quantity_filter"),
+            "counts": {
+                market: len((holdings.get("symbols") or {}).get(market) or [])
+                for market in ("HK", "US")
+            },
+            "added_counts": {market: len(overlay_added[market]) for market in ("HK", "US")},
+            "added_symbols": overlay_added,
+            "symbols": {
+                market: list((holdings.get("symbols") or {}).get(market) or [])
+                for market in ("HK", "US")
+            },
         },
         "warnings": warnings,
     }
     return watchlists["HK"], watchlists["US"], context
 
-def alert_watchlist_metadata(context, market):
+def alert_watchlist_metadata(context, market, symbol=None):
     context = context or {}
     market = str(market or "").upper()
+    symbol = normalize_holding_symbol(symbol, market=market) if symbol else ""
     info = ((context.get("markets") or {}).get(market) or {})
+    overlay = context.get("user_holdings_overlay") or {}
+    holding_symbols = set(((overlay.get("symbols") or {}).get(market) or []))
+    is_user_holding = bool(symbol and symbol in holding_symbols)
     return {
         "watchlist_id": context.get("watchlist_id"),
         "watchlist_source": info.get("source"),
+        "watchlist_overlays": info.get("overlays") or [],
         "watchlist_count": info.get("count"),
+        "user_holding_symbol": is_user_holding,
+        "user_holding_portfolio_ids": overlay.get("portfolio_ids") if is_user_holding else [],
     }
+
+def sync_runtime_watchlists(hk_watchlist, us_watchlist, watchlist_context, indicators, trigger):
+    new_hk, new_us, new_context = load_watchlists()
+    old_id = watchlist_context.get("watchlist_id") if isinstance(watchlist_context, dict) else None
+    new_id = new_context.get("watchlist_id")
+    if new_id == old_id:
+        return hk_watchlist, us_watchlist, watchlist_context, indicators, []
+
+    new_symbols = [(s, "HK") for s in new_hk] + [(s, "US") for s in new_us]
+    active = {symbol for symbol, _market in new_symbols}
+    added = []
+    removed = sorted(set(indicators) - active)
+    for symbol in removed:
+        indicators.pop(symbol, None)
+    for symbol, market in new_symbols:
+        if symbol in indicators:
+            continue
+        ind = IncrementalIndicators(symbol)
+        loaded = ind.load_history(100, market=market)
+        if indicator_signal_ready(ind):
+            indicators[symbol] = ind
+            added.append(symbol)
+        else:
+            reason = "load_failed" if not loaded else "insufficient_daily_history"
+            log(f"watchlist refresh skipped {symbol}/{market}: {indicator_history_bar_count(ind)}:{reason}")
+
+    trigger.watchlist_context = new_context
+    log(
+        f"watchlist refreshed: {old_id} -> {new_id}; "
+        f"HK={len(new_hk)} US={len(new_us)} added_ready={len(added)} removed={len(removed)}"
+    )
+    for warning in new_context.get("warnings") or []:
+        log(f"watchlist warning: {warning}")
+    return new_hk, new_us, new_context, indicators, added
 
 def alert_strategy_metadata(context):
     context = context or {}
@@ -2554,7 +2735,7 @@ class TriggerEngine:
                 "source": "rt_signal_engine_v5",
                 "symbol": symbol,
                 "market": market,
-                **alert_watchlist_metadata(self.watchlist_context, market),
+                **alert_watchlist_metadata(self.watchlist_context, market, symbol=symbol),
                 **alert_strategy_metadata(self.strategy_context),
                 **alert_timeframe_metadata(),
                 **alert_daily_history_metadata(indicators),
@@ -2817,6 +2998,7 @@ def main():
         log(f"回填同日去重狀態: {backfilled_session_key_count} keys from alert queue")
 
     last_full_scan = 0
+    last_watchlist_refresh = time.time()
     cycle = 0
 
     while True:
@@ -2832,6 +3014,16 @@ def main():
                 log(f"非交易時間 (HK:{hk_open} US:{us_open}), 等待...")
             time.sleep(30)
             continue
+
+        if USER_HOLDINGS_REFRESH_SECONDS > 0 and now - last_watchlist_refresh >= USER_HOLDINGS_REFRESH_SECONDS:
+            hk_watchlist, us_watchlist, watchlist_context, indicators, _added = sync_runtime_watchlists(
+                hk_watchlist,
+                us_watchlist,
+                watchlist_context,
+                indicators,
+                trigger,
+            )
+            last_watchlist_refresh = now
 
         # 拉取實時報價
         hk_quotes = {}

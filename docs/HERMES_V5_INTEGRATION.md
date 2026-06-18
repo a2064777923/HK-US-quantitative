@@ -1,10 +1,18 @@
 # Hermes v5 Integration
 
-**Updated:** 2026-06-18
+**Updated:** 2026-06-19
 
 This document explains how to connect the realtime v5 signal path without breaking the existing QuantMind jobs or the separate simulation trading system.
 
 ## What Changed
+
+### 2026-06-19 user-holdings monitoring overlay
+
+- `rt_signal_engine_v5.py` now overlays open user holdings from DB `positions` onto the realtime scan list. The source is the same user portfolio env family used by the holding tools and portfolio reports: `QM_HOLDINGS_PORTFOLIO_ID`, `QM_USER_PORTFOLIO_ID`, or `QM_USER_PORTFOLIO_IDS`, defaulting to portfolio `3`; only `status='holding'` rows with positive quantity are included.
+- The overlay is enabled by default in the live runtime and refreshes every `RT_SIGNAL_USER_HOLDINGS_REFRESH_SECONDS` seconds, default `300`. This means a new user holding can enter v5 monitoring without editing `/root/rt_signal_watchlist.json` or restarting the service.
+- This is a monitoring-scope change only. It does not mutate `positions`, change v5 thresholds, change trigger policy, write Hermes judgments, bypass execution readiness, or authorize simulation/paper/live orders.
+- Alert metadata now carries `watchlist_overlays`, `user_holding_symbol`, and `user_holding_portfolio_ids`. Hermes should treat `user_holding_symbol=true` as position-management context: prioritize trailing-stop, reduce/add, and risk review logic, but still require the existing Hermes/readiness/intake gates before any paper execution.
+- Static watchlist membership still drives broader opportunity discovery. DB holdings are an additive overlay so held symbols cannot disappear from realtime attention when the operator buys something outside the current watchlist.
 
 ### 2026-06-18 live-server reliability fix
 

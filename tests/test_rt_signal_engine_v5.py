@@ -1744,6 +1744,46 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(context["markets"]["HK"]["source"], "file")
         self.assertEqual(context["markets"]["US"]["source"], "env")
 
+    def test_load_watchlists_can_overlay_open_user_holdings_from_db(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "watchlist.json"
+            path.write_text(json.dumps({"HK": ["00700"], "US": ["AAPL"]}), encoding="utf-8")
+
+            with patch.object(
+                rt,
+                "db",
+                return_value="01918|HKEX\n09896|HKEX\nPDD|NASDAQ\nBAD$|NASDAQ",
+            ) as fake_db:
+                hk, us, context = rt.load_watchlists(
+                    env={"RT_SIGNAL_INCLUDE_USER_HOLDINGS": "1", "QM_USER_PORTFOLIO_IDS": "3"},
+                    file_path=str(path),
+                )
+
+        self.assertEqual(hk, ["00700", "01918", "09896"])
+        self.assertEqual(us, ["AAPL", "PDD"])
+        self.assertEqual(context["markets"]["HK"]["source"], "file")
+        self.assertEqual(context["markets"]["HK"]["overlays"], ["user_holdings"])
+        self.assertEqual(context["markets"]["HK"]["base_count"], 1)
+        self.assertEqual(context["markets"]["HK"]["user_holding_added_count"], 2)
+        self.assertEqual(context["markets"]["US"]["user_holding_added_count"], 1)
+        self.assertEqual(context["user_holdings_overlay"]["portfolio_ids"], [3])
+        self.assertEqual(context["user_holdings_overlay"]["added_counts"], {"HK": 2, "US": 1})
+        self.assertTrue(any("user_holding_invalid_symbols:US:BAD$" in warning for warning in context["warnings"]))
+        fake_db.assert_called_once()
+
+    def test_load_watchlists_env_test_scope_does_not_query_user_holdings_by_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "watchlist.json"
+            path.write_text(json.dumps({"HK": ["00700"], "US": ["AAPL"]}), encoding="utf-8")
+
+            with patch.object(rt, "db") as fake_db:
+                hk, us, context = rt.load_watchlists(env={}, file_path=str(path))
+
+        self.assertEqual(hk, ["00700"])
+        self.assertEqual(us, ["AAPL"])
+        self.assertFalse(context["user_holdings_overlay"]["enabled"])
+        fake_db.assert_not_called()
+
     def test_load_watchlists_filters_invalid_file_symbols_by_market(self):
         with tempfile.TemporaryDirectory() as td:
             path = Path(td) / "watchlist.json"
@@ -1808,6 +1848,34 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(engine.alerts[0]["watchlist_id"], "watchlist-test")
         self.assertEqual(engine.alerts[0]["watchlist_source"], "file")
         self.assertEqual(engine.alerts[0]["watchlist_count"], 2)
+
+    def test_trigger_alert_marks_user_holding_symbol(self):
+        engine = rt.TriggerEngine(
+            watchlist_context={
+                "watchlist_id": "watchlist-test",
+                "markets": {"US": {"source": "file", "count": 2, "overlays": ["user_holdings"]}},
+                "user_holdings_overlay": {
+                    "portfolio_ids": [3],
+                    "symbols": {"HK": [], "US": ["AAPL"]},
+                },
+            }
+        )
+        indicators = FakeIndicators(avg_volume=1000)
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 4000,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertTrue(engine.alerts[0]["user_holding_symbol"])
+        self.assertEqual(engine.alerts[0]["user_holding_portfolio_ids"], [3])
 
     def test_trigger_alert_declares_timeframe_scope(self):
         engine = rt.TriggerEngine()
