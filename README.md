@@ -74,6 +74,8 @@ Each v5 alert declares its timeframe basis:
 
 Executable alerts must be confirmed directional BUY/SELL candidates with valid entry, stop, take-profit, risk/reward, liquidity, and execution-candidate fields. Diagnostic `WATCH` rows may still carry candidate geometry for review, but order intake rejects them as non-executable.
 
+v5 treats same-day repeated states as one event. For the same market `signal_date`, symbol, emitted side, and trigger, the engine writes one alert and persists a session key in `/tmp/rt_signal_state.json`; cooldown remains a short-term guard, not permission to re-send the same stale condition every 30 minutes. A later alert is allowed on the next market signal date, or when the emitted side changes, for example a diagnostic `WATCH` later becoming a confirmed `BUY`.
+
 v5.2 does not globally loosen execution gates. A `急漲` row may carry `candidate_signal_type=BUY`, but it remains `WATCH` unless full-score confirmation, factor confluence, risk geometry, liquidity, and execution-candidate checks pass. `布林上軌動量突破` replaces the old unconditional upper-band SELL interpretation only when same-session or recent momentum supports a breakout context; weak or overbought upper-band touches still remain SELL/WATCH diagnostics.
 
 The live v5.2 config uses `trigger_overrides` to reduce weak-market BUY noise:
@@ -130,7 +132,7 @@ python3 scripts/rt_alert_bridge.py
 
 The bridge marks emitted alerts or position reviews as sent only after Feishu delivery succeeds. Safety-gate-blocked technical triggers are suppressed by default and marked locally so they do not repeat-spam Feishu.
 For trade-signal notifications, the default also requires `RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1`: the matching Hermes packet item must be eligible and execution readiness must be READY. This prevents raw technical triggers from being presented as operation signals during blocked or risk-off system states.
-Position-review notifications include `high,medium` urgency by default and cap at 20 items, so user holdings such as `SPCX` are not hidden behind simulation-only or high-risk rows. These notifications are titled as `Hermes持倉審核待辦（不下單）`, include `order_submission=false`, and remain advisory-only.
+Position-review notifications default to `RT_POSITION_REVIEW_ROLES=user`, include `high,medium` urgency, and cap at 20 items. Simulation holdings still remain in the Hermes packet and reports, but they are not mixed into the operator Feishu stream unless `RT_POSITION_REVIEW_ROLES=simulation` or `all` is set explicitly. These notifications are titled as `Hermes持倉審核待辦（不下單）`, include `order_submission=false`, and remain advisory-only.
 
 ## Recommended Server Jobs
 
@@ -149,7 +151,7 @@ systemctl enable --now rt_signal_engine_v5
 Cron jobs that need runtime portfolio IDs or Feishu credentials should source env files with export semantics:
 
 ```cron
-* * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1"
+* * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 RT_POSITION_REVIEW_ROLES=user /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1"
 */15 * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/portfolio_report.py --output /tmp/portfolio_report.json --text >> /tmp/portfolio_report.log 2>&1"
 * * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/hermes_review_packet.py --output /tmp/hermes_signal_review_packet.json >> /tmp/hermes_review_packet.log 2>&1"
 ```
@@ -233,6 +235,8 @@ Also scan for secrets before pushing. Placeholder names such as `FEISHU_APP_SECR
 
 - After finding one Alpaca paper order created from a raw `NO_MATCH` technical signal while Hermes judgment was disabled, the server bridge cron was changed from `alert-sim` to `alert-dry-run`, `RT_ORDER_EXECUTE_PILOT_ENABLED=0`, `RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1`, and `RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS=0`.
 - Hardened `rt_alert_bridge.py` so bridge-launched intake always forces readiness, strategy evidence, Hermes judgment, market context, and symbol-conflict gates on for `alert-dry-run` and `alert-sim`.
+- Changed Feishu position-review delivery to default to `role=user` only, keeping simulation holdings available to Hermes in packet/report context without mixing them into operator-facing holding reminders.
+- Added v5 session-level alert de-duplication so persistent conditions such as `跌破MA5`, `RSI超賣`, or Bollinger-band breaches do not re-enter the alert queue every cooldown bucket on the same market signal date.
 - Deployed `v5.2-risk-off-trigger-remediation-20260618` to reduce weak-market BUY noise through existing `trigger_overrides`; no execution gates were loosened.
 - Converted poor BUY reversal triggers (`布林下軌突破`, `RSI超賣`, `MA金叉`, `站上MA5`) into diagnostic WATCH-only rows.
 - Shadowed `布林上軌動量突破` and tightened `急漲` while evidence is retested.

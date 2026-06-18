@@ -23,6 +23,7 @@ SIGNAL_COOLDOWN = 1800  # 同一信號30分鐘內唔重複觸發
 ALERT_FILE = "/tmp/rt_signal_alert.json"
 ALERT_QUEUE_FILE = "/tmp/rt_signal_alerts.jsonl"
 STATE_FILE = "/tmp/rt_signal_state.json"
+SESSION_KEY_RETENTION_DAYS = 7
 WATCHLIST_FILE = os.environ.get("RT_SIGNAL_WATCHLIST_FILE", "/root/rt_signal_watchlist.json")
 STRATEGY_CONFIG_FILE = os.environ.get("RT_SIGNAL_STRATEGY_CONFIG_FILE", "/root/rt_signal_strategy_config.json")
 MAX_QUOTE_AGE_SECONDS = 15 * 60
@@ -1693,6 +1694,7 @@ class TriggerEngine:
     def __init__(self, watchlist_context=None, strategy_config=None, strategy_context=None):
         self.alerts = []
         self.cooldowns = {}  # key -> last_trigger_time
+        self.emitted_session_keys = {}  # date:symbol:side:trigger -> first_emit_time
         self.watchlist_context = watchlist_context or {}
         self.strategy_config, default_context = load_strategy_config(env={}, file_path="")
         if strategy_config is not None:
@@ -1740,6 +1742,9 @@ class TriggerEngine:
 
     def alert_cooldown_key(self, symbol, signal_type, trigger_name):
         return f"{str(symbol or '').upper()}:{self.trigger_key(signal_type, trigger_name)}"
+
+    def alert_session_key(self, symbol, signal_type, trigger_name, signal_date):
+        return f"{signal_date}:{str(symbol or '').upper()}:{self.trigger_key(signal_type, trigger_name)}"
 
     def alert_signal_id(self, symbol, trigger_name, signal_type, now, cooldown_seconds, signal_date=None):
         bucket_seconds = cooldown_seconds if cooldown_seconds and cooldown_seconds > 0 else SIGNAL_COOLDOWN
@@ -2143,16 +2148,21 @@ class TriggerEngine:
                 take_profit = None
                 rr_ratio = None
 
+            market = quote.get("market", "")
+            generated_at = datetime.now()
+            signal_date = alert_signal_date(quote.get("time"), generated_at=generated_at, market=market)
+            session_key = self.alert_session_key(symbol, emitted_signal_type, trigger_name, signal_date)
+            if session_key in self.emitted_session_keys:
+                continue
+
             key = self.alert_cooldown_key(symbol, emitted_signal_type, trigger_name)
             if key in self.cooldowns and now - self.cooldowns[key] < cooldown_seconds:
                 continue
             self.cooldowns[key] = now
+            self.emitted_session_keys[session_key] = now
             if execution_candidate:
                 emitted_directional_candidates.add(signal_type)
 
-            market = quote.get("market", "")
-            generated_at = datetime.now()
-            signal_date = alert_signal_date(quote.get("time"), generated_at=generated_at, market=market)
             self.alerts.append({
                 "signal_id": self.alert_signal_id(
                     symbol,
@@ -2218,20 +2228,49 @@ def log(msg):
     print(f"[{ts}] {msg}", flush=True)
 
 def default_state():
-    return {"cooldowns": {}, "date": ""}
+    return {"cooldowns": {}, "emitted_session_keys": {}, "date": ""}
+
+
+def sanitize_timestamp_mapping(value):
+    cleaned = {}
+    if not isinstance(value, dict):
+        return cleaned
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip()
+        timestamp = as_float(raw_value)
+        if key and timestamp is not None and timestamp >= 0:
+            cleaned[key] = timestamp
+    return cleaned
+
+def prune_emitted_session_keys(mapping, now=None, retention_days=SESSION_KEY_RETENTION_DAYS):
+    cleaned = sanitize_timestamp_mapping(mapping)
+    try:
+        retention_days = int(retention_days)
+    except (TypeError, ValueError):
+        retention_days = SESSION_KEY_RETENTION_DAYS
+    if retention_days <= 0:
+        return cleaned
+    today = (now or datetime.now()).date()
+    cutoff = today - timedelta(days=retention_days)
+    pruned = {}
+    for key, value in cleaned.items():
+        raw_date = key.split(":", 1)[0]
+        try:
+            key_date = datetime.strptime(raw_date, "%Y%m%d").date()
+        except (TypeError, ValueError):
+            pruned[key] = value
+            continue
+        if key_date >= cutoff:
+            pruned[key] = value
+    return pruned
 
 def normalize_state(payload):
     state = default_state()
     if not isinstance(payload, dict):
         return state
 
-    cooldowns = payload.get("cooldowns")
-    if isinstance(cooldowns, dict):
-        for raw_key, raw_value in cooldowns.items():
-            key = str(raw_key or "").strip()
-            value = as_float(raw_value)
-            if key and value is not None and value >= 0:
-                state["cooldowns"][key] = value
+    state["cooldowns"] = sanitize_timestamp_mapping(payload.get("cooldowns"))
+    state["emitted_session_keys"] = sanitize_timestamp_mapping(payload.get("emitted_session_keys"))
 
     date = str(payload.get("date") or "").strip()
     if date:
@@ -2334,6 +2373,7 @@ def main():
     )
     state = load_state()
     trigger.cooldowns = state.get("cooldowns", {})
+    trigger.emitted_session_keys = prune_emitted_session_keys(state.get("emitted_session_keys", {}))
 
     last_full_scan = 0
     cycle = 0
@@ -2393,6 +2433,8 @@ def main():
 
                 # 更新冷卻狀態
                 state["cooldowns"] = trigger.cooldowns
+                trigger.emitted_session_keys = prune_emitted_session_keys(trigger.emitted_session_keys, now=dt)
+                state["emitted_session_keys"] = trigger.emitted_session_keys
                 state["date"] = dt.strftime("%Y-%m-%d")
                 save_state(state)
             else:

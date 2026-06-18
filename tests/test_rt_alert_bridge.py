@@ -20,6 +20,10 @@ class RtAlertBridgeTests(unittest.TestCase):
             "RT_ALERT_REQUIRE_PACKET_ELIGIBLE",
             "RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS",
             "RT_POSITION_REVIEW_SENT_FILE",
+            "RT_POSITION_REVIEW_ROLES",
+            "RT_POSITION_REVIEW_URGENCY",
+            "RT_POSITION_REVIEW_LIMIT",
+            "RT_POSITION_REVIEW_REMINDER_HOURS",
             "HERMES_REVIEW_PACKET_FILE",
             "RT_ORDER_EXECUTE_PILOT_ENABLED",
             "RT_ORDER_US_BROKER",
@@ -78,16 +82,16 @@ class RtAlertBridgeTests(unittest.TestCase):
             "position_judgment_audit": {
                 "coverage": {
                     "unjudged_high_urgency_review_count": 1,
-                    "unjudged_high_urgency_examples": [{"review_id": "simulation:8:AAPL:2026-06-12:risk_review"}],
+                    "unjudged_high_urgency_examples": [{"review_id": "user:3:AAPL:2026-06-12:risk_review"}],
                 }
             },
             "position_review": {
                 "schema": "portfolio_position_review_v1",
                 "items": [
                     {
-                        "review_id": "simulation:8:AAPL:2026-06-12:risk_review",
-                        "portfolio_id": 8,
-                        "role": "simulation",
+                        "review_id": "user:3:AAPL:2026-06-12:risk_review",
+                        "portfolio_id": 3,
+                        "role": "user",
                         "symbol": "AAPL",
                         "market": "US",
                         "urgency": "high",
@@ -421,12 +425,47 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertTrue(review_sent.exists())
             self.assertEqual(
                 json.loads(review_sent.read_text(encoding="utf-8"))[0]["review_id"],
-                "simulation:8:AAPL:2026-06-12:risk_review",
+                "user:3:AAPL:2026-06-12:risk_review",
             )
             text = printed.call_args.args[0]
             self.assertIn("Hermes持倉審核待辦（不下單）", text)
             self.assertIn("不代表已通過 Hermes 交易審批", text)
             self.assertIn("order_submission=false", text)
+
+    def test_position_review_suppresses_simulation_role_by_default(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            alert_sent = Path(td) / "alert_sent.json"
+            review_sent = Path(td) / "position_sent.json"
+            packet_file = Path(td) / "packet.json"
+            packet = self.packet_with_position_review()
+            packet["position_judgment_audit"]["coverage"]["unjudged_high_urgency_examples"] = [
+                {"review_id": "simulation:8:AAPL:2026-06-12:risk_review"}
+            ]
+            packet["position_review"]["items"][0].update(
+                {
+                    "review_id": "simulation:8:AAPL:2026-06-12:risk_review",
+                    "portfolio_id": 8,
+                    "role": "simulation",
+                }
+            )
+            queue.write_text("", encoding="utf-8")
+            packet_file.write_text(json.dumps(packet), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(alert_sent),
+                RT_POSITION_REVIEW_SENT_FILE=str(review_sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="notify",
+            )
+
+            with patch("builtins.print") as printed:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            printed.assert_not_called()
+            self.assertFalse(review_sent.exists())
 
     def test_position_review_includes_medium_urgency_by_default(self):
         with tempfile.TemporaryDirectory() as td:

@@ -204,10 +204,10 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = str(Path(tmpdir) / "rt_signal_state.json")
             with patch.object(rt, "STATE_FILE", state_file):
-                self.assertEqual(rt.load_state(), {"cooldowns": {}, "date": ""})
+                self.assertEqual(rt.load_state(), {"cooldowns": {}, "date": "", "emitted_session_keys": {}})
 
                 Path(state_file).write_text("{bad json", encoding="utf-8")
-                self.assertEqual(rt.load_state(), {"cooldowns": {}, "date": ""})
+                self.assertEqual(rt.load_state(), {"cooldowns": {}, "date": "", "emitted_session_keys": {}})
 
     def test_load_state_sanitizes_cooldown_shape(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -219,6 +219,14 @@ class RtSignalEngineV5Tests(unittest.TestCase):
                         "cooldowns": {
                             "AAPL:BUY:RSI": 1000,
                             " 0700:SELL:MA5 ": "2000.5",
+                            "bad:none": None,
+                            "bad:negative": -1,
+                            "bad:nan": float("nan"),
+                            "": 123,
+                        },
+                        "emitted_session_keys": {
+                            "20260613:AAPL:BUY:RSI": 1000,
+                            " 20260613:0700:SELL:MA5 ": "2000.5",
                             "bad:none": None,
                             "bad:negative": -1,
                             "bad:nan": float("nan"),
@@ -240,6 +248,10 @@ class RtSignalEngineV5Tests(unittest.TestCase):
                     "AAPL:BUY:RSI": 1000.0,
                     "0700:SELL:MA5": 2000.5,
                 },
+                "emitted_session_keys": {
+                    "20260613:AAPL:BUY:RSI": 1000.0,
+                    "20260613:0700:SELL:MA5": 2000.5,
+                },
             },
         )
 
@@ -255,14 +267,46 @@ class RtSignalEngineV5Tests(unittest.TestCase):
                             "bad:nan": float("nan"),
                             "bad:negative": -1,
                         },
+                        "emitted_session_keys": {
+                            "20260613:AAPL:BUY:RSI": 1000,
+                            "bad:nan": float("nan"),
+                            "bad:negative": -1,
+                        },
                     }
                 )
 
             loaded = json.loads(state_file.read_text(encoding="utf-8"))
             tmp_files = list(Path(tmpdir).glob("rt_signal_state.json.*.tmp"))
 
-        self.assertEqual(loaded, {"cooldowns": {"AAPL:BUY:RSI": 1000.0}, "date": "2026-06-13"})
+        self.assertEqual(
+            loaded,
+            {
+                "cooldowns": {"AAPL:BUY:RSI": 1000.0},
+                "emitted_session_keys": {"20260613:AAPL:BUY:RSI": 1000.0},
+                "date": "2026-06-13",
+            },
+        )
         self.assertEqual(tmp_files, [])
+
+    def test_prune_emitted_session_keys_keeps_recent_market_dates_only(self):
+        pruned = rt.prune_emitted_session_keys(
+            {
+                "20260611:AAPL:BUY:RSI超賣": 1,
+                "20260602:AAPL:BUY:RSI超賣": 2,
+                "not-a-date:AAPL:BUY:RSI超賣": 3,
+                "bad": -1,
+            },
+            now=datetime(2026, 6, 18, 11, 0, 0),
+            retention_days=7,
+        )
+
+        self.assertEqual(
+            pruned,
+            {
+                "20260611:AAPL:BUY:RSI超賣": 1.0,
+                "not-a-date:AAPL:BUY:RSI超賣": 3.0,
+            },
+        )
 
     def test_realtime_score_volume_uses_session_adjusted_cumulative_ratio(self):
         ind = rt.IncrementalIndicators("AAPL")
@@ -2789,10 +2833,12 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             "time": "2026-06-13 03:59:00",
             "change_pct": 0,
         }
+        next_day_quote = dict(quote)
+        next_day_quote["time"] = "2026-06-14 03:59:00"
 
         with patch.object(rt.time, "time", side_effect=[1_000_000, 1_000_301]):
             engine.check("AAPL", indicators, quote)
-            engine.check("AAPL", indicators, quote)
+            engine.check("AAPL", indicators, next_day_quote)
 
         self.assertEqual(len(engine.alerts), 2)
         first_id = engine.alerts[0]["signal_id"]
@@ -2800,6 +2846,35 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertNotEqual(first_id, second_id)
         self.assertEqual(first_id.rsplit(":", 1)[-1], str(1_000_000 // 300))
         self.assertEqual(second_id.rsplit(":", 1)[-1], str(1_000_301 // 300))
+
+    def test_same_session_signal_is_not_reemitted_after_cooldown(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "trigger_overrides": {
+                    "BUY:RSI超賣": {"cooldown_seconds": 300},
+                },
+            }
+        )
+        indicators = FakeIndicators(score=0.8)
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+        quote = {
+            "price": 100,
+            "volume": 0,
+            "market": "US",
+            "time": "2026-06-13 03:59:00",
+            "change_pct": 0,
+        }
+
+        with patch.object(rt.time, "time", side_effect=[1_000_000, 1_000_301]):
+            engine.check("AAPL", indicators, quote)
+            engine.check("AAPL", indicators, quote)
+
+        self.assertEqual(len(engine.alerts), 1)
+        self.assertEqual(engine.alerts[0]["trigger"], "RSI超賣")
+        self.assertIn("20260613:AAPL:BUY:RSI超賣", engine.emitted_session_keys)
 
     def test_invalid_trigger_cooldown_falls_back_to_global_cooldown(self):
         engine = rt.TriggerEngine(

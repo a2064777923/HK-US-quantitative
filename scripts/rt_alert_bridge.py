@@ -26,6 +26,11 @@ POSITION_REVIEW_URGENCY = {
     for item in os.environ.get("RT_POSITION_REVIEW_URGENCY", "high,medium").split(",")
     if item.strip()
 }
+POSITION_REVIEW_ROLES = {
+    item.strip().lower()
+    for item in os.environ.get("RT_POSITION_REVIEW_ROLES", "user").split(",")
+    if item.strip()
+}
 POSITION_REVIEW_LIMIT = int(os.environ.get("RT_POSITION_REVIEW_LIMIT", "20"))
 POSITION_REVIEW_REMINDER_HOURS = float(os.environ.get("RT_POSITION_REVIEW_REMINDER_HOURS", "6"))
 
@@ -467,6 +472,9 @@ def position_review_items(packet):
             continue
         review_id = item.get("review_id")
         if not review_id:
+            continue
+        role = str(item.get("role") or "").lower()
+        if POSITION_REVIEW_ROLES and not ({"*", "all"} & POSITION_REVIEW_ROLES) and role not in POSITION_REVIEW_ROLES:
             continue
         urgency = str(item.get("urgency") or "").lower()
         if POSITION_REVIEW_URGENCY and urgency not in POSITION_REVIEW_URGENCY:
