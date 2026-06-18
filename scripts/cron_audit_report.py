@@ -19,6 +19,11 @@ ALERT_SENT_FILE = os.environ.get("RT_ALERT_SENT_FILE", "/tmp/rt_signal_sent.json
 POSITION_REVIEW_SENT_FILE = os.environ.get("RT_POSITION_REVIEW_SENT_FILE", "/tmp/rt_position_review_sent.json")
 FEISHU_REQUIRED_ENV = ("FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_CHAT_ID")
 
+USER_PRICE_SNAPSHOT_RECOMMENDED_CRON = [
+    "*/15 9-16,21-23 * * 1-5 /bin/bash -lc \"cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1\"",
+    "*/15 0-5 * * 2-6 /bin/bash -lc \"cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1\"",
+]
+
 REQUIRED_READ_ONLY_JOBS = [
     {
         "name": "cron_audit",
@@ -414,6 +419,64 @@ def script_availability_audit(lines, required_jobs, script_root=None, available_
     }
 
 
+def portfolio_price_snapshot_audit(lines, script_root=None, available_scripts=None):
+    user_lines = active_line_with_tokens(lines, ["update_portfolio_prices.py", "QM_PRICE_UPDATE_PORTFOLIO_ID=3"])
+    day_evening_lines = [
+        line
+        for line in user_lines
+        if "9-16,21-23" in line and "* * 1-5" in line
+    ]
+    after_midnight_lines = [
+        line
+        for line in user_lines
+        if "0-5" in line and "* * 2-6" in line
+    ]
+    script_available = script_exists(
+        "update_portfolio_prices.py",
+        script_root=script_root,
+        available_scripts=available_scripts,
+    )
+
+    warnings = []
+    if not user_lines:
+        warnings.append("user_price_snapshot_cron_missing")
+    if not day_evening_lines:
+        warnings.append("user_price_snapshot_missing_hk_day_us_evening_line")
+    if not after_midnight_lines:
+        warnings.append("user_price_snapshot_missing_us_after_midnight_line")
+    if script_available is False:
+        warnings.append("user_price_snapshot_script_missing")
+
+    status = "WARN" if warnings else "OK"
+    return {
+        "schema": "portfolio_price_snapshot_cron_audit_v1",
+        "status": status,
+        "portfolio_id": 3,
+        "line_count": len(user_lines),
+        "covers_hk_day_and_us_evening_hkt": bool(day_evening_lines),
+        "covers_us_after_midnight_hkt": bool(after_midnight_lines),
+        "script_available": script_available,
+        "lines": user_lines,
+        "warnings": warnings,
+        "recommended_cron": USER_PRICE_SNAPSHOT_RECOMMENDED_CRON,
+        "operator_effect": {
+            "updates_position_valuation_fields": True,
+            "updates_portfolio_totals": True,
+            "changes_position_quantities": False,
+            "opens_or_closes_positions": False,
+            "submits_orders": False,
+            "writes_judgments": False,
+            "changes_strategy": False,
+            "changes_alert_queue": False,
+        },
+        "hermes_use": [
+            "This audit is read-only, but the audited cron job is a valuation maintenance job.",
+            "Missing coverage means Hermes may receive stale user holding prices during HK or US sessions.",
+            "Do not put these lines in the read-only installation plan; install them as reviewed portfolio maintenance cron.",
+        ],
+    }
+
+
 def dangerous_lines(lines):
     matches = []
     for line in lines:
@@ -766,6 +829,11 @@ def build_report(
         script_root=script_root,
         available_scripts=available_scripts,
     )
+    portfolio_price_snapshot = portfolio_price_snapshot_audit(
+        lines,
+        script_root=script_root,
+        available_scripts=available_scripts,
+    )
     if dangerous:
         status = "FAIL"
     elif alert_delivery.get("status") == "FAIL":
@@ -774,6 +842,7 @@ def build_report(
         missing
         or alert_delivery.get("status") == "WARN"
         or script_availability.get("status") == "WARN"
+        or portfolio_price_snapshot.get("status") == "WARN"
     ):
         status = "WARN"
     else:
@@ -785,6 +854,8 @@ def build_report(
         recommendations.append("install_missing_read_only_cron_jobs_from_config_hermes_v5_crontab")
     if script_availability.get("missing_script_count"):
         recommendations.append("deploy_missing_read_only_scripts_before_claiming_cron_coverage")
+    if portfolio_price_snapshot.get("status") == "WARN":
+        recommendations.append("install_user_position_price_snapshot_cron_for_hk_us_sessions")
     recommendations.extend(alert_delivery.get("recommendations") or [])
     if not recommendations:
         recommendations.append("cron_wiring_matches_required_read_only_contract")
@@ -808,6 +879,7 @@ def build_report(
             "alert_delivery_status": alert_delivery.get("status"),
             "missing_script_count": script_availability.get("missing_script_count", 0),
             "script_availability_status": script_availability.get("status"),
+            "portfolio_price_snapshot_status": portfolio_price_snapshot.get("status"),
         },
         "required_jobs": required,
         "missing_required_jobs": missing,
@@ -815,6 +887,7 @@ def build_report(
         "limited_pilot_execution_jobs": limited_pilot,
         "alert_delivery": alert_delivery,
         "script_availability": script_availability,
+        "portfolio_price_snapshot": portfolio_price_snapshot,
         "installation_plan": installation_plan,
         "recommendations": recommendations,
         "warnings": warnings,
@@ -825,6 +898,7 @@ def build_report(
             "Unbounded execute, legacy simulation, and direct order-intake cron lines remain dangerous.",
             "Limited pilot alert-sim lines are visible separately and still depend on rt_order_intake.py pilot gates.",
             "Use alert_delivery to verify the notify bridge, optional Feishu credentials, and sent-state health without sending messages.",
+            "Use portfolio_price_snapshot to verify user holding valuation refresh cron coverage without treating it as a read-only install job.",
         ],
     }
 
@@ -885,6 +959,18 @@ def build_text_report(payload):
             lines.append("Feishu missing env keys: " + ",".join(missing_keys))
         if delivery.get("warnings"):
             lines.append("Alert delivery warnings: " + ", ".join(delivery["warnings"]))
+    snapshot = payload.get("portfolio_price_snapshot") or {}
+    if snapshot:
+        lines.append(
+            "Portfolio price snapshot: status={status} lines={count} hk_us_day={day} us_after_midnight={overnight}".format(
+                status=snapshot.get("status"),
+                count=snapshot.get("line_count"),
+                day=str(snapshot.get("covers_hk_day_and_us_evening_hkt")).lower(),
+                overnight=str(snapshot.get("covers_us_after_midnight_hkt")).lower(),
+            )
+        )
+        if snapshot.get("warnings"):
+            lines.append("Portfolio price snapshot warnings: " + ", ".join(snapshot["warnings"]))
     if payload.get("recommendations"):
         lines.append("Recommendations: " + ", ".join(payload["recommendations"]))
     if payload.get("warnings"):

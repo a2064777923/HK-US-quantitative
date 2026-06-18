@@ -2594,6 +2594,8 @@ The output schema is `cron_audit_report_v1`. `status=OK` means all required read
 
 `alert_delivery` inside the report is also read-only. It checks `rt_alert_bridge.py` notify/local cron wiring, optional `RT_ALERT_SEND_FEISHU=1` setup, Feishu credential key presence from the environment or `/root/.quantmind_env`, and whether `/tmp/rt_signal_sent.json` plus `/tmp/rt_position_review_sent.json` are valid JSON lists. It redacts values and never sends messages, writes sent-state, edits crontab, or submits orders. Missing sent-state files are allowed as first-run state; malformed files warn because they can cause duplicate or suppressed notifications.
 
+`portfolio_price_snapshot` separately audits the portfolio `3` valuation-maintenance cron. This audit is read-only, but the cron it checks is not a read-only context producer: `/root/update_portfolio_prices.py` updates `positions.current_price`, `market_value`, unrealized PnL fields, and portfolio totals only. The audited schedule must include both the HK day / US evening line (`9-16,21-23 HKT Mon-Fri`) and the US after-midnight line (`0-5 HKT Tue-Sat`). If either line is missing, cron audit becomes `WARN` with `install_user_position_price_snapshot_cron_for_hk_us_sessions`; do not put those lines into the read-only installation plan, because they are reviewed portfolio maintenance cron, not evidence-only jobs.
+
 When jobs are missing, the report also emits `installation_plan` with schema `read_only_cron_installation_plan_v1`. This is a hash-stamped operator plan, not an installer:
 
 - `proposal_hash` is the review identifier Hermes can cite;

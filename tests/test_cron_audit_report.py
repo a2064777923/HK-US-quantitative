@@ -49,6 +49,8 @@ FULL_CRON = "\n".join(
 */5 * * * * /usr/bin/python3 /root/event_catalyst_report.py --output /tmp/event_catalyst_report.json --text
 */5 * * * * /usr/bin/python3 /root/event_catalyst_signal_report.py --output /tmp/event_catalyst_signal_report.json --text
 */5 * * * * /usr/bin/python3 /root/market_sentiment_producer.py --output /tmp/market_sentiment_inputs.json --text && /usr/bin/python3 /root/market_sentiment_report.py --output /tmp/market_sentiment_report.json --text
+*/15 9-16,21-23 * * 1-5 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1"
+*/15 0-5 * * 2-6 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1"
 """
 
 
@@ -63,6 +65,10 @@ class CronAuditReportTests(unittest.TestCase):
         self.assertFalse(payload["source"]["changes_crontab"])
         self.assertEqual(payload["summary"]["missing_required_job_count"], 0)
         self.assertEqual(payload["summary"]["dangerous_enabled_count"], 0)
+        self.assertEqual(payload["summary"]["portfolio_price_snapshot_status"], "OK")
+        self.assertEqual(payload["portfolio_price_snapshot"]["status"], "OK")
+        self.assertTrue(payload["portfolio_price_snapshot"]["covers_hk_day_and_us_evening_hkt"])
+        self.assertTrue(payload["portfolio_price_snapshot"]["covers_us_after_midnight_hkt"])
         self.assertEqual(payload["summary"]["script_availability_status"], "NOT_CHECKED")
         self.assertEqual(payload["installation_plan"]["status"], "not_required")
         self.assertFalse(payload["installation_plan"]["operator_contract"]["submits_orders"])
@@ -114,6 +120,7 @@ class CronAuditReportTests(unittest.TestCase):
                 "event_catalyst_signal_report.py",
                 "market_sentiment_producer.py",
                 "market_sentiment_report.py",
+                "update_portfolio_prices.py",
             ],
         )
 
@@ -128,6 +135,37 @@ class CronAuditReportTests(unittest.TestCase):
             payload["recommendations"],
         )
         self.assertIn("Missing deployed scripts:", report.build_text_report(payload))
+
+    def test_user_price_snapshot_missing_us_after_midnight_warns(self):
+        weak_cron = "\n".join(
+            line
+            for line in FULL_CRON.splitlines()
+            if not ("QM_PRICE_UPDATE_PORTFOLIO_ID=3" in line and "0-5" in line)
+        )
+
+        payload = report.build_report(weak_cron)
+
+        self.assertEqual(payload["status"], "WARN")
+        snapshot = payload["portfolio_price_snapshot"]
+        self.assertEqual(snapshot["status"], "WARN")
+        self.assertTrue(snapshot["covers_hk_day_and_us_evening_hkt"])
+        self.assertFalse(snapshot["covers_us_after_midnight_hkt"])
+        self.assertIn("user_price_snapshot_missing_us_after_midnight_line", snapshot["warnings"])
+        self.assertIn("install_user_position_price_snapshot_cron_for_hk_us_sessions", payload["recommendations"])
+        self.assertEqual(payload["installation_plan"]["status"], "not_required")
+
+    def test_user_price_snapshot_is_not_misclassified_as_read_only_required_job(self):
+        missing_snapshot_cron = "\n".join(
+            line for line in FULL_CRON.splitlines() if "update_portfolio_prices.py" not in line
+        )
+
+        payload = report.build_report(missing_snapshot_cron)
+
+        self.assertEqual(payload["status"], "WARN")
+        missing_required = {job["name"] for job in payload["missing_required_jobs"]}
+        self.assertNotIn("portfolio_price_snapshot", missing_required)
+        self.assertEqual(payload["installation_plan"]["status"], "not_required")
+        self.assertIn("user_price_snapshot_cron_missing", payload["portfolio_price_snapshot"]["warnings"])
 
     def test_missing_read_only_jobs_warn(self):
         payload = report.build_report("*/5 * * * * /usr/bin/python3 /root/data_health_report.py --output /tmp/data_health_report.json")
