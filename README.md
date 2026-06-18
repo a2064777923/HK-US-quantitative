@@ -167,6 +167,30 @@ Refresh position price snapshots for both the simulation and user portfolio. The
 */15 9-16 * * 1-5 QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1
 ```
 
+## User Holdings Source Of Truth
+
+User holdings are sourced from DB `positions` rows for portfolio `3`, status `holding`. The helper scripts under `scripts/` are the reviewed interface for that path:
+
+```bash
+python3 scripts/read_positions.py --summary
+python3 scripts/read_positions.py --us --format json
+python3 scripts/read_positions.py --hk --format csv
+
+python3 scripts/hk_realtime.py
+python3 scripts/us_realtime.py
+
+python3 scripts/trade_update.py list
+python3 scripts/trade_update.py buy --symbol 09988 --exchange HKEX --qty 200 --cost 85.50 --name "Alibaba-W"
+python3 scripts/trade_update.py buy --symbol PDD --exchange NASDAQ --qty 10 --cost 82.48
+python3 scripts/trade_update.py add --symbol PDD --qty 5 --cost 80.00
+python3 scripts/trade_update.py sell --symbol PDD --qty 5
+python3 scripts/trade_update.py sell --symbol PDD
+```
+
+`read_positions.py`, `hk_realtime.py`, and `us_realtime.py` read DB holdings and quote data only. `trade_update.py` mutates user holding rows and portfolio totals only; it does not submit broker orders, append Hermes judgments, write v5 alert state, or change the portfolio `8` simulation ledger. The default portfolio id can be overridden with `QM_HOLDINGS_PORTFOLIO_ID`, `QM_USER_PORTFOLIO_ID`, or `--portfolio-id`.
+
+The `positions` table stores HKD-valued `market_value`/`unrealized_pnl` snapshots, while `avg_cost`, `total_cost`, and `current_price` remain quote-currency prices. `trade_update.py` preserves that convention, including USD-to-HKD valuation for US holdings.
+
 Readiness refresh, useful after deploy or missing cron:
 
 ```bash
