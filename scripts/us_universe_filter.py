@@ -1,26 +1,22 @@
 """US stock-universe symbol and instrument filters."""
 
-EXCLUDED_US_NAME_TERMS = (
-    "preferred stock",
-    "preferred shares",
-    "preferred share",
-    "preference shares",
-    "preference share",
-    "perpetual preferred",
-    "depositary shares",
-    "depositary share",
-    "warrant",
-    "warrants",
-    "right",
-    "rights",
-    "right to purchase",
-    "unit",
-    "units",
-    "unit expiring",
-    "senior notes",
-    "notes due",
-    "note due",
-    "debentures due",
+import re
+
+
+EXCLUDED_US_NAME_PATTERNS = (
+    r"\bpreferred stock\b",
+    r"\bpreferred shares?\b",
+    r"\bpreference shares?\b",
+    r"\bperpetual preferred\b",
+    r"\bdepositary shares?\b.*\bpreferred\b",
+    r"\bwarrants?\b",
+    r"\bright(s)?\b",
+    r"\bright to purchase\b",
+    r"\bunits?\b",
+    r"\bunit expiring\b",
+    r"\bsenior notes?\b",
+    r"\bnotes? due\b",
+    r"\bdebentures? due\b",
 )
 
 
@@ -43,4 +39,4 @@ def is_supported_us_equity(item):
     if not symbol:
         return False
     name = str(item.get("name") or "").lower()
-    return not any(term in name for term in EXCLUDED_US_NAME_TERMS)
+    return not any(re.search(pattern, name) for pattern in EXCLUDED_US_NAME_PATTERNS)

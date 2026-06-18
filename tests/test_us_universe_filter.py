@@ -22,6 +22,9 @@ class USUniverseFilterTests(unittest.TestCase):
         self.assertFalse(is_supported_us_equity({"symbol": "ABC", "name": "Example Notes Due 2030"}))
         self.assertFalse(is_supported_us_equity({"symbol": "ABC", "name": "Example 9.875% Senior Notes Due 2030"}))
         self.assertTrue(is_supported_us_equity({"symbol": "MSFT", "name": "Microsoft Corporation Common Stock"}))
+        self.assertTrue(is_supported_us_equity({"symbol": "BABA", "name": "Alibaba Group Holding Limited American Depositary Shares"}))
+        self.assertTrue(is_supported_us_equity({"symbol": "NOK", "name": "Nokia Corporation Sponsored American Depositary Shares"}))
+        self.assertTrue(is_supported_us_equity({"symbol": "UNH", "name": "UnitedHealth Group Incorporated Common Stock"}))
 
 
 if __name__ == "__main__":

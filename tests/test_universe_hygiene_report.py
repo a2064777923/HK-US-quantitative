@@ -159,6 +159,22 @@ class UniverseHygieneReportTests(unittest.TestCase):
             self.assertIn("unsupported_us_equity_instrument", candidates[symbol]["issues"])
             self.assertIn(symbol, payload["proposal"]["candidate_deactivate_or_remap"]["US"])
 
+    def test_us_adr_common_equities_remain_supported(self):
+        payload = report.build_report(
+            [
+                row("BABA", "2026-06-12", market="US", exchange="NYSE", history=80) | {"name": "Alibaba Group Holding Limited American Depositary Shares"},
+                row("NOK", "2026-06-12", market="US", exchange="NYSE", history=80) | {"name": "Nokia Corporation Sponsored American Depositary Shares"},
+                row("UNH", "2026-06-12", market="US", exchange="NYSE", history=80) | {"name": "UnitedHealth Group Incorporated Common Stock"},
+            ]
+        )
+        us = payload["markets"]["US"]
+        symbols = {item["symbol"]: item for item in us["active_symbols"]}
+
+        self.assertEqual(us["problem_symbol_count"], 0)
+        self.assertEqual(symbols["BABA"]["recommended_action"], "keep_active")
+        self.assertEqual(symbols["NOK"]["recommended_action"], "keep_active")
+        self.assertEqual(symbols["UNH"]["recommended_action"], "keep_active")
+
     def test_problem_lists_are_complete_for_bulk_universe_cleanup(self):
         rows = [row("AAPL", "2026-06-12", market="US", exchange="NASDAQ")]
         rows.extend(
