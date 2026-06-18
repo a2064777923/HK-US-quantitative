@@ -44,8 +44,38 @@ def user_portfolio_ids():
     return ids or {3}
 
 
+def simulation_portfolio_ids():
+    ids = {8}
+    for name in ("QM_SIM_PORTFOLIO_ID", "QM_LEGACY_SIM_PORTFOLIO_ID"):
+        raw = os.environ.get(name, "")
+        for item in str(raw).split(","):
+            item = item.strip()
+            if item.isdigit():
+                ids.add(int(item))
+    return ids
+
+
 def portfolio_total_statuses(portfolio_id):
     return ("holding",) if int(portfolio_id) in user_portfolio_ids() else ("active", "holding")
+
+
+def ensure_user_portfolio_mutation(portfolio_id):
+    allowed = user_portfolio_ids()
+    simulation_ids = simulation_portfolio_ids()
+    portfolio_id = int(portfolio_id)
+    if portfolio_id in simulation_ids:
+        simulation_text = ",".join(str(item) for item in sorted(simulation_ids))
+        raise RuntimeError(
+            f"Refusing to mutate simulation portfolio {portfolio_id}; trade_update.py is user-holdings only. "
+            f"Configured simulation portfolios: {simulation_text}"
+        )
+    if portfolio_id not in allowed:
+        allowed_text = ",".join(str(item) for item in sorted(allowed))
+        raise RuntimeError(
+            f"Refusing to mutate portfolio {portfolio_id}; trade_update.py is user-holdings only. "
+            f"Set QM_USER_PORTFOLIO_IDS or QM_HOLDINGS_PORTFOLIO_ID to include it if it is a user portfolio. "
+            f"Configured user portfolios: {allowed_text}"
+        )
 
 
 def positive_int(value):
@@ -171,6 +201,7 @@ def fetch_open_position(cur, portfolio_id, symbol):
 
 def cmd_buy(args):
     portfolio_id = int(args.portfolio_id)
+    ensure_user_portfolio_mutation(portfolio_id)
     exchange = normalize_exchange(args.exchange)
     symbol = normalize_symbol(args.symbol, exchange)
     currency = infer_currency(symbol, exchange, args.currency)
@@ -229,6 +260,7 @@ def cmd_buy(args):
 
 def cmd_add(args):
     portfolio_id = int(args.portfolio_id)
+    ensure_user_portfolio_mutation(portfolio_id)
     symbol = normalize_symbol(args.symbol)
     conn = get_connection()
     try:
@@ -282,6 +314,7 @@ def cmd_add(args):
 
 def cmd_sell(args):
     portfolio_id = int(args.portfolio_id)
+    ensure_user_portfolio_mutation(portfolio_id)
     symbol = normalize_symbol(args.symbol)
     conn = get_connection()
     try:
@@ -363,17 +396,49 @@ def cmd_sell(args):
 
 def cmd_delete(args):
     portfolio_id = int(args.portfolio_id)
+    ensure_user_portfolio_mutation(portfolio_id)
     symbol = normalize_symbol(args.symbol)
+    if getattr(args, "hard", False):
+        if os.environ.get("QM_ALLOW_HARD_DELETE_POSITIONS") != "1":
+            raise RuntimeError("Hard delete requires QM_ALLOW_HARD_DELETE_POSITIONS=1")
+        if getattr(args, "confirm_symbol", None) != symbol:
+            raise RuntimeError(f"Hard delete requires --confirm-symbol {symbol}")
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM positions WHERE portfolio_id = %s AND symbol = %s", (portfolio_id, symbol))
-        deleted = cur.rowcount
+        if getattr(args, "hard", False):
+            cur.execute("DELETE FROM positions WHERE portfolio_id = %s AND symbol = %s", (portfolio_id, symbol))
+            changed = cur.rowcount
+            verb = "Hard-deleted"
+        else:
+            now = datetime.utcnow()
+            cur.execute(
+                """
+                UPDATE positions
+                SET status = 'closed',
+                    quantity = 0,
+                    available_quantity = 0,
+                    frozen_quantity = 0,
+                    total_cost = 0,
+                    market_value = 0,
+                    unrealized_pnl = 0,
+                    unrealized_pnl_rate = 0,
+                    weight = 0,
+                    closed_at = COALESCE(closed_at, %s),
+                    updated_at = %s
+                WHERE portfolio_id = %s
+                  AND symbol = %s
+                  AND status = 'holding'
+                """,
+                (now, now, portfolio_id, symbol),
+            )
+            changed = cur.rowcount
+            verb = "Soft-closed"
         refresh_portfolio_totals(cur, portfolio_id)
         conn.commit()
     finally:
         conn.close()
-    print(f"[OK] Deleted {symbol} ({deleted} rows)")
+    print(f"[OK] {verb} {symbol} ({changed} rows). Use sell for real transactions/cash adjustment.")
     return 0
 
 
@@ -448,9 +513,11 @@ def build_parser():
     p_sell.add_argument("--price", type=positive_float, default=None, help="Execution price; defaults to current_price")
     add_cash_adjust_arg(p_sell)
 
-    p_delete = sub.add_parser("delete", help="Force delete records")
+    p_delete = sub.add_parser("delete", help="Soft-close stale/invalid holding rows")
     add_portfolio_arg(p_delete)
     p_delete.add_argument("--symbol", required=True)
+    p_delete.add_argument("--hard", action="store_true", help="Physically delete rows; requires env gate and confirmation")
+    p_delete.add_argument("--confirm-symbol", default=None, help="Required with --hard; must exactly match normalized symbol")
 
     p_list = sub.add_parser("list", help="List open positions")
     add_portfolio_arg(p_list)

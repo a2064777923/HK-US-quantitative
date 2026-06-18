@@ -214,6 +214,20 @@ class TradeUpdateTests(unittest.TestCase):
 
         self.assertFalse(args.cash_adjust)
 
+    def test_write_commands_refuse_non_user_portfolio(self):
+        with patch.dict("os.environ", {"QM_USER_PORTFOLIO_IDS": "3"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "Refusing to mutate portfolio 7"):
+                trade_update.ensure_user_portfolio_mutation(7)
+
+    def test_write_commands_refuse_sim_portfolio_even_if_misconfigured_as_user(self):
+        with patch.dict(
+            "os.environ",
+            {"QM_USER_PORTFOLIO_IDS": "3,8", "QM_SIM_PORTFOLIO_ID": "8"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulation portfolio 8"):
+                trade_update.ensure_user_portfolio_mutation(8)
+
     def test_full_sell_adjusts_cash_and_realized_pnl(self):
         class Cursor:
             def __init__(self):
@@ -251,6 +265,64 @@ class TradeUpdateTests(unittest.TestCase):
         self.assertEqual(close_params[0], 586.56)
         cash_params = next(params for sql, params in conn.cur.calls if "SET available_cash" in sql)
         self.assertEqual(cash_params[0], 7020.0)
+
+    def test_delete_soft_closes_by_default(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+                self.rowcount = 0
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+                if "UPDATE positions" in sql and "SET status = 'closed'" in sql:
+                    self.rowcount = 1
+
+        class Connection:
+            def __init__(self):
+                self.cur = Cursor()
+                self.committed = False
+
+            def cursor(self):
+                return self.cur
+
+            def commit(self):
+                self.committed = True
+
+            def close(self):
+                pass
+
+        conn = Connection()
+        args = argparse.Namespace(portfolio_id=3, symbol="PDD", hard=False)
+
+        with patch.object(trade_update, "get_connection", return_value=conn), contextlib.redirect_stdout(io.StringIO()):
+            code = trade_update.cmd_delete(args)
+
+        self.assertEqual(code, 0)
+        close_sql, close_params = next(
+            (sql, params) for sql, params in conn.cur.calls if "SET status = 'closed'" in sql
+        )
+        self.assertIn("status = 'holding'", close_sql)
+        self.assertEqual(close_params[2:], (3, "PDD"))
+        self.assertFalse(any(sql.strip().upper().startswith("DELETE FROM") for sql, _params in conn.cur.calls))
+        self.assertTrue(conn.committed)
+
+    def test_hard_delete_requires_env_gate(self):
+        args = argparse.Namespace(portfolio_id=3, symbol="PDD", hard=True, confirm_symbol="PDD")
+
+        with patch.dict("os.environ", {"QM_USER_PORTFOLIO_IDS": "3"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "Hard delete requires"):
+                trade_update.cmd_delete(args)
+
+    def test_hard_delete_requires_symbol_confirmation(self):
+        args = argparse.Namespace(portfolio_id=3, symbol="PDD", hard=True, confirm_symbol="BABA")
+
+        with patch.dict(
+            "os.environ",
+            {"QM_USER_PORTFOLIO_IDS": "3", "QM_ALLOW_HARD_DELETE_POSITIONS": "1"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "confirm-symbol"):
+                trade_update.cmd_delete(args)
 
 
 class UsRealtimeTests(unittest.TestCase):
