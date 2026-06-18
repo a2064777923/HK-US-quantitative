@@ -387,6 +387,47 @@ def compact_context_payload(payload, keep_keys=None, list_limit=12):
     return compact
 
 
+def compact_operator_action(item):
+    if not isinstance(item, dict):
+        return item
+    compact = {}
+    for key in (
+        "id",
+        "priority",
+        "category",
+        "title",
+        "detail",
+        "recommended_next_step",
+        "operator_command",
+        "operator_effect",
+        "blockers",
+    ):
+        if key in item:
+            compact[key] = copy.deepcopy(item.get(key))
+    evidence = item.get("evidence")
+    if isinstance(evidence, dict):
+        compact["evidence"] = compact_mapping(evidence, list_limit=6, nested_list_limit=4)
+    elif evidence is not None:
+        compact["evidence"] = evidence
+    return compact
+
+
+def compact_operator_action_queue(payload, action_limit=12):
+    if not isinstance(payload, dict):
+        return payload
+    compact = compact_context_payload(
+        payload,
+        keep_keys=("schema", "generated_at", "status", "source", "summary", "operator_notes"),
+        list_limit=action_limit,
+    )
+    actions = [item for item in payload.get("actions", []) if isinstance(item, dict)]
+    included = actions[: max(int(action_limit), 0)]
+    compact["actions"] = [compact_operator_action(item) for item in included]
+    compact["action_count_included"] = len(included)
+    compact["action_count_omitted"] = max(len(actions) - len(included), 0)
+    return compact
+
+
 def compact_packet(packet):
     if not isinstance(packet, dict):
         return packet
@@ -443,7 +484,10 @@ def compact_packet(packet):
         "position_judgment_audit",
     ):
         if key in compact:
-            compact[key] = compact_context_payload(compact[key])
+            if key == "operator_action_queue":
+                compact[key] = compact_operator_action_queue(compact[key])
+            else:
+                compact[key] = compact_context_payload(compact[key])
     if isinstance(compact.get("non_actionable_observations"), list):
         compact["non_actionable_observations"] = compact["non_actionable_observations"][:20]
     omitted = [

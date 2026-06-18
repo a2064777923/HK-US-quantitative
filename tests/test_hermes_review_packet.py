@@ -1327,6 +1327,7 @@ class HermesReviewPacketTests(unittest.TestCase):
         )
         self.assertEqual(payload["operator_action_queue"]["schema"], "operator_action_queue_report_v1")
         self.assertEqual(payload["operator_action_queue"]["status"], "ACTION_REQUIRED")
+        self.assertEqual(payload["operator_action_queue"]["actions"][0]["id"], "write_high_urgency_position_judgments")
         self.assertFalse(payload["operator_action_queue"]["source"]["submits_orders"])
         self.assertFalse(payload["operator_action_queue"]["source"]["writes_judgments"])
         self.assertFalse(payload["operator_action_queue"]["source"]["changes_crontab"])
@@ -4028,6 +4029,65 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertIn("strategy_learning", compact["omitted_top_level_context"])
         self.assertIn("v5_local_replay", compact["omitted_top_level_context"])
         self.assertEqual(compact["strategy_learning_brief"]["schema"], "hermes_strategy_learning_brief_v1")
+
+    def test_compact_packet_preserves_operator_action_queue_actions(self):
+        full = {
+            "schema": "hermes_signal_review_packet_v1",
+            "packet_id": "packet-actions",
+            "operator_action_queue": {
+                "schema": "operator_action_queue_report_v1",
+                "status": "ACTION_REQUIRED",
+                "summary": {"action_count": 2, "priority_counts": {"P0": 1, "P1": 1}},
+                "source": {
+                    "read_only": True,
+                    "submits_orders": False,
+                    "writes_judgments": False,
+                    "changes_crontab": False,
+                    "changes_portfolio": False,
+                    "changes_strategy": False,
+                },
+                "actions": [
+                    {
+                        "id": "write_high_urgency_position_judgments",
+                        "priority": "P0",
+                        "category": "advisory_review",
+                        "title": "Write position judgments",
+                        "detail": "High-risk holdings need advisory review.",
+                        "recommended_next_step": "Append completed Hermes position judgments.",
+                        "operator_effect": {
+                            "writes_judgments": True,
+                            "submits_orders": False,
+                        },
+                        "evidence": {
+                            "coverage": {"unjudged_high_urgency_review_count": 3},
+                            "examples": [{"symbol": "PDD"}, {"symbol": "MSFT"}],
+                        },
+                    },
+                    {
+                        "id": "collect_forward_outcome_evidence",
+                        "priority": "P1",
+                        "category": "evidence_collection",
+                        "title": "Collect outcomes",
+                        "operator_command": "/usr/bin/python3 /root/rt_signal_outcome_report.py --text",
+                    },
+                ],
+            },
+        }
+
+        compact = packet.compact_packet(full)
+
+        queue = compact["operator_action_queue"]
+        self.assertEqual(queue["summary"]["action_count"], 2)
+        self.assertEqual(queue["action_count_included"], 2)
+        self.assertEqual(queue["action_count_omitted"], 0)
+        self.assertEqual(len(queue["actions"]), 2)
+        self.assertEqual(queue["actions"][0]["id"], "write_high_urgency_position_judgments")
+        self.assertEqual(
+            queue["actions"][0]["evidence"]["coverage"]["unjudged_high_urgency_review_count"],
+            3,
+        )
+        self.assertTrue(queue["actions"][0]["operator_effect"]["writes_judgments"])
+        self.assertFalse(queue["actions"][0]["operator_effect"]["submits_orders"])
 
     def test_compact_packet_preserves_trade_relevant_data_health_scope(self):
         full = {

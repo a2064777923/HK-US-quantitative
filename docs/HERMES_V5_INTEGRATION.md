@@ -13,6 +13,7 @@ This document explains how to connect the realtime v5 signal path without breaki
 - This is a monitoring-scope change only. It does not mutate `positions`, change v5 thresholds, change trigger policy, write Hermes judgments, bypass execution readiness, or authorize simulation/paper/live orders.
 - Alert metadata now carries `watchlist_overlays`, `user_holding_symbol`, and `user_holding_portfolio_ids`. Hermes should treat `user_holding_symbol=true` as position-management context: prioritize trailing-stop, reduce/add, and risk review logic, but still require the existing Hermes/readiness/intake gates before any paper execution.
 - Static watchlist membership still drives broader opportunity discovery. DB holdings are an additive overlay so held symbols cannot disappear from realtime attention when the operator buys something outside the current watchlist.
+- `hermes_review_packet.py` compact output now preserves a capped, compact `operator_action_queue.actions[]` list in addition to the queue summary. This lets Hermes see the actual P0/P1 remediation items, such as high-urgency position judgments or simulation recovery reviews, while still keeping bulky source reports out of the bridge-safe packet. The queue remains read-only and does not submit orders, write judgments, change portfolios, change strategy, or install cron by itself.
 
 ### 2026-06-18 live-server reliability fix
 
