@@ -240,10 +240,18 @@ def get_portfolio_row(portfolio_id):
     }
 
 
-def get_positions(portfolio_id):
+def position_status_filter(role):
+    if role == "user":
+        return ("holding",)
+    return ("active", "holding")
+
+
+def get_positions(portfolio_id, statuses=None):
     cols = table_columns("positions")
     if not cols:
         return []
+    statuses = tuple(statuses or ("active", "holding"))
+    status_values = ",".join(f"'{sql_quote(status)}'" for status in statuses)
     qty_expr = first_existing("positions", ("quantity", "volume", "qty"), "0")
     cost_expr = first_existing("positions", ("avg_cost", "cost_price", "average_price"), "0")
     price_expr = first_existing("positions", ("current_price", "last_price", "price"), "0")
@@ -258,7 +266,7 @@ def get_positions(portfolio_id):
         FROM positions
         WHERE portfolio_id = {int(portfolio_id)}
         AND COALESCE(({qty_expr})::numeric, 0) > 0
-        AND {status_expr} IN ('active','holding')
+        AND {status_expr} IN ({status_values})
         ORDER BY symbol
         """
     )
@@ -1065,7 +1073,7 @@ def apply_trade_reconciliation_to_report(report, reconciliation):
 
 def build_portfolio_report(portfolio_id, role):
     portfolio = get_portfolio_row(portfolio_id)
-    positions = get_positions(portfolio_id)
+    positions = get_positions(portfolio_id, statuses=position_status_filter(role))
     symbols = [p["symbol"] for p in positions]
     klines = get_latest_klines(symbols)
     signals = get_latest_signals(symbols)

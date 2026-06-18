@@ -191,6 +191,8 @@ python3 scripts/trade_update.py sell --symbol PDD
 
 The `positions` table stores HKD-valued `market_value`/`unrealized_pnl` snapshots, while `avg_cost`, `total_cost`, and `current_price` remain quote-currency prices. `trade_update.py` preserves that convention, including USD-to-HKD valuation for US holdings.
 
+Hermes portfolio context and the portfolio `3` price refresh intentionally read/update only `status='holding'` user rows. The simulation portfolio `8` path remains compatible with both `active` and `holding` rows because older simulation jobs used both states.
+
 Readiness refresh, useful after deploy or missing cron:
 
 ```bash
@@ -272,7 +274,7 @@ Also scan for secrets before pushing. Placeholder names such as `FEISHU_APP_SECR
 
 - Deployed `v5.5-buy-realtime-alignment-20260618`: BUY candidates now require non-negative same-session `change_pct` by default before remaining executable.
 - Hardened `portfolio_report.py` against stale/wrong DB prices by falling back to latest daily K-line when `positions.current_price` differs from the latest K-line by more than `QM_MAX_DB_PRICE_TO_KLINE_RATIO` (default `3.0`) and flagging the fallback for Hermes.
-- Made `update_portfolio_prices.py` portfolio-id configurable via `QM_PRICE_UPDATE_PORTFOLIO_ID`, then refreshed portfolio `3` DB price snapshots so user holdings such as PDD/ARAY/NOK/BABA are no longer valued from stale or mis-scaled prices.
+- Made `update_portfolio_prices.py` portfolio-id configurable via `QM_PRICE_UPDATE_PORTFOLIO_ID`, then refreshed portfolio `3` DB price snapshots so user holdings such as PDD/ARAY/NOK/BABA are no longer valued from stale or mis-scaled prices. Portfolio `3` now refreshes `status='holding'` rows only; portfolio `8` keeps `active/holding` compatibility for simulation state.
 - Added reviewed cron lines for portfolio `3` and portfolio `8` price snapshots; these update valuation fields only and do not mutate holdings or submit orders.
 - After finding one Alpaca paper order created from a raw `NO_MATCH` technical signal while Hermes judgment was disabled, the server bridge cron was changed from `alert-sim` to `alert-dry-run`, `RT_ORDER_EXECUTE_PILOT_ENABLED=0`, `RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1`, and `RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS=0`.
 - Hardened `rt_alert_bridge.py` so bridge-launched intake always forces readiness, strategy evidence, Hermes judgment, market context, and symbol-conflict gates on for `alert-dry-run` and `alert-sim`.

@@ -106,6 +106,35 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertEqual(sim_payload["top_opportunities"], opportunities)
         top.assert_called_once()
 
+    def test_build_portfolio_report_uses_holding_only_for_user_positions(self):
+        captured = []
+        position = {
+            "symbol": "00700",
+            "name": "Tencent",
+            "quantity": 100,
+            "avg_cost": 300,
+            "current_price": 280,
+            "status": "holding",
+            "exchange": "HKEX",
+            "updated_at": "2026-06-12",
+        }
+
+        def fake_get_positions(portfolio_id, statuses=None):
+            captured.append((portfolio_id, statuses))
+            return [position]
+
+        with (
+            patch.object(report, "get_portfolio_row", return_value={"id": 3, "cash_hkd": 10_000}),
+            patch.object(report, "get_positions", side_effect=fake_get_positions),
+            patch.object(report, "get_latest_klines", return_value={"00700": {"close": 280, "date": "2026-06-12"}}),
+            patch.object(report, "get_latest_signals", return_value={}),
+        ):
+            report.build_portfolio_report(3, "user")
+            report.build_portfolio_report(8, "simulation")
+
+        self.assertEqual(captured[0], (3, ("holding",)))
+        self.assertEqual(captured[1], (8, ("active", "holding")))
+
     def test_fifo_trade_review_estimates_closed_trade_pnl(self):
         trades = [
             {

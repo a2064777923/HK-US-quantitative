@@ -31,6 +31,33 @@ class UpdatePortfolioPricesTests(unittest.TestCase):
         self.assertIn("market_value = 11000.0", sql)
         self.assertIn("unrealized_pnl = 1000.0", sql)
 
+    def test_portfolio_three_price_update_is_holding_only(self):
+        calls = []
+
+        def fake_db(sql):
+            calls.append(sql)
+            return ""
+
+        with (
+            patch.object(updater, "PORTFOLIO_ID", 3),
+            patch.object(
+                updater,
+                "table_columns",
+                return_value={"current_price", "market_value", "unrealized_pnl", "unrealized_pnl_rate", "updated_at"},
+            ),
+            patch.object(updater, "db", side_effect=fake_db),
+        ):
+            updater.update_position_snapshot("PDD", 80, {"qty": 10, "cost": 82})
+
+        sql = calls[-1]
+        self.assertIn("portfolio_id = 3", sql)
+        self.assertIn("status = 'holding'", sql)
+        self.assertNotIn("status IN ('active','holding')", sql)
+
+    def test_simulation_price_update_keeps_active_compatibility(self):
+        with patch.object(updater, "PORTFOLIO_ID", 8):
+            self.assertEqual(updater.position_status_sql(), "status IN ('active','holding')")
+
     def test_update_portfolio_totals_updates_current_capital_and_total_value(self):
         calls = []
 
