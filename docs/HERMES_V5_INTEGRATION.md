@@ -3171,7 +3171,8 @@ The report emits top-level `status=OK` when no high-urgency position reviews are
 Coverage output:
 
 - `coverage.schema=hermes_position_judgment_coverage_v1`;
-- `coverage.position_review_item_count`, `judged_review_count`, and `unjudged_review_count` summarize whether Hermes wrote judgments for the latest packet's position reviews;
+- `coverage.position_review_item_count`, `judged_review_count`, and `unjudged_review_count` summarize whether Hermes wrote passing judgments for the latest packet's position reviews. Historical packet judgments, expired judgments, orphan judgments, and current packet judgments that fail audit do not count as covered current reviews;
+- `coverage.failed_current_judgment_review_count` counts current packet review ids that have a judgment row but failed the advisory audit, so Hermes can distinguish missing review work from invalid review artifacts;
 - `coverage.high_urgency_review_count` and `unjudged_high_urgency_review_count` isolate urgent holdings that still need advisory review;
 - `coverage.unjudged_high_urgency_examples[]` gives Hermes and the operator the exact `review_id`, role, portfolio, symbol, and recommended action to review;
 - recommendation `write_position_judgments_for_high_urgency_reviews:N` means Hermes should append advisory-only judgments for those high-urgency reviews before treating the packet as fully assessed.

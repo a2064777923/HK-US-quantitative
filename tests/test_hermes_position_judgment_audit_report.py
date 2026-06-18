@@ -155,6 +155,42 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "OK")
         self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 0)
 
+    def test_historical_or_failed_judgments_do_not_cover_current_high_urgency_review(self):
+        high = position_item(
+            "simulation:8:00929:2026-06-18:reduce_or_exit_review",
+            urgency="high",
+            recommended_action="reduce_or_exit_review",
+        )
+        historical = judgment(
+            "simulation:8:00929:2026-06-12:reduce_or_exit_review",
+            packet_id="old-packet",
+            decision="watch",
+            reviewed_at="2026-06-12T10:00:00",
+        )
+        failed_current = judgment(
+            "simulation:8:00929:2026-06-18:reduce_or_exit_review",
+            packet_id="latest-packet",
+            decision="watch",
+            opposing_factors=["too thin"],
+            risk_notes=["too thin"],
+        )
+
+        payload = audit.build_report(
+            [historical, failed_current],
+            packet([high], packet_id="latest-packet"),
+            now=datetime(2026, 6, 18, 10, 0),
+            packet_archive_dir="/tmp/does-not-exist-for-test",
+        )
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertEqual(payload["coverage"]["judged_review_count"], 0)
+        self.assertEqual(payload["coverage"]["failed_current_judgment_review_count"], 1)
+        self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 1)
+        self.assertEqual(
+            payload["coverage"]["unjudged_high_urgency_examples"][0]["review_id"],
+            "simulation:8:00929:2026-06-18:reduce_or_exit_review",
+        )
+
     def test_clean_position_judgment_passes_against_packet_item(self):
         payload = audit.build_report([judgment()], packet())
         row = payload["judgments"][0]

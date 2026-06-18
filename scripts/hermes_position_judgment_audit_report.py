@@ -361,7 +361,20 @@ def build_recommendations(rows, reason_counts):
 
 
 def coverage_summary(review_by_id, rows):
-    judged_ids = {str(row.get("review_id") or "").strip() for row in rows if row.get("review_id")}
+    current_pass_judged_ids = {
+        str(row.get("review_id") or "").strip()
+        for row in rows
+        if row.get("audit_scope") == "current_packet"
+        and row.get("status") == "PASS"
+        and str(row.get("review_id") or "").strip() in (review_by_id or {})
+    }
+    current_failed_judged_ids = {
+        str(row.get("review_id") or "").strip()
+        for row in rows
+        if row.get("audit_scope") == "current_packet"
+        and row.get("status") != "PASS"
+        and str(row.get("review_id") or "").strip() in (review_by_id or {})
+    }
     high_priority = [
         item
         for item in (review_by_id or {}).values()
@@ -370,13 +383,14 @@ def coverage_summary(review_by_id, rows):
     unjudged_high = [
         item
         for item in high_priority
-        if str(item.get("review_id") or "").strip() not in judged_ids
+        if str(item.get("review_id") or "").strip() not in current_pass_judged_ids
     ]
     return {
         "schema": "hermes_position_judgment_coverage_v1",
         "position_review_item_count": len(review_by_id or {}),
-        "judged_review_count": len(judged_ids),
-        "unjudged_review_count": max(len(review_by_id or {}) - len(judged_ids), 0),
+        "judged_review_count": len(current_pass_judged_ids),
+        "failed_current_judgment_review_count": len(current_failed_judged_ids),
+        "unjudged_review_count": max(len(review_by_id or {}) - len(current_pass_judged_ids), 0),
         "high_urgency_review_count": len(high_priority),
         "unjudged_high_urgency_review_count": len(unjudged_high),
         "unjudged_high_urgency_examples": [
