@@ -20,6 +20,7 @@ USER_PORTFOLIO_IDS = [
 ]
 INITIAL_CAPITAL_HKD = float(os.environ.get("QM_INITIAL_CAPITAL_HKD", "100000"))
 USD_TO_HKD = float(os.environ.get("USD_TO_HKD", "7.80"))
+MAX_DB_PRICE_TO_KLINE_RATIO = float(os.environ.get("QM_MAX_DB_PRICE_TO_KLINE_RATIO", "3.0"))
 SIGNAL_MODEL_VERSION = os.environ.get("QM_SIGNAL_MODEL_VERSION", "signal_v4")
 SIGNAL_FEATURE_VERSION = os.environ.get("QM_SIGNAL_FEATURE_VERSION", "v4_full")
 
@@ -122,6 +123,21 @@ def quote_currency_for_position(position):
 
 def fx_to_hkd(symbol):
     return 1.0 if is_hk_symbol(symbol) else USD_TO_HKD
+
+
+def relative_price_ratio(a, b):
+    a = as_float(a)
+    b = as_float(b)
+    if a <= 0 or b <= 0:
+        return None
+    return max(a / b, b / a)
+
+
+def db_price_is_consistent_with_kline(db_price, kline_close):
+    ratio = relative_price_ratio(db_price, kline_close)
+    if ratio is None:
+        return True, ratio
+    return ratio <= MAX_DB_PRICE_TO_KLINE_RATIO, ratio
 
 
 def as_float(value, default=0.0):
@@ -371,7 +387,8 @@ def enrich_position(position, signal, kline):
     kline_change_pct = as_float(kline.get("change_pct"), None)
     signal_price = as_float(signal.get("expected_price"))
     price_source = "missing"
-    if db_price and db_price > 0:
+    db_price_consistent, db_kline_ratio = db_price_is_consistent_with_kline(db_price, kline_close)
+    if db_price and db_price > 0 and db_price_consistent:
         price = db_price
         price_source = "db_current_price"
     elif kline_close and kline_close > 0:
@@ -404,6 +421,8 @@ def enrich_position(position, signal, kline):
 
     if not db_price or db_price <= 0:
         price_flags.append("db_current_price_missing_or_zero")
+    elif not db_price_consistent:
+        price_flags.append("db_current_price_inconsistent_with_latest_kline")
     if not kline_close or kline_close <= 0:
         price_flags.append("latest_kline_missing")
     if price_source != "db_current_price":
@@ -463,6 +482,7 @@ def enrich_position(position, signal, kline):
         **position,
         "current_price": price,
         "db_current_price": db_price,
+        "db_latest_kline_price_ratio": round_or_none(db_kline_ratio),
         "valuation_price_source": price_source,
         "price_data_flags": price_flags,
         "kline_date": kline.get("date", ""),
@@ -608,7 +628,15 @@ def build_portfolio_risk(report, portfolio):
 
     high_priority = [pos for pos in positions if pos.get("priority") == "high"]
     exit_pressure = [pos for pos in positions if has_position_exit_pressure(pos)]
-    db_invalid = [pos for pos in positions if not pos.get("db_current_price") or pos.get("db_current_price") <= 0]
+    db_missing_or_zero = [
+        pos for pos in positions
+        if not pos.get("db_current_price") or pos.get("db_current_price") <= 0
+    ]
+    db_inconsistent = [
+        pos for pos in positions
+        if "db_current_price_inconsistent_with_latest_kline" in (pos.get("price_data_flags") or [])
+    ]
+    db_invalid = db_missing_or_zero + db_inconsistent
     fallback_used = [pos for pos in positions if pos.get("valuation_price_source") != "db_current_price"]
     missing_kline = [pos for pos in positions if not pos.get("kline_date")]
     latest_by_market = latest_dates_by_market(positions)
@@ -633,10 +661,14 @@ def build_portfolio_risk(report, portfolio):
         flags.append("no_open_positions")
     if positions and positions_value <= 0:
         flags.append("no_valid_position_valuation")
-    if positions and len(db_invalid) == len(positions):
+    if positions and len(db_missing_or_zero) == len(positions):
         flags.append("all_position_prices_missing_or_zero_in_db")
-    elif db_invalid:
+    elif db_missing_or_zero:
         flags.append("some_position_prices_missing_or_zero_in_db")
+    if positions and len(db_inconsistent) == len(positions):
+        flags.append("all_position_prices_inconsistent_with_latest_kline")
+    elif db_inconsistent:
+        flags.append("some_position_prices_inconsistent_with_latest_kline")
     if fallback_used:
         flags.append("fallback_valuation_used")
     if missing_kline or stale_symbols:

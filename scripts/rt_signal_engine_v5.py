@@ -59,6 +59,7 @@ MARKET_BREADTH_MIN_SAMPLE = 10
 MARKET_BREADTH_RISK_OFF_MAX_ADVANCER_PCT = 35.0
 MARKET_BREADTH_RISK_OFF_MIN_DECLINER_PCT = 50.0
 MARKET_BREADTH_RISK_OFF_MAX_AVG_CHANGE_PCT = -0.6
+BUY_REALTIME_ALIGNMENT_MIN_CHANGE_PCT = 0.0
 TRIGGER_EXECUTION_PRIORITY = {
     "BUY": {
         "急漲": 60,
@@ -135,6 +136,9 @@ def default_strategy_config():
             "risk_off_max_advancer_pct": MARKET_BREADTH_RISK_OFF_MAX_ADVANCER_PCT,
             "risk_off_min_decliner_pct": MARKET_BREADTH_RISK_OFF_MIN_DECLINER_PCT,
             "risk_off_max_avg_change_pct": MARKET_BREADTH_RISK_OFF_MAX_AVG_CHANGE_PCT,
+        },
+        "realtime_alignment": {
+            "block_buy_when_change_pct_below": BUY_REALTIME_ALIGNMENT_MIN_CHANGE_PCT,
         },
         "emission": {
             "emit_unconfirmed_directional_as_watch": True
@@ -334,6 +338,7 @@ def strategy_config_digest(config):
         "risk_model": config.get("risk_model"),
         "liquidity_model": config.get("liquidity_model"),
         "market_breadth_model": config.get("market_breadth_model"),
+        "realtime_alignment": config.get("realtime_alignment"),
         "emission": config.get("emission"),
         "trigger_overrides": config.get("trigger_overrides"),
     }
@@ -356,6 +361,7 @@ def merge_strategy_config(base, override):
         "risk_model",
         "liquidity_model",
         "market_breadth_model",
+        "realtime_alignment",
         "emission",
         "trigger_overrides",
     ):
@@ -566,6 +572,16 @@ def normalize_strategy_config(config):
     ):
         warnings.append("invalid_market_breadth_risk_off_max_avg_change_pct_using_default")
         breadth["risk_off_max_avg_change_pct"] = MARKET_BREADTH_RISK_OFF_MAX_AVG_CHANGE_PCT
+
+    realtime_alignment = config.setdefault("realtime_alignment", {})
+    buy_min_change = as_float(
+        realtime_alignment.get("block_buy_when_change_pct_below"),
+        BUY_REALTIME_ALIGNMENT_MIN_CHANGE_PCT,
+    )
+    if buy_min_change is None or buy_min_change < -20 or buy_min_change > 20:
+        warnings.append("invalid_realtime_alignment_buy_min_change_pct_using_default")
+        buy_min_change = BUY_REALTIME_ALIGNMENT_MIN_CHANGE_PCT
+    realtime_alignment["block_buy_when_change_pct_below"] = buy_min_change
 
     emission = config.setdefault("emission", {})
     emission["emit_unconfirmed_directional_as_watch"] = as_bool(
@@ -1985,6 +2001,13 @@ class TriggerEngine:
         context = quote.get("market_breadth") if isinstance(quote, dict) else None
         return market_breadth_blocks_new_buy(signal_type, context, self.market_breadth_model())
 
+    def buy_realtime_alignment_min_change_pct(self):
+        model = self.strategy_config.get("realtime_alignment") or {}
+        return as_float(
+            model.get("block_buy_when_change_pct_below"),
+            BUY_REALTIME_ALIGNMENT_MIN_CHANGE_PCT,
+        )
+
     def risk_multiple(self, key, default):
         return as_float((self.strategy_config.get("risk_model") or {}).get(key), default) or default
 
@@ -2324,6 +2347,18 @@ class TriggerEngine:
             ):
                 emitted_signal_type = "WATCH"
                 suppressed_directional_reason = "market_breadth_risk_off"
+            buy_realtime_alignment_min_change_pct = self.buy_realtime_alignment_min_change_pct()
+            buy_realtime_alignment_blocked = (
+                signal_type == "BUY"
+                and change_pct < buy_realtime_alignment_min_change_pct
+            )
+            if (
+                signal_type == "BUY"
+                and emitted_signal_type in ("BUY", "SELL")
+                and buy_realtime_alignment_blocked
+            ):
+                emitted_signal_type = "WATCH"
+                suppressed_directional_reason = "buy_realtime_direction_misaligned"
 
             execution_candidate = (
                 emitted_signal_type in ("BUY", "SELL")
@@ -2331,6 +2366,7 @@ class TriggerEngine:
                 and risk_geometry_valid
                 and factor_confluence_valid
                 and not market_breadth_blocked
+                and not buy_realtime_alignment_blocked
             )
             execution_blocked_reasons = []
             if signal_type not in ("BUY", "SELL"):
@@ -2348,6 +2384,8 @@ class TriggerEngine:
                     execution_blocked_reasons.append(f"factor_confluence_invalid:{factor_confluence_reason}")
                 if signal_type == "BUY" and market_breadth_blocked:
                     execution_blocked_reasons.append("market_breadth_risk_off")
+                if signal_type == "BUY" and buy_realtime_alignment_blocked:
+                    execution_blocked_reasons.append("buy_realtime_direction_misaligned")
 
             market = quote.get("market", "")
             generated_at = datetime.now()
@@ -2392,6 +2430,8 @@ class TriggerEngine:
                     "min_factor_count": min_factor_count,
                     "market_breadth_blocked": market_breadth_blocked,
                     "market_breadth_signal_status": market_breadth_signal_status,
+                    "buy_realtime_alignment_min_change_pct": buy_realtime_alignment_min_change_pct,
+                    "buy_realtime_alignment_blocked": buy_realtime_alignment_blocked,
                     "emitted_signal_type": emitted_signal_type,
                     "suppressed_directional_reason": suppressed_directional_reason,
                     "execution_candidate": execution_candidate,
@@ -2441,6 +2481,8 @@ class TriggerEngine:
             factor_confluence_categories = row["factor_confluence_categories"]
             min_factor_count = row["min_factor_count"]
             market_breadth_signal_status = row["market_breadth_signal_status"]
+            buy_realtime_alignment_min_change_pct = row["buy_realtime_alignment_min_change_pct"]
+            buy_realtime_alignment_blocked = row["buy_realtime_alignment_blocked"]
             emitted_signal_type = row["emitted_signal_type"]
             suppressed_directional_reason = row["suppressed_directional_reason"]
             execution_candidate = row["execution_candidate"]
@@ -2527,6 +2569,8 @@ class TriggerEngine:
                 "factor_confluence_min_count": min_factor_count,
                 "market_breadth_status": market_breadth_signal_status,
                 "market_breadth": quote.get("market_breadth"),
+                "buy_realtime_alignment_min_change_pct": buy_realtime_alignment_min_change_pct,
+                "buy_realtime_alignment_blocked": buy_realtime_alignment_blocked,
                 "full_score": round(full_score, 3) if full_score is not None else None,
                 "full_reasons": full_reasons,
                 "factor_contributions": factor_contributions,

@@ -2073,7 +2073,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         config = self.repo_strategy_config()
         normalized, warnings = rt.normalize_strategy_config(config)
         self.assertEqual(warnings, [])
-        self.assertEqual(normalized["version"], "v5.4-quality-ranked-same-scan-candidates-20260618")
+        self.assertEqual(normalized["version"], "v5.5-buy-realtime-alignment-20260618")
 
         expected_modes = {
             "BUY:布林下軌突破": "disabled_pending_rework",
@@ -2095,6 +2095,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(overrides["BUY:急漲"]["min_full_score"], 0.75)
         self.assertTrue(normalized["market_breadth_model"]["enabled"])
         self.assertTrue(normalized["market_breadth_model"]["block_new_buy_in_risk_off"])
+        self.assertEqual(normalized["realtime_alignment"]["block_buy_when_change_pct_below"], 0.0)
 
     def test_market_breadth_context_summarizes_realtime_quotes(self):
         quotes = {
@@ -2166,6 +2167,91 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(alert["suppressed_directional_reason"], "market_breadth_risk_off")
         self.assertIn("market_breadth_risk_off", alert["execution_blocked_reasons"])
         self.assertIsNone(alert["entry_price"])
+
+    def test_buy_execution_candidate_requires_non_negative_realtime_change(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+                "realtime_alignment": {"block_buy_when_change_pct_below": 0.0},
+            }
+        )
+        indicators = FakeIndicators(
+            score=0.9,
+            reasons=["多頭排列", "MACD金叉+正值"],
+            factor_contributions=[
+                {"category": "trend", "direction": "BUY", "score_delta": 0.4, "reason": "多頭排列"},
+                {"category": "macd", "direction": "BUY", "score_delta": 0.2, "reason": "MACD金叉+正值"},
+            ],
+        )
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": -1.2,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertTrue(alert["factor_confluence_valid"])
+        self.assertTrue(alert["risk_geometry_valid"])
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertEqual(alert["suppressed_directional_reason"], "buy_realtime_direction_misaligned")
+        self.assertTrue(alert["buy_realtime_alignment_blocked"])
+        self.assertEqual(alert["buy_realtime_alignment_min_change_pct"], 0.0)
+        self.assertIn("buy_realtime_direction_misaligned", alert["execution_blocked_reasons"])
+        self.assertIsNone(alert["entry_price"])
+        self.assertIsNotNone(alert["candidate_entry_price"])
+
+    def test_buy_execution_candidate_keeps_positive_realtime_change(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+                "realtime_alignment": {"block_buy_when_change_pct_below": 0.0},
+            }
+        )
+        indicators = FakeIndicators(
+            score=0.9,
+            reasons=["多頭排列", "MACD金叉+正值"],
+            factor_contributions=[
+                {"category": "trend", "direction": "BUY", "score_delta": 0.4, "reason": "多頭排列"},
+                {"category": "macd", "direction": "BUY", "score_delta": 0.2, "reason": "MACD金叉+正值"},
+            ],
+        )
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0.1,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertEqual(alert["signal_type"], "BUY")
+        self.assertTrue(alert["execution_candidate"])
+        self.assertFalse(alert["buy_realtime_alignment_blocked"])
+        self.assertNotIn("buy_realtime_direction_misaligned", alert["execution_blocked_reasons"])
 
     def test_repo_config_disabled_buy_reversal_triggers_are_watch_only(self):
         config = self.repo_strategy_config()

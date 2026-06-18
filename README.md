@@ -7,10 +7,10 @@ This repository is not configured for automatic real-money trading. Real broker 
 ## Current Status
 
 - `scripts/rt_signal_engine_v5.py` is the intended realtime signal source.
-- Current strategy config is `v5.4-quality-ranked-same-scan-candidates-20260618`.
+- Current strategy config is `v5.5-buy-realtime-alignment-20260618`.
 - v5 scans HK/US watchlists, polls realtime quotes, and writes alerts to `/tmp/rt_signal_alerts.jsonl`.
 - Signal scoring uses completed daily OHLCV history plus one realtime quote bar.
-- v5.4 keeps the guarded momentum breakout model, downgrades noisy or underperforming BUY triggers to diagnostic `WATCH` unless later evidence supports re-enabling, and ranks same-symbol same-scan executable candidates so the kept BUY/SELL candidate is based on trigger priority, factor confluence, score strength, and risk/reward rather than watchlist trigger order.
+- v5.5 keeps the guarded momentum breakout model, downgrades noisy or underperforming BUY triggers to diagnostic `WATCH` unless later evidence supports re-enabling, ranks same-symbol same-scan executable candidates by quality, and blocks BUY execution candidates when the symbol's same-session `change_pct` is below the configured realtime-alignment floor.
 - Minute/hour data is read-only context for Hermes and quality reports; it is not the core v5 scoring authority.
 - `scripts/rt_alert_bridge.py` defaults to notify-only mode.
 - The alert bridge is fail-closed: a BUY/SELL raw trigger is not sent as an operator trade candidate unless v5 marks `execution_candidate=true`, Hermes review marks the matching item `eligible_for_approval=true`, and execution readiness is `READY` with `ready_for_execute=true`.
@@ -76,14 +76,15 @@ Executable alerts must be confirmed directional BUY/SELL candidates with valid e
 
 v5 treats same-day repeated states as one event. For the same market `signal_date`, symbol, emitted side, and trigger, the engine writes one alert and persists a session key in `/tmp/rt_signal_state.json`; cooldown remains a short-term guard, not permission to re-send the same stale condition every 30 minutes. On startup, v5 also backfills these session keys from recent `/tmp/rt_signal_alerts.jsonl` rows, so a service restart or deploy does not re-announce already observed same-day conditions. A later alert is allowed on the next market signal date, or when the emitted side changes, for example a diagnostic `WATCH` later becoming a confirmed `BUY`.
 
-v5.4 does not globally loosen execution gates. A `急漲` row may carry `candidate_signal_type=BUY`, but it remains `WATCH` unless full-score confirmation, factor confluence, risk geometry, liquidity, and execution-candidate checks pass. `布林上軌動量突破` replaces the old unconditional upper-band SELL interpretation only when same-session or recent momentum supports a breakout context; weak or overbought upper-band touches still remain SELL/WATCH diagnostics.
-When a single symbol emits multiple executable BUY or SELL candidates in the same scan, v5.4 keeps the higher-quality candidate and marks lower-ranked same-direction rows as `same_scan_directional_duplicate` diagnostics. Candidates already blocked by the same-session or cooldown dedup state are skipped instead of being re-emitted as WATCH rows.
+v5.5 does not globally loosen execution gates. A `急漲` row may carry `candidate_signal_type=BUY`, but it remains `WATCH` unless full-score confirmation, factor confluence, risk geometry, liquidity, realtime direction alignment, and execution-candidate checks pass. `布林上軌動量突破` replaces the old unconditional upper-band SELL interpretation only when same-session or recent momentum supports a breakout context; weak or overbought upper-band touches still remain SELL/WATCH diagnostics.
+When a single symbol emits multiple executable BUY or SELL candidates in the same scan, v5.5 keeps the higher-quality candidate and marks lower-ranked same-direction rows as `same_scan_directional_duplicate` diagnostics. Candidates already blocked by the same-session or cooldown dedup state are skipped instead of being re-emitted as WATCH rows.
 
-The live v5.4 config uses `trigger_overrides` to reduce weak-market BUY noise:
+The live v5.5 config uses `trigger_overrides` to reduce weak-market BUY noise:
 
 - `BUY:布林下軌突破`, `BUY:RSI超賣`, `BUY:MA金叉`, and `BUY:站上MA5` are `disabled_pending_rework`, so they remain diagnostic `WATCH` rows and cannot become execution candidates.
 - `BUY:布林上軌動量突破` is `shadow_only_pending_sample`, so strong breakout contexts are observed but not sent to execution review.
 - `BUY:急漲` is tightened with a higher score threshold and longer cooldown while evidence is retested.
+- `realtime_alignment.block_buy_when_change_pct_below=0.0` downgrades BUY candidates to `WATCH` when same-session price change is negative, with `execution_blocked_reasons=["buy_realtime_direction_misaligned"]`.
 
 SELL and position-risk reviews are not globally disabled. In weak markets they may still appear frequently, but trade-signal delivery still requires Hermes item eligibility plus execution readiness `READY`.
 
@@ -157,6 +158,13 @@ Cron jobs that need runtime portfolio IDs or Feishu credentials should source en
 * * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 RT_POSITION_REVIEW_ROLES=user /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1"
 */15 * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/portfolio_report.py --output /tmp/portfolio_report.json --text >> /tmp/portfolio_report.log 2>&1"
 * * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/hermes_review_packet.py --output /tmp/hermes_signal_review_packet.json >> /tmp/hermes_review_packet.log 2>&1"
+```
+
+Refresh position price snapshots for both the simulation and user portfolio. These jobs update only `current_price`, `market_value`, unrealized PnL fields, and portfolio totals; they do not change quantities, submit orders, or write Hermes judgments:
+
+```cron
+*/15 9-16 * * 1-5 QM_PRICE_UPDATE_PORTFOLIO_ID=8 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update.log 2>&1
+*/15 9-16 * * 1-5 QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1
 ```
 
 Readiness refresh, useful after deploy or missing cron:
@@ -236,6 +244,10 @@ Also scan for secrets before pushing. Placeholder names such as `FEISHU_APP_SECR
 
 ## Production Fixes 2026-06-18
 
+- Deployed `v5.5-buy-realtime-alignment-20260618`: BUY candidates now require non-negative same-session `change_pct` by default before remaining executable.
+- Hardened `portfolio_report.py` against stale/wrong DB prices by falling back to latest daily K-line when `positions.current_price` differs from the latest K-line by more than `QM_MAX_DB_PRICE_TO_KLINE_RATIO` (default `3.0`) and flagging the fallback for Hermes.
+- Made `update_portfolio_prices.py` portfolio-id configurable via `QM_PRICE_UPDATE_PORTFOLIO_ID`, then refreshed portfolio `3` DB price snapshots so user holdings such as PDD/ARAY/NOK/BABA are no longer valued from stale or mis-scaled prices.
+- Added reviewed cron lines for portfolio `3` and portfolio `8` price snapshots; these update valuation fields only and do not mutate holdings or submit orders.
 - After finding one Alpaca paper order created from a raw `NO_MATCH` technical signal while Hermes judgment was disabled, the server bridge cron was changed from `alert-sim` to `alert-dry-run`, `RT_ORDER_EXECUTE_PILOT_ENABLED=0`, `RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1`, and `RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS=0`.
 - Hardened `rt_alert_bridge.py` so bridge-launched intake always forces readiness, strategy evidence, Hermes judgment, market context, and symbol-conflict gates on for `alert-dry-run` and `alert-sim`.
 - Changed Feishu position-review delivery to default to `role=user` only, keeping simulation holdings available to Hermes in packet/report context without mixing them into operator-facing holding reminders.

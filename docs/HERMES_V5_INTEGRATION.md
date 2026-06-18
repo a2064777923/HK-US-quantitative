@@ -1,10 +1,18 @@
 # Hermes v5 Integration
 
-**Updated:** 2026-06-16
+**Updated:** 2026-06-18
 
 This document explains how to connect the realtime v5 signal path without breaking the existing QuantMind jobs or the separate simulation trading system.
 
 ## What Changed
+
+### 2026-06-18 live-server reliability fix
+
+- v5.5 `realtime_alignment.block_buy_when_change_pct_below=0.0` downgrades otherwise executable BUY candidates to `WATCH` when the symbol's same-session `change_pct` is negative. Hermes should read `buy_realtime_alignment_blocked`, `buy_realtime_alignment_min_change_pct`, and `execution_blocked_reasons=["buy_realtime_direction_misaligned"]` as timing/risk evidence, not as a disappeared signal.
+- `portfolio_report.py` no longer blindly trusts `positions.current_price` when it is inconsistent with the latest daily K-line by more than `QM_MAX_DB_PRICE_TO_KLINE_RATIO` (default `3.0`). It falls back to `latest_kline_close`, keeps `db_current_price` and `db_latest_kline_price_ratio` in the position payload, and adds `db_current_price_inconsistent_with_latest_kline` plus `fallback_valuation_used` for Hermes confidence reduction.
+- `update_portfolio_prices.py` accepts `QM_PRICE_UPDATE_PORTFOLIO_ID`, so portfolio `3` user holdings and portfolio `8` simulation holdings can be refreshed independently. The job updates valuation fields only (`current_price`, `market_value`, unrealized PnL, portfolio totals); it does not change quantities, close/open positions, write Hermes judgments, or submit orders.
+- Server hotfixes also aligned the container-only holding tools: `/app/scripts/read_positions.py --us` now includes `US/NASDAQ/NYSE/AMEX`, `/app/scripts/trade_update.py list` defaults to open holdings only, and legacy `smart_monitor.py` loads holdings from DB positions at startup to override stale hardcoded holdings.
+- After the server repair, portfolio `3` user holdings are present in Hermes as 12 DB-sourced open positions; PDD, ARAY, NOK, and BABA use current USD quote prices instead of stale/mis-scaled DB values. Execution readiness remains `BLOCKED`; this reliability fix does not enable paper/live execution.
 
 ### 2026-06-16 live-server fix
 

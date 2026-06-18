@@ -248,6 +248,53 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertEqual(payload["position_review_items"][0]["recommended_action"], "reduce_or_exit_review")
         self.assertFalse(payload["position_review_items"][0]["execution_policy"]["submits_orders"])
 
+    def test_portfolio_risk_flags_fallback_valuation_when_db_price_is_inconsistent_with_kline(self):
+        position = {
+            "symbol": "PDD",
+            "name": "PDD Holdings",
+            "quantity": 10,
+            "avg_cost": 82.48,
+            "current_price": 637.65,
+            "status": "holding",
+            "exchange": "NASDAQ",
+            "updated_at": "2026-06-12",
+        }
+        signal = {
+            "trade_date": "2026-06-12",
+            "side": "HOLD",
+            "score": 0.0,
+            "expected_price": 79.86,
+            "quality": {"order_prices": {}},
+        }
+
+        with (
+            patch.object(
+                report,
+                "get_portfolio_row",
+                return_value={
+                    "id": 3,
+                    "cash_hkd": 91,
+                    "reported_total_value_hkd": 8_000,
+                    "initial_capital_hkd": 100_000,
+                },
+            ),
+            patch.object(report, "get_positions", return_value=[position]),
+            patch.object(report, "get_latest_klines", return_value={"PDD": {"close": 79.86, "date": "2026-06-12"}}),
+            patch.object(report, "get_latest_signals", return_value={"PDD": signal}),
+        ):
+            payload = report.build_portfolio_report(3, "user")
+
+        pos = payload["positions"][0]
+        risk = payload["risk_summary"]
+        self.assertEqual(pos["current_price"], 79.86)
+        self.assertEqual(pos["valuation_price_source"], "latest_kline_close")
+        self.assertEqual(pos["db_current_price"], 637.65)
+        self.assertGreater(pos["db_latest_kline_price_ratio"], 3.0)
+        self.assertIn("db_current_price_inconsistent_with_latest_kline", pos["price_data_flags"])
+        self.assertIn("fallback_valuation_used", risk["risk_flags"])
+        self.assertIn("PDD", risk["price_quality"]["fallback_valuation_symbols"])
+        self.assertIn("PDD", risk["price_quality"]["db_invalid_price_symbols"])
+
     def test_build_payload_marks_simulation_trade_position_mismatch_critical(self):
         stale_position = {
             "symbol": "00017",

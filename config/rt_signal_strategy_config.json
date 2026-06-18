@@ -1,7 +1,7 @@
 {
   "schema": "rt_signal_strategy_config_v1",
-  "version": "v5.4-quality-ranked-same-scan-candidates-20260618",
-  "description": "Realtime v5.4 quality-ranked same-scan candidates. Noisy or underperforming BUY triggers remain diagnostic, new BUY execution candidates are suppressed to WATCH when same-market realtime breadth is risk-off, and when one symbol emits multiple executable candidates in one scan the highest-priority/factor/RR candidate is kept while lower-ranked same-direction rows become diagnostics; Hermes, readiness, liquidity, RR, and intake gates remain unchanged.",
+  "version": "v5.5-buy-realtime-alignment-20260618",
+  "description": "Realtime v5.5 quality-ranked same-scan candidates with BUY realtime direction alignment. Noisy or underperforming BUY triggers remain diagnostic, new BUY execution candidates are suppressed to WATCH when same-market realtime breadth is risk-off or the symbol's same-session change_pct is below the configured BUY alignment floor, and when one symbol emits multiple executable candidates in one scan the highest-priority/factor/RR candidate is kept while lower-ranked same-direction rows become diagnostics; Hermes, readiness, liquidity, RR, and intake gates remain unchanged.",
   "signal_cooldown_seconds": 1800,
   "volume_anomaly_ratio": 3.0,
   "confirmation_thresholds": {
@@ -42,6 +42,9 @@
     "risk_off_max_advancer_pct": 35.0,
     "risk_off_min_decliner_pct": 50.0,
     "risk_off_max_avg_change_pct": -0.6
+  },
+  "realtime_alignment": {
+    "block_buy_when_change_pct_below": 0.0
   },
   "emission": {
     "emit_unconfirmed_directional_as_watch": true

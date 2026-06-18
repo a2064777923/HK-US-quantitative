@@ -1,10 +1,17 @@
 import unittest
+import os
 from unittest.mock import patch
 
 from scripts import update_portfolio_prices as updater
 
 
 class UpdatePortfolioPricesTests(unittest.TestCase):
+    def test_portfolio_id_can_be_configured_by_environment(self):
+        self.assertEqual(
+            updater.PORTFOLIO_ID,
+            int(os.environ.get("QM_PRICE_UPDATE_PORTFOLIO_ID", os.environ.get("QM_PORTFOLIO_ID", "8"))),
+        )
+
     def test_update_position_snapshot_writes_pnl_rate(self):
         calls = []
 

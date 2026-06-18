@@ -2,11 +2,11 @@
 """
 修復版：用騰訊API更新持倉價格（唔再依賴被封嘅Sina）
 """
-import subprocess, json, urllib.request
+import os, subprocess, json, urllib.request
 from datetime import datetime
 
-USD_TO_HKD = 7.80
-PORTFOLIO_ID = 8
+USD_TO_HKD = float(os.environ.get("USD_TO_HKD", "7.80"))
+PORTFOLIO_ID = int(os.environ.get("QM_PRICE_UPDATE_PORTFOLIO_ID", os.environ.get("QM_PORTFOLIO_ID", "8")))
 _COLUMN_CACHE = {}
 
 def db(sql):
