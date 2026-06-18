@@ -61,6 +61,10 @@ APCA_API_SECRET_KEY=...
 The runtime also accepts existing Alpaca env aliases: `ALPACA_API_KEY`,
 `ALPACA_SECRET_KEY`, and `ALPACA_BASE_URL`.
 
+Trusted-source discovery also reads those Alpaca aliases as broker-adapter
+wiring when its cron sources `/root/.quantmind_env` and `/root/.env`. This only
+improves Hermes source visibility; it does not enable order submission.
+
 Put runtime secrets in the server environment or `/root/.quantmind_env`; do not commit them.
 
 ## Realtime v5 Contract

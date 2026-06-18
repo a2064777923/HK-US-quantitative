@@ -17,7 +17,6 @@ FULL_CRON = "\n".join(
         ("intraday_market_session_overrides_report.py", "/tmp/intraday_market_session_overrides_report.json"),
         ("source_reliability_report.py", "/tmp/source_reliability_report.json"),
         ("trusted_source_preflight.py", "/tmp/trusted_source_preflight_report.json"),
-        ("trusted_source_discovery_report.py", "/tmp/trusted_source_discovery_report.json"),
         ("market_context_report.py", "/tmp/market_context_report.json"),
         ("portfolio_report.py", "/tmp/portfolio_report.json"),
         ("watchlist_diff_report.py", "/tmp/watchlist_diff_report.json"),
@@ -45,6 +44,7 @@ FULL_CRON = "\n".join(
     ]
 ) + """
 * * * * * RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=notify RT_ALERT_REQUIRE_CONFIRMED=1 /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1
+*/10 * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/trusted_source_discovery_report.py --output /tmp/trusted_source_discovery_report.json --text >> /tmp/trusted_source_discovery_report.log 2>&1"
 */5 * * * * /usr/bin/python3 /root/external_market_context_producer.py --include-infohub --infohub-url http://127.0.0.1:8899 --output /tmp/external_market_context_inputs.json --text && /usr/bin/python3 /root/external_market_context_report.py --output /tmp/external_market_context_report.json --text
 */5 * * * * /usr/bin/python3 /root/event_catalyst_report.py --output /tmp/event_catalyst_report.json --text
 */5 * * * * /usr/bin/python3 /root/event_catalyst_signal_report.py --output /tmp/event_catalyst_signal_report.json --text
@@ -279,6 +279,24 @@ class CronAuditReportTests(unittest.TestCase):
             row for row in payload["installation_plan"]["install_lines"] if row["name"] == "rt_alert_bridge_notify"
         ][0]
         self.assertIn("RT_ALERT_REMOTE=local", bridge_job["recommended_cron"])
+
+    def test_trusted_source_discovery_must_source_runtime_env(self):
+        old_discovery_cron = "\n".join(
+            line
+            for line in FULL_CRON.splitlines()
+            if "trusted_source_discovery_report.py" not in line
+        ) + "\n*/10 * * * * /usr/bin/python3 /root/trusted_source_discovery_report.py --output /tmp/trusted_source_discovery_report.json --text"
+
+        payload = report.build_report(old_discovery_cron)
+
+        self.assertEqual(payload["status"], "WARN")
+        missing = {job["name"] for job in payload["missing_required_jobs"]}
+        self.assertIn("trusted_source_discovery", missing)
+        discovery_job = [
+            row for row in payload["installation_plan"]["install_lines"] if row["name"] == "trusted_source_discovery"
+        ][0]
+        self.assertIn("set -a", discovery_job["recommended_cron"])
+        self.assertIn("/root/.quantmind_env", discovery_job["recommended_cron"])
 
     def test_alert_delivery_warns_when_feishu_enabled_without_credentials(self):
         feishu_cron = (

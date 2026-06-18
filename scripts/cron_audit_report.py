@@ -96,9 +96,15 @@ REQUIRED_READ_ONLY_JOBS = [
     },
     {
         "name": "trusted_source_discovery",
-        "tokens": ["trusted_source_discovery_report.py", "/tmp/trusted_source_discovery_report.json"],
+        "tokens": [
+            "trusted_source_discovery_report.py",
+            "/tmp/trusted_source_discovery_report.json",
+            "set -a",
+            "/root/.quantmind_env",
+            "/root/.env",
+        ],
         "why": "Hermes needs an inventory of configured Wudao, InfoHub, broker, official, and vendor source adapters",
-        "recommended_cron": "*/10 * * * * /usr/bin/python3 /root/trusted_source_discovery_report.py --output /tmp/trusted_source_discovery_report.json --text >> /tmp/trusted_source_discovery_report.log 2>&1",
+        "recommended_cron": "*/10 * * * * /bin/bash -lc \"cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/trusted_source_discovery_report.py --output /tmp/trusted_source_discovery_report.json --text >> /tmp/trusted_source_discovery_report.log 2>&1\"",
     },
     {
         "name": "market_context",

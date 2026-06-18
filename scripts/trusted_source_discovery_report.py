@@ -44,6 +44,16 @@ ENV_GROUPS = {
     "broker": (
         "BROKER_API_BASE",
         "BROKER_API_KEY",
+        "RT_ORDER_US_BROKER",
+        "ALPACA_TRADING_BASE_URL",
+        "ALPACA_BASE_URL",
+        "APCA_API_KEY_ID",
+        "APCA_API_SECRET_KEY",
+        "ALPACA_API_KEY_ID",
+        "ALPACA_API_SECRET_KEY",
+        "ALPACA_API_KEY",
+        "ALPACA_SECRET_KEY",
+        "ALPACA_KEY_ID",
         "FUTU_HOST",
         "FUTU_PORT",
         "IBKR_HOST",
@@ -302,7 +312,13 @@ def build_report(
     }
     for provider, url_keys in {
         "wudao": ("WUDAO_MCP_URL", "WUDAO_MCP_ENDPOINT", "WUDAO_API_BASE", "CLAUDE_MCP_WUDAO_URL"),
-        "broker": ("BROKER_API_BASE", "FUTU_HOST", "IBKR_HOST"),
+        "broker": (
+            "BROKER_API_BASE",
+            "FUTU_HOST",
+            "IBKR_HOST",
+            "ALPACA_TRADING_BASE_URL",
+            "ALPACA_BASE_URL",
+        ),
         "official_macro": ("OFFICIAL_MACRO_API_BASE", "HKMA_API_BASE", "EXCHANGE_CALENDAR_API_BASE"),
         "fundamentals_vendor": ("FUNDAMENTALS_API_BASE",),
     }.items():

@@ -79,7 +79,7 @@
 */10 * * * * /usr/bin/python3 /root/trusted_source_preflight.py --output /tmp/trusted_source_preflight_report.json --text >> /tmp/trusted_source_preflight.log 2>&1
 
 # Read-only trusted-source discovery. Inventories configured Wudao/InfoHub/broker/official/vendor adapters without printing secrets.
-*/10 * * * * /usr/bin/python3 /root/trusted_source_discovery_report.py --output /tmp/trusted_source_discovery_report.json --text >> /tmp/trusted_source_discovery_report.log 2>&1
+*/10 * * * * /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; /usr/bin/python3 /root/trusted_source_discovery_report.py --output /tmp/trusted_source_discovery_report.json --text >> /tmp/trusted_source_discovery_report.log 2>&1"
 
 # Optional read-only K-line integrity repair plan. Does not write DB unless --apply is used manually with a matching plan hash.
 # */15 * * * * /usr/bin/python3 /root/kline_integrity_repair.py --output /tmp/kline_integrity_repair.json --text >> /tmp/kline_integrity_repair.log 2>&1

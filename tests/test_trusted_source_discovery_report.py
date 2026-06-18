@@ -86,6 +86,32 @@ class TrustedSourceDiscoveryReportTests(unittest.TestCase):
         self.assertEqual(by_capability["full_fundamentals_context"]["status"], "CONFIGURED_UNVERIFIED")
         self.assertIn("run_dry_run_export_and_trusted_source_preflight_for_configured_sources", payload["recommendations"])
 
+    def test_alpaca_paper_aliases_count_as_broker_adapter_without_printing_secrets(self):
+        env = {
+            "RT_ORDER_US_BROKER": "alpaca-paper",
+            "ALPACA_BASE_URL": "https://paper-api.alpaca.markets/v2",
+            "ALPACA_API_KEY": "alpaca-key",
+            "ALPACA_SECRET_KEY": "alpaca-secret",
+        }
+        payload = discovery.build_report(
+            env=env,
+            files={},
+            infohub_url="",
+            probe_tcp_func=fake_probe_factory(),
+        )
+
+        serialized = str(payload)
+        self.assertNotIn("alpaca-key", serialized)
+        self.assertNotIn("alpaca-secret", serialized)
+        providers = {row["provider"]: row for row in payload["providers"]}
+        self.assertTrue(providers["broker"]["configured"])
+        self.assertIn("ALPACA_API_KEY", providers["broker"]["env"]["present_env_keys"])
+        self.assertIn("ALPACA_SECRET_KEY", providers["broker"]["env"]["present_env_keys"])
+        by_capability = {row["capability"]: row for row in payload["capabilities"]}
+        self.assertEqual(by_capability["capital_flow_context"]["status"], "CONFIGURED_UNVERIFIED")
+        self.assertIn("broker", by_capability["capital_flow_context"]["configured_or_reachable_providers"])
+        self.assertEqual(by_capability["full_fundamentals_context"]["status"], "CONFIGURED_UNVERIFIED")
+
     def test_input_file_summary_counts_json_items_and_jsonl_lines(self):
         with tempfile.TemporaryDirectory() as td:
             json_path = Path(td) / "external.json"
