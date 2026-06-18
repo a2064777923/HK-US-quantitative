@@ -291,6 +291,12 @@ PILOT_ALERT_SIM_REQUIRED_TOKENS = (
     "RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=",
     "RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=",
 )
+SAFE_ALERT_DRY_RUN_REQUIRED_TOKENS = (
+    "RT_ALERT_EXECUTION_MODE=alert-dry-run",
+    "RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1",
+    "RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS=0",
+    "RT_ORDER_EXECUTE_PILOT_ENABLED=0",
+)
 
 
 def now_iso():
@@ -424,6 +430,11 @@ def is_limited_pilot_alert_sim_line(line):
     return all(token in text for token in PILOT_ALERT_SIM_REQUIRED_TOKENS)
 
 
+def is_safe_alert_dry_run_line(line):
+    text = str(line or "")
+    return all(token in text for token in SAFE_ALERT_DRY_RUN_REQUIRED_TOKENS)
+
+
 def limited_pilot_execution_lines(lines):
     rows = []
     for line in lines:
@@ -448,6 +459,10 @@ def limited_pilot_execution_lines(lines):
 
 def limited_pilot_alert_sim_lines(lines):
     return [line for line in lines if is_limited_pilot_alert_sim_line(line)]
+
+
+def safe_alert_dry_run_lines(lines):
+    return [line for line in lines if is_safe_alert_dry_run_line(line)]
 
 
 def stable_hash(payload):
@@ -537,8 +552,9 @@ def alert_delivery_audit(lines, env=None, env_file_text=None, sent_file_texts=No
     env = dict(os.environ if env is None else env)
     sent_file_texts = dict(sent_file_texts or {})
     notify_bridge_lines = active_line_with_tokens(lines, ["rt_alert_bridge.py", "RT_ALERT_EXECUTION_MODE=notify"])
+    dry_run_bridge_lines = safe_alert_dry_run_lines(active_line_with_tokens(lines, ["rt_alert_bridge.py"]))
     pilot_bridge_lines = limited_pilot_alert_sim_lines(active_line_with_tokens(lines, ["rt_alert_bridge.py"]))
-    bridge_lines = notify_bridge_lines + pilot_bridge_lines
+    bridge_lines = notify_bridge_lines + dry_run_bridge_lines + pilot_bridge_lines
     local_bridge_lines = [line for line in bridge_lines if "RT_ALERT_REMOTE=local" in line]
     feishu_lines = [line for line in bridge_lines if "RT_ALERT_SEND_FEISHU=1" in line]
     dangerous_bridge_lines = active_line_with_tokens(lines, ["rt_alert_bridge.py"])
@@ -608,7 +624,15 @@ def alert_delivery_audit(lines, env=None, env_file_text=None, sent_file_texts=No
         "schema": "alert_delivery_audit_v1",
         "status": status,
         "bridge_notify_present": bool(bridge_lines),
-        "bridge_delivery_mode": "limited_pilot_alert_sim" if pilot_bridge_lines and not notify_bridge_lines else "notify",
+        "bridge_delivery_mode": (
+            "notify"
+            if notify_bridge_lines
+            else "safe_alert_dry_run"
+            if dry_run_bridge_lines
+            else "limited_pilot_alert_sim"
+            if pilot_bridge_lines
+            else "missing"
+        ),
         "bridge_notify_local_mode": bool(local_bridge_lines),
         "bridge_notify_line_count": len(bridge_lines),
         "feishu_delivery_enabled": bool(feishu_lines),
@@ -716,7 +740,8 @@ def build_report(
     for job in REQUIRED_READ_ONLY_JOBS:
         present = job_present(lines, job["tokens"])
         if job.get("name") == "rt_alert_bridge_notify" and not present:
-            present = bool(limited_pilot_alert_sim_lines(active_line_with_tokens(lines, ["rt_alert_bridge.py"])))
+            bridge_lines = active_line_with_tokens(lines, ["rt_alert_bridge.py"])
+            present = bool(safe_alert_dry_run_lines(bridge_lines) or limited_pilot_alert_sim_lines(bridge_lines))
         row = {
             "name": job["name"],
             "present": present,

@@ -237,6 +237,7 @@ Also scan for secrets before pushing. Placeholder names such as `FEISHU_APP_SECR
 - Hardened `rt_alert_bridge.py` so bridge-launched intake always forces readiness, strategy evidence, Hermes judgment, market context, and symbol-conflict gates on for `alert-dry-run` and `alert-sim`.
 - Changed Feishu position-review delivery to default to `role=user` only, keeping simulation holdings available to Hermes in packet/report context without mixing them into operator-facing holding reminders.
 - Added v5 session-level alert de-duplication so persistent conditions such as `跌破MA5`, `RSI超賣`, or Bollinger-band breaches do not re-enter the alert queue every cooldown bucket on the same market signal date.
+- Updated cron audit logic so a fail-closed `alert-dry-run` bridge with packet eligibility required, ineligible signal notifications suppressed, and pilot execution disabled satisfies operator delivery wiring; loose dry-run lines still do not count.
 - Deployed `v5.2-risk-off-trigger-remediation-20260618` to reduce weak-market BUY noise through existing `trigger_overrides`; no execution gates were loosened.
 - Converted poor BUY reversal triggers (`布林下軌突破`, `RSI超賣`, `MA金叉`, `站上MA5`) into diagnostic WATCH-only rows.
 - Shadowed `布林上軌動量突破` and tightened `急漲` while evidence is retested.

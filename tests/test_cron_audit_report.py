@@ -384,6 +384,57 @@ class CronAuditReportTests(unittest.TestCase):
         self.assertEqual(payload["alert_delivery"]["bridge_delivery_mode"], "limited_pilot_alert_sim")
         self.assertTrue(payload["alert_delivery"]["feishu_delivery_enabled"])
 
+    def test_safe_alert_dry_run_satisfies_bridge_delivery_job(self):
+        base_without_bridge = "\n".join(
+            line for line in FULL_CRON.splitlines() if "rt_alert_bridge.py" not in line
+        )
+        dry_run_line = (
+            '* * * * * /bin/bash -lc "cd /root && [ -f /root/.quantmind_env ] && . /root/.quantmind_env; '
+            "RT_ALERT_REMOTE=local RT_ALERT_SEND_FEISHU=1 RT_ALERT_EXECUTION_MODE=alert-dry-run "
+            "RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1 RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS=0 "
+            "RT_ALERT_REQUIRE_CONFIRMED=1 RT_ORDER_EXECUTE_PILOT_ENABLED=0 "
+            'RT_POSITION_REVIEW_ROLES=user /usr/bin/python3 /root/rt_alert_bridge.py >> /tmp/rt_alert_bridge.log 2>&1"'
+        )
+        env_file = "\n".join(
+            [
+                "FEISHU_APP_ID=app-id",
+                "FEISHU_APP_SECRET=app-secret",
+                "FEISHU_CHAT_ID=chat-id",
+            ]
+        )
+
+        payload = report.build_report(
+            base_without_bridge + "\n" + dry_run_line + "\n",
+            env={},
+            env_file_text=env_file,
+            sent_file_texts={"alert_sent": "[]", "position_review_sent": "[]"},
+        )
+
+        self.assertEqual(payload["status"], "OK")
+        missing = {job["name"] for job in payload["missing_required_jobs"]}
+        self.assertNotIn("rt_alert_bridge_notify", missing)
+        self.assertEqual(payload["alert_delivery"]["bridge_delivery_mode"], "safe_alert_dry_run")
+        self.assertTrue(payload["alert_delivery"]["feishu_delivery_enabled"])
+
+    def test_alert_dry_run_without_fail_closed_tokens_does_not_satisfy_bridge_delivery_job(self):
+        base_without_bridge = "\n".join(
+            line for line in FULL_CRON.splitlines() if "rt_alert_bridge.py" not in line
+        )
+        loose_dry_run_line = (
+            "* * * * * RT_ALERT_REMOTE=local RT_ALERT_EXECUTION_MODE=alert-dry-run "
+            "/usr/bin/python3 /root/rt_alert_bridge.py"
+        )
+
+        payload = report.build_report(
+            base_without_bridge + "\n" + loose_dry_run_line + "\n",
+            sent_file_texts={"alert_sent": "[]", "position_review_sent": "[]"},
+        )
+
+        self.assertEqual(payload["status"], "WARN")
+        missing = {job["name"] for job in payload["missing_required_jobs"]}
+        self.assertIn("rt_alert_bridge_notify", missing)
+        self.assertEqual(payload["alert_delivery"]["bridge_delivery_mode"], "missing")
+
     def test_commented_dangerous_cron_is_ignored(self):
         payload = report.build_report(
             FULL_CRON + "\n# * * * * * RT_ALERT_EXECUTION_MODE=alert-sim /usr/bin/python3 /root/rt_alert_bridge.py\n"
