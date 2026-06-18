@@ -35,6 +35,9 @@ MIN_DIRECTIONAL_INTAKE_COVERAGE_PCT = float(
 )
 MIN_WIN_RATE_PCT = float(os.environ.get("EXECUTION_READINESS_MIN_WIN_RATE_PCT", "50"))
 MAX_STOP_HIT_RATE_PCT = float(os.environ.get("EXECUTION_READINESS_MAX_STOP_HIT_RATE_PCT", "50"))
+MIN_STOP_TARGET_IMBALANCE_BLOCK_PCT = float(
+    os.environ.get("EXECUTION_READINESS_MIN_STOP_TARGET_IMBALANCE_BLOCK_PCT", "5")
+)
 MIN_FAVORABLE_TO_ADVERSE_RATIO = float(
     os.environ.get("EXECUTION_READINESS_MIN_FAVORABLE_TO_ADVERSE_RATIO", "1")
 )
@@ -490,6 +493,7 @@ def build_report(
     min_directional_intake_coverage_pct=MIN_DIRECTIONAL_INTAKE_COVERAGE_PCT,
     min_win_rate_pct=MIN_WIN_RATE_PCT,
     max_stop_hit_rate_pct=MAX_STOP_HIT_RATE_PCT,
+    min_stop_target_imbalance_block_pct=MIN_STOP_TARGET_IMBALANCE_BLOCK_PCT,
     min_favorable_to_adverse_ratio=MIN_FAVORABLE_TO_ADVERSE_RATIO,
     min_hermes_effect_sample=MIN_HERMES_EFFECT_SAMPLE,
     min_sim_closed_trades=MIN_SIM_CLOSED_TRADES,
@@ -656,6 +660,11 @@ def build_report(
     target_hit_rate = as_float(counts.get("target_hit_rate_pct"))
     stop_hit_rate = as_float(counts.get("stop_hit_rate_pct"))
     favorable_to_adverse_ratio = as_float(counts.get("favorable_to_adverse_ratio"))
+    stop_target_imbalance = (
+        round(stop_hit_rate - target_hit_rate, 6)
+        if stop_hit_rate is not None and target_hit_rate is not None
+        else None
+    )
     if counts.get("strategy_evidence_metric_scope") == "execution_candidate_missing":
         outcome_status = "BLOCK"
         outcome_detail = "diagnostic candidate outcomes exist but executable-only cohort is missing"
@@ -677,9 +686,15 @@ def build_report(
     elif target_hit_rate is None or stop_hit_rate is None:
         outcome_status = "BLOCK"
         outcome_detail = "resolved outcome sample is large enough but target/stop hit rates are missing"
-    elif stop_hit_rate > target_hit_rate:
+    elif (
+        stop_target_imbalance is not None
+        and stop_target_imbalance >= min_stop_target_imbalance_block_pct
+    ):
         outcome_status = "BLOCK"
-        outcome_detail = f"stop hit rate {stop_hit_rate}% exceeds target hit rate {target_hit_rate}%"
+        outcome_detail = (
+            f"stop hit rate {stop_hit_rate}% exceeds target hit rate {target_hit_rate}% "
+            f"by {stop_target_imbalance}%"
+        )
     elif stop_hit_rate > max_stop_hit_rate_pct:
         outcome_status = "BLOCK"
         outcome_detail = f"stop hit rate {stop_hit_rate}% exceeds maximum {max_stop_hit_rate_pct}%"
@@ -701,6 +716,8 @@ def build_report(
         )
     counts["min_win_rate_pct"] = min_win_rate_pct
     counts["max_stop_hit_rate_pct"] = max_stop_hit_rate_pct
+    counts["min_stop_target_imbalance_block_pct"] = min_stop_target_imbalance_block_pct
+    counts["stop_target_imbalance_pct"] = stop_target_imbalance
     counts["min_favorable_to_adverse_ratio"] = min_favorable_to_adverse_ratio
     add_gate(
         gates,
@@ -1071,6 +1088,7 @@ def build_report(
             "min_directional_intake_coverage_pct": min_directional_intake_coverage_pct,
             "min_win_rate_pct": min_win_rate_pct,
             "max_stop_hit_rate_pct": max_stop_hit_rate_pct,
+            "min_stop_target_imbalance_block_pct": min_stop_target_imbalance_block_pct,
             "min_favorable_to_adverse_ratio": min_favorable_to_adverse_ratio,
             "min_hermes_effect_sample": min_hermes_effect_sample,
             "min_sim_closed_trades": min_sim_closed_trades,
@@ -1108,6 +1126,7 @@ def build_report_from_files(args):
         min_directional_intake_coverage_pct=args.min_directional_intake_coverage_pct,
         min_win_rate_pct=args.min_win_rate_pct,
         max_stop_hit_rate_pct=args.max_stop_hit_rate_pct,
+        min_stop_target_imbalance_block_pct=args.min_stop_target_imbalance_block_pct,
         min_favorable_to_adverse_ratio=args.min_favorable_to_adverse_ratio,
         min_hermes_effect_sample=args.min_hermes_effect_sample,
         min_sim_closed_trades=args.min_sim_closed_trades,
@@ -1150,6 +1169,11 @@ def parse_args():
     )
     parser.add_argument("--min-win-rate-pct", type=float, default=MIN_WIN_RATE_PCT)
     parser.add_argument("--max-stop-hit-rate-pct", type=float, default=MAX_STOP_HIT_RATE_PCT)
+    parser.add_argument(
+        "--min-stop-target-imbalance-block-pct",
+        type=float,
+        default=MIN_STOP_TARGET_IMBALANCE_BLOCK_PCT,
+    )
     parser.add_argument(
         "--min-favorable-to-adverse-ratio",
         type=float,

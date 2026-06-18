@@ -603,6 +603,19 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "forward_outcome_evidence"][0]
         self.assertIn("exceeds target hit rate", gate["detail"])
 
+    def test_small_stop_target_imbalance_does_not_block_positive_outcomes(self):
+        inputs = healthy_inputs()
+        inputs["outcome_report"]["primary_horizon_metric"]["target_hit_rate_pct"] = 0.0
+        inputs["outcome_report"]["primary_horizon_metric"]["stop_hit_rate_pct"] = 0.82
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "READY")
+        gate = [gate for gate in payload["gates"] if gate["gate"] == "forward_outcome_evidence"][0]
+        self.assertEqual(gate["status"], "PASS")
+        self.assertEqual(gate["data"]["stop_target_imbalance_pct"], 0.82)
+        self.assertEqual(gate["data"]["min_stop_target_imbalance_block_pct"], 5.0)
+
     def test_high_stop_hit_rate_blocks_even_when_targets_match(self):
         inputs = healthy_inputs()
         inputs["outcome_report"]["primary_horizon_metric"]["target_hit_rate_pct"] = 70.0

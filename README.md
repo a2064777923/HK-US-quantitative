@@ -153,6 +153,8 @@ python3 scripts/execution_readiness_report.py --output /tmp/execution_readiness_
 
 `readiness_refresh.py` keeps the daily-gap repair planner in the same read-only report flow, but gives that full-universe network step a bounded worker pool and a longer per-step timeout. Tune with `KLINE_DAILY_GAP_FETCH_WORKERS` and `READINESS_REFRESH_KLINE_DAILY_GAP_REPAIR_TIMEOUT_SECONDS` rather than skipping the report.
 
+`execution_readiness_report.py` treats sparse 1-day target/stop hit-rate imbalance as material only when the stop-minus-target gap reaches `EXECUTION_READINESS_MIN_STOP_TARGET_IMBALANCE_BLOCK_PCT` (default `5`). Average return, win rate, maximum stop-hit rate, and favorable/adverse ratio remain hard forward-evidence gates.
+
 ## Data Policy
 
 Raw market data should stay local by default. Do not commit raw CSV/parquet/DB files or secret-bearing runtime state.
