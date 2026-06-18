@@ -13,11 +13,22 @@ DB_USER = os.environ.get("QM_DB_USER", "quantmind")
 DB_NAME = os.environ.get("QM_DB_NAME", "quantmind")
 
 SIM_PORTFOLIO_ID = int(os.environ.get("QM_SIM_PORTFOLIO_ID", os.environ.get("QM_PORTFOLIO_ID", "8")))
-USER_PORTFOLIO_IDS = [
-    int(x.strip())
-    for x in os.environ.get("QM_USER_PORTFOLIO_IDS", os.environ.get("QM_USER_PORTFOLIO_ID", "")).split(",")
-    if x.strip().isdigit()
-]
+
+
+def user_portfolio_ids_from_env(default=(3,)):
+    ids = []
+    seen = set()
+    for name in ("QM_HOLDINGS_PORTFOLIO_ID", "QM_USER_PORTFOLIO_ID", "QM_USER_PORTFOLIO_IDS"):
+        raw = os.environ.get(name, "")
+        for item in str(raw).split(","):
+            item = item.strip()
+            if item.isdigit() and int(item) not in seen:
+                ids.append(int(item))
+                seen.add(int(item))
+    return ids or list(default)
+
+
+USER_PORTFOLIO_IDS = user_portfolio_ids_from_env()
 INITIAL_CAPITAL_HKD = float(os.environ.get("QM_INITIAL_CAPITAL_HKD", "100000"))
 USD_TO_HKD = float(os.environ.get("USD_TO_HKD", "7.80"))
 MAX_DB_PRICE_TO_KLINE_RATIO = float(os.environ.get("QM_MAX_DB_PRICE_TO_KLINE_RATIO", "3.0"))
@@ -109,11 +120,17 @@ def is_hk_symbol(symbol):
     return str(symbol)[:1].isdigit() and len(str(symbol)) == 5
 
 
+HK_EXCHANGES = {"HK", "HKEX", "SEHK", "SZSE", "SSE"}
+US_EXCHANGES = {"US", "NASDAQ", "NYSE", "AMEX"}
+
+
 def market_for_position(position):
     exchange = str(position.get("exchange") or "").upper()
     symbol = str(position.get("symbol") or "").upper()
-    if exchange == "HKEX" or is_hk_symbol(symbol):
+    if exchange in HK_EXCHANGES or is_hk_symbol(symbol):
         return "HK"
+    if exchange in US_EXCHANGES:
+        return "US"
     return "US"
 
 
@@ -121,7 +138,9 @@ def quote_currency_for_position(position):
     return "HKD" if market_for_position(position) == "HK" else "USD"
 
 
-def fx_to_hkd(symbol):
+def fx_to_hkd(symbol, exchange=None):
+    if exchange:
+        return 1.0 if market_for_position({"symbol": symbol, "exchange": exchange}) == "HK" else USD_TO_HKD
     return 1.0 if is_hk_symbol(symbol) else USD_TO_HKD
 
 
@@ -409,7 +428,7 @@ def enrich_position(position, signal, kline):
         price = 0
     qty = position["quantity"]
     cost = position["avg_cost"]
-    fx = fx_to_hkd(symbol)
+    fx = fx_to_hkd(symbol, position.get("exchange"))
     value_hkd = qty * price * fx
     cost_hkd = qty * cost * fx
     pnl_hkd = value_hkd - cost_hkd if cost > 0 else 0

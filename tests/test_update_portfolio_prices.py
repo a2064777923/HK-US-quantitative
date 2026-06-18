@@ -67,6 +67,45 @@ class UpdatePortfolioPricesTests(unittest.TestCase):
         with patch.object(updater, "PORTFOLIO_ID", 8), patch.dict("os.environ", {"QM_USER_PORTFOLIO_IDS": "3"}, clear=False):
             self.assertEqual(updater.position_status_sql(), "status IN ('active','holding')")
 
+    def test_user_price_update_does_not_rebuild_from_sim_trades_when_positions_empty(self):
+        calls = []
+
+        def fake_db(sql):
+            calls.append(sql)
+            if "SELECT symbol, quantity, avg_cost, exchange" in sql:
+                return ""
+            if "SELECT COALESCE(p.available_cash" in sql:
+                return "1000|0"
+            return ""
+
+        with (
+            patch.object(updater, "PORTFOLIO_ID", 3),
+            patch.object(updater, "table_columns", return_value={"current_capital", "total_value", "updated_at"}),
+            patch.object(updater, "db", side_effect=fake_db),
+        ):
+            updater.update_redis_prices()
+
+        self.assertFalse(any("FROM sim_trades" in sql for sql in calls))
+
+    def test_simulation_price_update_keeps_trade_rebuild_compatibility_when_positions_empty(self):
+        calls = []
+
+        def fake_db(sql):
+            calls.append(sql)
+            if "SELECT symbol, quantity, avg_cost, exchange" in sql:
+                return ""
+            if "FROM sim_trades" in sql:
+                return ""
+            return ""
+
+        with (
+            patch.object(updater, "PORTFOLIO_ID", 8),
+            patch.object(updater, "db", side_effect=fake_db),
+        ):
+            updater.update_redis_prices()
+
+        self.assertTrue(any("FROM sim_trades" in sql for sql in calls))
+
     def test_update_portfolio_totals_updates_current_capital_and_total_value(self):
         calls = []
 

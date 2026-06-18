@@ -8,6 +8,26 @@ from scripts import portfolio_report as report
 
 
 class PortfolioReportTests(unittest.TestCase):
+    def test_user_portfolio_ids_accept_holdings_env_and_default_to_three(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(report.user_portfolio_ids_from_env(), [3])
+
+        with patch.dict(
+            "os.environ",
+            {
+                "QM_HOLDINGS_PORTFOLIO_ID": "5",
+                "QM_USER_PORTFOLIO_ID": "7",
+                "QM_USER_PORTFOLIO_IDS": "7,9",
+            },
+            clear=True,
+        ):
+            self.assertEqual(report.user_portfolio_ids_from_env(), [5, 7, 9])
+
+    def test_market_for_position_accepts_listing_exchange_aliases(self):
+        self.assertEqual(report.market_for_position({"symbol": "PDD", "exchange": "NASDAQ"}), "US")
+        self.assertEqual(report.market_for_position({"symbol": "09988", "exchange": "HKEX"}), "HK")
+        self.assertEqual(report.market_for_position({"symbol": "600519", "exchange": "SSE"}), "HK")
+
     def test_get_latest_klines_reads_canonical_daily_bars(self):
         captured = {}
 

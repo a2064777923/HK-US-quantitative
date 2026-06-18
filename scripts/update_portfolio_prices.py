@@ -25,6 +25,9 @@ def position_status_sql(alias=None):
         return f"{prefix}status = 'holding'"
     return f"{prefix}status IN ('active','holding')"
 
+def is_user_portfolio():
+    return int(PORTFOLIO_ID) in user_portfolio_ids()
+
 def db(sql):
     r = subprocess.run(
         ['docker', 'exec', 'quantmind-db', 'psql', '-U', 'quantmind', '-d', 'quantmind', '-t', '-A', '-c', sql],
@@ -170,6 +173,10 @@ def update_redis_prices():
         AND quantity > 0
     """)
     if not raw:
+        if is_user_portfolio():
+            log("用戶持倉positions表為空，按DB唯一真相跳過價格更新；不從sim_trades重建")
+            update_portfolio_totals()
+            return
         # Try to get from trades
         log("Positions表為空，從trades重建...")
         trades = db(f"SELECT symbol, side, price, quantity FROM sim_trades WHERE portfolio_id={PORTFOLIO_ID} ORDER BY created_at")
