@@ -104,6 +104,19 @@ class RtAlertBridgeTests(unittest.TestCase):
                         },
                         "latest_signal": {"side": "SELL", "score": -0.6},
                         "execution_policy": {"submits_orders": False, "requires_separate_order_path": True},
+                        "advisory_plan": {
+                            "schema": "position_advisory_plan_v1",
+                            "advisory_only": True,
+                            "submits_orders": False,
+                            "primary_action": "review_reduce_half_or_exit_if_context_worsens",
+                            "add_allowed_after_review": False,
+                            "manual_max_quantity_hint": 5,
+                            "reference_prices": {
+                                "signal_stop_loss": 180,
+                                "signal_take_profit": 220,
+                                "trailing_stop_floor_reference": 180,
+                            },
+                        },
                         "context_digest": {
                             "position_attention": [
                                 "high_urgency_position_requires_contextual_rationale",
@@ -570,6 +583,9 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("SPCX", text)
             self.assertIn("urgency=medium", text)
             self.assertIn("review_action=take_profit_or_trailing_stop_review", text)
+            self.assertIn("審核草案：review_reduce_half_or_exit_if_context_worsens", text)
+            self.assertIn("add_allowed=False", text)
+            self.assertIn("qty_hint=5", text)
             self.assertNotIn(" action=take_profit_or_trailing_stop_review", text)
 
     def test_feishu_failure_with_position_review_does_not_mark_watch_alert_sent(self):

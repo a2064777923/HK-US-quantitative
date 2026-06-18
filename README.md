@@ -15,6 +15,7 @@ This repository is not configured for automatic real-money trading. Real broker 
 - `scripts/rt_alert_bridge.py` defaults to notify-only mode.
 - The alert bridge is fail-closed: a BUY/SELL raw trigger is not sent as an operator trade candidate unless v5 marks `execution_candidate=true`, Hermes review marks the matching item `eligible_for_approval=true`, and execution readiness is `READY` with `ready_for_execute=true`.
 - `scripts/portfolio_report.py` produces advisory `position_review` items for user and simulation holdings, including large unrealized losses and daily holding moves that need trailing-stop/take-profit/reduction review.
+- Each position review includes an advisory plan with candidate action, add permission, quantity hint, and stop/target/trailing references for Hermes/operator review. It is not lot-adjusted and never submits orders.
 - `scripts/rt_order_intake.py` is the gated paper/simulation intake path.
 - HK simulated orders use the QuantMind simulation API.
 - US paper orders may use Alpaca paper only when explicitly enabled.
@@ -135,7 +136,7 @@ python3 scripts/rt_alert_bridge.py
 
 The bridge marks emitted alerts or position reviews as sent only after Feishu delivery succeeds. Safety-gate-blocked technical triggers are suppressed by default and marked locally so they do not repeat-spam Feishu.
 For trade-signal notifications, the default also requires `RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1`: the matching Hermes packet item must be eligible and execution readiness must be READY. This prevents raw technical triggers from being presented as operation signals during blocked or risk-off system states.
-Position-review notifications default to `RT_POSITION_REVIEW_ROLES=user`, include `high,medium` urgency, and cap at 20 items. Simulation holdings still remain in the Hermes packet and reports, but they are not mixed into the operator Feishu stream unless `RT_POSITION_REVIEW_ROLES=simulation` or `all` is set explicitly. These notifications are titled as `Hermes持倉審核待辦（不下單）`, include `order_submission=false`, and remain advisory-only.
+Position-review notifications default to `RT_POSITION_REVIEW_ROLES=user`, include `high,medium` urgency, and cap at 20 items. Simulation holdings still remain in the Hermes packet and reports, but they are not mixed into the operator Feishu stream unless `RT_POSITION_REVIEW_ROLES=simulation` or `all` is set explicitly. These notifications are titled as `Hermes持倉審核待辦（不下單）`, include `order_submission=false`, and remain advisory-only. The `審核草案` line is a structured review aid, not an order ticket.
 The position-review message summary counts only the items that passed the active role and urgency filters; packet-level global counts may include filtered simulation or diagnostic context and must not be read as submitted orders.
 
 ## Recommended Server Jobs

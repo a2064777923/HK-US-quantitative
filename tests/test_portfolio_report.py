@@ -80,6 +80,9 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertIn("latest_daily_gain_above_3pct", enriched["recommendation_reasons"])
         self.assertEqual(review["recommended_action"], "take_profit_or_trailing_stop_review")
         self.assertEqual(review["urgency"], "medium")
+        self.assertEqual(review["advisory_plan"]["primary_action"], "review_trailing_stop_or_partial_take_profit")
+        self.assertFalse(review["advisory_plan"]["add_allowed_after_review"])
+        self.assertIsNone(review["advisory_plan"]["manual_max_quantity_hint"])
         self.assertTrue(review["execution_policy"]["advice_only"])
         self.assertFalse(review["execution_policy"]["submits_orders"])
 
@@ -505,6 +508,11 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertIn("position_loss_below_minus_20pct", enriched["recommendation_reasons"])
         self.assertEqual(review["recommended_action"], "exit_review")
         self.assertEqual(review["urgency"], "high")
+        self.assertEqual(review["advisory_plan"]["primary_action"], "review_exit_all_or_fast_reduce")
+        self.assertEqual(review["advisory_plan"]["reduce_fraction_hint"], 1.0)
+        self.assertEqual(review["advisory_plan"]["manual_max_quantity_hint"], 10000)
+        self.assertFalse(review["advisory_plan"]["add_allowed_after_review"])
+        self.assertIn("quantity_hint_not_lot_adjusted", review["advisory_plan"]["review_flags"])
         self.assertIn("HIGH 00929 pnl=-39.7%", text)
         self.assertIn("action=exit_review recommendation=exit_or_reduce_review", text)
 

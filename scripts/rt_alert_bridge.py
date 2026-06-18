@@ -509,6 +509,15 @@ def fmt_pct(value):
         return "?"
 
 
+def fmt_optional(value):
+    if value in (None, ""):
+        return "?"
+    try:
+        return f"{float(value):.4g}"
+    except Exception:
+        return str(value)
+
+
 def build_position_review_output(items, packet):
     audit = packet.get("position_judgment_audit") if isinstance(packet.get("position_judgment_audit"), dict) else {}
     coverage = audit.get("coverage") if isinstance(audit.get("coverage"), dict) else {}
@@ -527,6 +536,7 @@ def build_position_review_output(items, packet):
     for item in items:
         position = item.get("position") if isinstance(item.get("position"), dict) else {}
         latest_signal = item.get("latest_signal") if isinstance(item.get("latest_signal"), dict) else {}
+        advisory_plan = item.get("advisory_plan") if isinstance(item.get("advisory_plan"), dict) else {}
         digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
         attention = digest.get("position_attention") if isinstance(digest.get("position_attention"), list) else []
         lines.append("")
@@ -546,6 +556,18 @@ def build_position_review_output(items, packet):
                 "├─ 最新信號：{side} score={score}".format(
                     side=latest_signal.get("side", "?"),
                     score=latest_signal.get("score", "?"),
+                )
+            )
+        if advisory_plan:
+            refs = advisory_plan.get("reference_prices") if isinstance(advisory_plan.get("reference_prices"), dict) else {}
+            lines.append(
+                "├─ 審核草案：{action} add_allowed={add_allowed} qty_hint={qty} stop={stop} target={target} trail_floor={trail}".format(
+                    action=advisory_plan.get("primary_action", "?"),
+                    add_allowed=advisory_plan.get("add_allowed_after_review", "?"),
+                    qty=fmt_optional(advisory_plan.get("manual_max_quantity_hint")),
+                    stop=fmt_optional(refs.get("signal_stop_loss")),
+                    target=fmt_optional(refs.get("signal_take_profit")),
+                    trail=fmt_optional(refs.get("trailing_stop_floor_reference")),
                 )
             )
         if attention:

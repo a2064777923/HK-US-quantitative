@@ -888,6 +888,91 @@ def should_create_position_review(position):
     return urgency in ("high", "medium") or action != "hold_watch_review"
 
 
+def quantity_hint(quantity, fraction):
+    quantity = as_float(quantity)
+    if quantity <= 0 or fraction is None:
+        return None
+    value = quantity * fraction
+    return int(round(value)) if abs(value - round(value)) < 1e-9 else round(value, 6)
+
+
+def positive_price(value):
+    value = as_float(value)
+    return round(value, 4) if value > 0 else None
+
+
+def build_position_advisory_plan(position, action, role):
+    signal = position.get("signal") if isinstance(position.get("signal"), dict) else {}
+    order_prices = signal.get("order_prices") if isinstance(signal.get("order_prices"), dict) else {}
+    reasons = set(position.get("recommendation_reasons") or [])
+    risk_flags = signal.get("risk_flags") if isinstance(signal.get("risk_flags"), list) else []
+    side = signal.get("side")
+    pnl_pct = as_float(position.get("unrealized_pnl_pct"))
+    current_price = positive_price(position.get("current_price"))
+    avg_cost = positive_price(position.get("avg_cost"))
+    stop_loss = positive_price(order_prices.get("stop_loss"))
+    take_profit = positive_price(order_prices.get("take_profit"))
+
+    primary_by_action = {
+        "exit_review": "review_exit_all_or_fast_reduce",
+        "reduce_or_exit_review": "review_reduce_half_or_exit_if_context_worsens",
+        "take_profit_or_trailing_stop_review": "review_trailing_stop_or_partial_take_profit",
+        "risk_review": "review_hold_vs_reduce_risk",
+        "hold_watch_review": "review_hold_watch",
+    }
+    reduce_fraction = None
+    if action == "exit_review":
+        reduce_fraction = 1.0
+    elif action == "reduce_or_exit_review":
+        reduce_fraction = 0.5
+    elif action == "take_profit_or_trailing_stop_review" and (
+        "price_reached_signal_take_profit" in reasons or pnl_pct >= 15
+    ):
+        reduce_fraction = 0.25
+
+    add_allowed = (
+        action == "hold_watch_review"
+        and side == "BUY"
+        and pnl_pct >= 0
+        and not risk_flags
+        and not any(reason.startswith("position_loss_") for reason in reasons)
+    )
+    trailing_floor_candidates = [
+        value
+        for value in (avg_cost, stop_loss)
+        if value is not None and action == "take_profit_or_trailing_stop_review"
+    ]
+    review_flags = [
+        "manual_or_hermes_review_required",
+        "position_review_submits_no_orders",
+        "separate_order_path_required_for_any_action",
+    ]
+    if not add_allowed:
+        review_flags.append("add_requires_fresh_buy_signal_and_separate_order_path")
+    if reduce_fraction is not None:
+        review_flags.append("quantity_hint_not_lot_adjusted")
+
+    return {
+        "schema": "position_advisory_plan_v1",
+        "advisory_only": True,
+        "submits_orders": False,
+        "primary_action": primary_by_action.get(action, "review_hold_watch"),
+        "add_allowed_after_review": add_allowed,
+        "reduce_fraction_hint": reduce_fraction,
+        "manual_max_quantity_hint": quantity_hint(position.get("quantity"), reduce_fraction),
+        "quantity_hint_is_lot_adjusted": False,
+        "reference_prices": {
+            "current_price": current_price,
+            "avg_cost": avg_cost,
+            "signal_stop_loss": stop_loss,
+            "signal_take_profit": take_profit,
+            "trailing_stop_floor_reference": max(trailing_floor_candidates) if trailing_floor_candidates else None,
+        },
+        "review_flags": review_flags,
+        "supporting_reasons": list(position.get("recommendation_reasons") or [])[:8],
+    }
+
+
 def build_position_review_item(report, position):
     side = (position.get("signal") or {}).get("side")
     action = position_review_action(position)
@@ -931,6 +1016,7 @@ def build_position_review_item(report, position):
         },
         "recommendation": position.get("recommendation"),
         "review_reasons": position.get("recommendation_reasons", []),
+        "advisory_plan": build_position_advisory_plan(position, action, role),
         "llm_review_questions": [
             "Should this position be exited, reduced, held, or watched?",
             "Is the latest SELL/stop-loss evidence strong enough after considering market context and portfolio exposure?",
