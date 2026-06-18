@@ -296,7 +296,9 @@ def build_recommendations(summary):
     watch = summary["counts"]["by_signal_type"].get("WATCH", 0)
     missing_watchlist = summary["directional_quality"].get("missing_watchlist_metadata_count", 0)
     missing_strategy = summary["directional_quality"].get("missing_strategy_config_metadata_count", 0)
-    if total and watch / total > 0.5:
+    packet_review_count = summary["packet_review"].get("review_item_count", 0)
+    packet_watch_count = summary["packet_review"].get("watch_review_item_count", 0)
+    if total and watch / total > 0.5 and packet_watch_count > 0:
         recs.append("watch_alerts_dominate_queue_review_packet_should_filter_directional_alerts")
     if missing_watchlist:
         recs.append("directional_alerts_missing_watchlist_metadata_restart_v5_with_configured_watchlist")
@@ -324,6 +326,21 @@ def build_recommendations(summary):
     if not recs:
         recs.append("continue_shadow_observation_collect_more_session_data")
     return recs
+
+
+def build_diagnostic_notes(summary):
+    notes = []
+    total = summary["counts"]["total_alerts"]
+    watch = summary["counts"]["by_signal_type"].get("WATCH", 0)
+    if total and watch / total > 0.5:
+        packet_review = summary["packet_review"]
+        if packet_review.get("review_item_count", 0) == 0:
+            notes.append("watch_alerts_dominate_diagnostic_queue_no_fresh_packet_review_items")
+        elif packet_review.get("watch_review_item_count", 0) == 0:
+            notes.append("watch_alerts_dominate_diagnostic_queue_but_packet_filters_watch")
+        else:
+            notes.append("watch_alerts_dominate_packet_review_items")
+    return notes
 
 
 def report_status(summary):
@@ -377,6 +394,13 @@ def build_report(alerts, packet=None, sample_scope_mode="current"):
         if alert.get("_mark") is not None
     ]
     packet_review_count = packet_maps["count"]
+    packet_watch_count = len(
+        [
+            item
+            for item in packet_maps["by_id"].values()
+            if str(item.get("signal_type") or item.get("candidate_signal_type") or "").upper() == "WATCH"
+        ]
+    )
     total_alert_count = len(marked_alerts)
     directional_alert_count = len(directional)
     watch_alert_count = by_type.get("WATCH", 0)
@@ -434,6 +458,7 @@ def build_report(alerts, packet=None, sample_scope_mode="current"):
             "review_item_count": packet_review_count,
             "eligible_count": packet_maps["eligible_count"],
             "eligible_rate_pct": rate(packet_maps["eligible_count"], packet_review_count),
+            "watch_review_item_count": packet_watch_count,
             "status_counts": dict(packet_maps["status_counts"]),
             "blocking_reasons": dict(packet_maps["reason_counts"]),
         },
@@ -441,6 +466,7 @@ def build_report(alerts, packet=None, sample_scope_mode="current"):
         "symbol_conflicts": symbol_conflict_rows,
     }
     summary["recommendations"] = build_recommendations(summary)
+    summary["diagnostic_notes"] = build_diagnostic_notes(summary)
     summary["primary_recommendation"] = summary["recommendations"][0] if summary["recommendations"] else None
     summary["status"] = report_status(summary)
     return summary
@@ -484,6 +510,8 @@ def build_text_report(payload):
         conflicts = payload["symbol_conflicts"][:8]
         lines.append("Conflicts: " + ", ".join(f"{x['symbol']} B{x['buy_count']}/S{x['sell_count']}" for x in conflicts))
     lines.append("Recommendations: " + ", ".join(payload["recommendations"]))
+    if payload.get("diagnostic_notes"):
+        lines.append("Diagnostics: " + ", ".join(payload["diagnostic_notes"]))
     return "\n".join(lines)
 
 

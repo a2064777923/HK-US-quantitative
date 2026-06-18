@@ -214,6 +214,44 @@ class TradeUpdateTests(unittest.TestCase):
 
         self.assertFalse(args.cash_adjust)
 
+    def test_add_updates_current_price_snapshot_when_existing_price_missing(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+                self.fetchone_rows = [(42, 10, 80.0, 800.0, None, "USD")]
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+
+            def fetchone(self):
+                return self.fetchone_rows.pop(0)
+
+        class Connection:
+            def __init__(self):
+                self.cur = Cursor()
+
+            def cursor(self):
+                return self.cur
+
+            def commit(self):
+                pass
+
+            def close(self):
+                pass
+
+        conn = Connection()
+        args = argparse.Namespace(portfolio_id=3, symbol="PDD", qty=5, cost=82.0, cash_adjust=False)
+
+        with patch.object(trade_update, "get_connection", return_value=conn), contextlib.redirect_stdout(io.StringIO()):
+            code = trade_update.cmd_add(args)
+
+        self.assertEqual(code, 0)
+        update_sql, update_params = next(
+            (sql, params) for sql, params in conn.cur.calls if "UPDATE positions" in sql
+        )
+        self.assertIn("current_price = %s", update_sql)
+        self.assertEqual(update_params[4], 82.0)
+
     def test_write_commands_refuse_non_user_portfolio(self):
         with patch.dict("os.environ", {"QM_USER_PORTFOLIO_IDS": "3"}, clear=True):
             with self.assertRaisesRegex(RuntimeError, "Refusing to mutate portfolio 7"):

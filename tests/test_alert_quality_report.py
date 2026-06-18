@@ -124,6 +124,54 @@ class AlertQualityReportTests(unittest.TestCase):
             payload["recommendations"],
         )
 
+    def test_watch_dominated_diagnostic_queue_is_note_not_recommendation_when_packet_filters_watch(self):
+        packet = {
+            "generated_at": "2026-06-12T10:05:00",
+            "review_items": [
+                {"signal_id": "b1", "signal_type": "BUY", "eligible_for_approval": True, "intake": {"status": "dry_run"}},
+            ],
+        }
+        payload = report.build_report(
+            [
+                alert("b1", "AAPL", "BUY", 100, trigger="breakout"),
+                watch("w1", "AAPL", 101),
+                watch("w2", "MSFT", 102),
+                watch("w3", "TSLA", 103),
+            ],
+            packet,
+        )
+
+        self.assertNotIn(
+            "watch_alerts_dominate_queue_review_packet_should_filter_directional_alerts",
+            payload["recommendations"],
+        )
+        self.assertIn("watch_alerts_dominate_diagnostic_queue_but_packet_filters_watch", payload["diagnostic_notes"])
+        self.assertEqual(payload["packet_review"]["watch_review_item_count"], 0)
+
+    def test_watch_packet_review_items_still_trigger_filter_recommendation(self):
+        packet = {
+            "generated_at": "2026-06-12T10:05:00",
+            "review_items": [
+                {"signal_id": "w1", "signal_type": "WATCH", "eligible_for_approval": False, "intake": {"status": "rejected"}},
+            ],
+        }
+        payload = report.build_report(
+            [
+                alert("b1", "AAPL", "BUY", 100, trigger="breakout"),
+                watch("w1", "AAPL", 101),
+                watch("w2", "MSFT", 102),
+                watch("w3", "TSLA", 103),
+            ],
+            packet,
+        )
+
+        self.assertIn(
+            "watch_alerts_dominate_queue_review_packet_should_filter_directional_alerts",
+            payload["recommendations"],
+        )
+        self.assertIn("watch_alerts_dominate_packet_review_items", payload["diagnostic_notes"])
+        self.assertEqual(payload["packet_review"]["watch_review_item_count"], 1)
+
     def test_symbol_conflicts_detects_buy_and_sell_same_symbol(self):
         payload = report.build_report(
             [
