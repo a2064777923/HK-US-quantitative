@@ -1338,18 +1338,21 @@ def strong_upper_band_buy_context(
 ):
     if not momentum_breakout_enabled(quote_context):
         return False
-    buy_category_count = len(set(buy_categories or []))
+    canonical_buy_categories = {canonical_factor_category(category) for category in (buy_categories or [])}
+    canonical_buy_categories.discard("")
+    buy_category_count = len(canonical_buy_categories)
+    has_non_momentum_buy_support = bool(canonical_buy_categories - {"momentum"})
     change_pct = quote_change_pct(quote_context)
     if (
         change_pct is not None
         and change_pct >= bollinger_buy_min_change_pct(quote_context)
-        and buy_category_count >= 1
+        and has_non_momentum_buy_support
     ):
         return True
     if (
         five_day_momentum_pct is not None
         and five_day_momentum_pct >= MOMENTUM_THRESHOLD_PCT
-        and buy_category_count >= 1
+        and has_non_momentum_buy_support
     ):
         return True
     if (

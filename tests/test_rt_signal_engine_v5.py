@@ -1025,6 +1025,41 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertNotEqual(alert["candidate_signal_type"], "SELL")
         self.assertNotIn("布林上軌突破", [item["trigger"] for item in engine.alerts])
 
+    def test_bollinger_upper_with_only_momentum_support_remains_sell_candidate(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(
+            avg_volume=100_000,
+            score=0.8,
+            reasons=["當日動量+3.5%"],
+            factor_contributions=[
+                {"category": "same_session_momentum", "direction": "BUY", "score_delta": 0.4, "reason": "當日動量+3.5%"},
+            ],
+        )
+        indicators.bb_upper = 105
+        indicators.bb_lower = 95
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "JPM",
+            indicators,
+            {
+                "price": 106,
+                "high": 107,
+                "low": 104,
+                "prev_close": 102.4,
+                "volume": 100_000,
+                "market": "US",
+                "time": "2026-06-15 15:20:00",
+                "change_pct": 3.5,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "布林上軌突破"][0]
+        self.assertEqual(alert["candidate_signal_type"], "SELL")
+        self.assertNotIn("布林上軌動量突破", [item["trigger"] for item in engine.alerts])
+
     def test_bollinger_upper_without_momentum_context_remains_sell_candidate(self):
         engine = rt.TriggerEngine()
         indicators = FakeIndicators(
