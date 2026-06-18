@@ -161,7 +161,11 @@ def target_evidence_summary(target):
         "entry_order_ids",
         "exit_trade_id",
         "exit_order_id",
+        "exit_order_ids",
+        "signal_lineage_status",
+        "signal_lineage_statuses",
         "closed_trade_signal_traceability",
+        "closed_trade_samples",
         "pnl_hkd_est",
         "unrealized_pnl_hkd",
         "unrealized_pnl_pct",
@@ -192,23 +196,37 @@ def field_value(field, target, performance, target_type):
     evidence = safe_dict(target.get("evidence"))
     summary = safe_dict(performance.get("summary"))
     traceability = safe_dict(summary.get("closed_trade_signal_traceability"))
+    samples = safe_list(evidence.get("closed_trade_samples"))
+    first_sample = safe_dict(samples[0]) if samples else {}
     if field == "entry_order_id":
-        return first_value(evidence.get("entry_order_ids")) or evidence.get("entry_order_id") or "unknown_legacy_or_external"
+        return (
+            first_value(evidence.get("entry_order_ids"))
+            or first_value(first_sample.get("entry_order_ids"))
+            or evidence.get("entry_order_id")
+            or "unknown_legacy_or_external"
+        )
     if field == "signal_lineage_status":
-        return traceability.get("status") or "UNKNOWN"
+        return evidence.get("signal_lineage_status") or first_sample.get("trace_status") or traceability.get("status") or "UNKNOWN"
     if field == "next_evidence_required":
         return "lineage_qualified_v5_closed_trade_sample_and_forward_outcome_recovery"
     if field == "closed_at":
-        return evidence.get("closed_at") or ("open_position" if target_type == "open_position" else "<replace: closed trade date/time>")
+        return (
+            evidence.get("closed_at")
+            or first_sample.get("closed_at")
+            or ("open_position" if target_type == "open_position" else "<replace: closed trade date/time>")
+        )
     return None
 
 
 def apply_required_field_placeholders(draft, target, performance, postmortem_audit, target_type):
     for field in required_fields(performance, postmortem_audit):
-        if field in draft:
+        if field in draft and not audit.contains_placeholder(draft.get(field)):
             continue
         value = field_value(field, target, performance, target_type)
-        draft[field] = value if value not in (None, "") else f"<required: {field}>"
+        if value not in (None, ""):
+            draft[field] = value
+        elif field not in draft:
+            draft[field] = f"<required: {field}>"
     return draft
 
 

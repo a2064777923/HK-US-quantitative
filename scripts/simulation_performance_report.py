@@ -94,8 +94,30 @@ def simulation_risk(payload):
     return {}
 
 
-def symbol_trade_attribution(closed_trades):
-    stats = defaultdict(lambda: {"symbol": "", "closed_trade_count": 0, "wins": 0, "losses": 0, "pnl_hkd_est": 0.0})
+def symbol_trade_attribution(closed_trades, traceability=None):
+    stats = defaultdict(
+        lambda: {
+            "symbol": "",
+            "closed_trade_count": 0,
+            "wins": 0,
+            "losses": 0,
+            "pnl_hkd_est": 0.0,
+            "entry_order_ids": [],
+            "exit_order_ids": [],
+            "signal_lineage_statuses": [],
+            "closed_trade_samples": [],
+        }
+    )
+    trace_rows = {}
+    for row in (traceability or {}).get("sample") or []:
+        if not isinstance(row, dict):
+            continue
+        key = (
+            str(row.get("symbol") or "").upper(),
+            row.get("closed_at"),
+            round(as_float(row.get("pnl_hkd_est"), 0.0) or 0.0, 2),
+        )
+        trace_rows[key] = row
     for trade in closed_trades or []:
         symbol = str(trade.get("symbol") or "").upper()
         if not symbol:
@@ -109,11 +131,37 @@ def symbol_trade_attribution(closed_trades):
             row["wins"] += 1
         else:
             row["losses"] += 1
+        key = (symbol, trade.get("closed_at"), round(pnl, 2))
+        trace_row = trace_rows.get(key) or {}
+        ids = trade_order_ids(trade)
+        row["entry_order_ids"].extend(trace_row.get("entry_order_ids") or ids["entry"])
+        row["exit_order_ids"].extend(trace_row.get("exit_order_ids") or ids["exit"])
+        if trace_row.get("trace_status"):
+            row["signal_lineage_statuses"].append(trace_row.get("trace_status"))
+        row["closed_trade_samples"].append(
+            {
+                "closed_at": trade.get("closed_at"),
+                "pnl_hkd_est": round(pnl, 2),
+                "entry_order_ids": trace_row.get("entry_order_ids") or ids["entry"],
+                "exit_order_ids": trace_row.get("exit_order_ids") or ids["exit"],
+                "trace_status": trace_row.get("trace_status"),
+                "trace_reasons": trace_row.get("reasons") or [],
+            }
+        )
     rows = []
     for row in stats.values():
         count = row["closed_trade_count"]
         row["pnl_hkd_est"] = round(row["pnl_hkd_est"], 2)
         row["win_rate_pct"] = round(row["wins"] / count * 100, 2) if count else 0.0
+        row["entry_order_ids"] = unique_text(row["entry_order_ids"])
+        row["exit_order_ids"] = unique_text(row["exit_order_ids"])
+        row["signal_lineage_statuses"] = unique_text(row["signal_lineage_statuses"])
+        row["signal_lineage_status"] = (
+            row["signal_lineage_statuses"][0]
+            if len(row["signal_lineage_statuses"]) == 1
+            else ("MIXED" if row["signal_lineage_statuses"] else "UNKNOWN")
+        )
+        row["closed_trade_samples"] = row["closed_trade_samples"][:5]
         rows.append(row)
     return sorted(rows, key=lambda item: item["pnl_hkd_est"])
 
@@ -828,9 +876,9 @@ def build_report(portfolio_payload=None, order_state_payload=None):
     risk_report = simulation_risk(payload)
     trade_review = payload.get("simulation_trade_review") if isinstance(payload.get("simulation_trade_review"), dict) else {}
     closed_trades = trade_review.get("recent_closed") if isinstance(trade_review.get("recent_closed"), list) else []
-    symbol_rows = symbol_trade_attribution(closed_trades)
-    open_risk_rows = open_position_risk_rows(sim_report)
     traceability = build_closed_trade_signal_traceability(closed_trades, order_state_payload=order_state_payload)
+    symbol_rows = symbol_trade_attribution(closed_trades, traceability=traceability)
+    open_risk_rows = open_position_risk_rows(sim_report)
     v5_hermes_evidence = build_v5_hermes_evidence(traceability)
 
     reasons = []

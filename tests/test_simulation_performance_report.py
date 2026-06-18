@@ -119,6 +119,13 @@ class SimulationPerformanceReportTests(unittest.TestCase):
         self.assertTrue(payload["source"]["read_only"])
         self.assertFalse(payload["source"]["submits_orders"])
         self.assertEqual(payload["closed_trade_attribution_by_symbol"][0]["symbol"], "09988")
+        self.assertEqual(payload["closed_trade_attribution_by_symbol"][0]["entry_order_ids"], ["ord-buy-09988-a"])
+        self.assertEqual(payload["closed_trade_attribution_by_symbol"][0]["exit_order_ids"], ["ord-sell-09988-a"])
+        self.assertEqual(payload["closed_trade_attribution_by_symbol"][0]["signal_lineage_status"], "FULL")
+        self.assertEqual(
+            payload["closed_trade_attribution_by_symbol"][0]["closed_trade_samples"][0]["trace_status"],
+            "FULL",
+        )
         self.assertEqual(payload["closed_trade_signal_traceability"]["status"], "OK")
         self.assertEqual(payload["closed_trade_signal_traceability"]["fully_traceable_count"], 3)
         self.assertEqual(payload["v5_hermes_evidence"]["status"], "OK")
