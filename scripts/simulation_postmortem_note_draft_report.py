@@ -156,6 +156,12 @@ def target_evidence_summary(target):
         "symbol",
         "name",
         "market",
+        "closed_at",
+        "entry_trade_ids",
+        "entry_order_ids",
+        "exit_trade_id",
+        "exit_order_id",
+        "closed_trade_signal_traceability",
         "pnl_hkd_est",
         "unrealized_pnl_hkd",
         "unrealized_pnl_pct",
@@ -168,12 +174,50 @@ def target_evidence_summary(target):
     return {key: evidence.get(key) for key in keys if key in evidence}
 
 
+def first_value(value):
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
+def required_fields(performance, postmortem_audit):
+    contract = safe_dict(postmortem_audit.get("note_contract"))
+    fields = contract.get("required_fields")
+    if isinstance(fields, list) and fields:
+        return audit.unique_fields(fields)
+    return audit.required_note_fields(performance)
+
+
+def field_value(field, target, performance, target_type):
+    evidence = safe_dict(target.get("evidence"))
+    summary = safe_dict(performance.get("summary"))
+    traceability = safe_dict(summary.get("closed_trade_signal_traceability"))
+    if field == "entry_order_id":
+        return first_value(evidence.get("entry_order_ids")) or evidence.get("entry_order_id") or "unknown_legacy_or_external"
+    if field == "signal_lineage_status":
+        return traceability.get("status") or "UNKNOWN"
+    if field == "next_evidence_required":
+        return "lineage_qualified_v5_closed_trade_sample_and_forward_outcome_recovery"
+    if field == "closed_at":
+        return evidence.get("closed_at") or ("open_position" if target_type == "open_position" else "<replace: closed trade date/time>")
+    return None
+
+
+def apply_required_field_placeholders(draft, target, performance, postmortem_audit, target_type):
+    for field in required_fields(performance, postmortem_audit):
+        if field in draft:
+            continue
+        value = field_value(field, target, performance, target_type)
+        draft[field] = value if value not in (None, "") else f"<required: {field}>"
+    return draft
+
+
 def draft_object(target, performance, contexts, generated_at):
     target_type = audit.canonical_target_type(target.get("target_type"))
     symbol = normalized_symbol(target.get("symbol"))
     statuses = context_statuses(contexts)
     event_ids = latest_symbol_context_ids(symbol, contexts)
-    return {
+    draft = {
         "schema": "simulation_trade_postmortem_note_v1",
         "draft_only": True,
         "portfolio_id": portfolio_id(performance),
@@ -213,6 +257,7 @@ def draft_object(target, performance, contexts, generated_at):
             ),
         },
     }
+    return draft
 
 
 def missing_targets(postmortem_audit, performance):
@@ -246,7 +291,16 @@ def build_report(
     }
     generated_at = now_iso()
     targets = missing_targets(postmortem_audit, performance)
-    drafts = [draft_object(target, performance, contexts, generated_at) for target in targets]
+    drafts = [
+        apply_required_field_placeholders(
+            draft_object(target, performance, contexts, generated_at),
+            target,
+            performance,
+            postmortem_audit,
+            audit.canonical_target_type(target.get("target_type")),
+        )
+        for target in targets
+    ]
     status = "ACTION_REQUIRED" if drafts else "OK"
     return {
         "schema": "simulation_postmortem_note_draft_report_v1",

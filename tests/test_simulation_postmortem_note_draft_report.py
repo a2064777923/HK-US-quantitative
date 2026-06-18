@@ -27,6 +27,19 @@ def simulation_performance(status="FAIL"):
                 "recommendation": "hold",
             }
         ],
+        "failure_postmortem": {
+            "schema": "simulation_failure_postmortem_v1",
+            "status": "ACTION_REQUIRED",
+            "required_learning_record": {
+                "schema": "simulation_trade_postmortem_note_requirements_v1",
+                "required_fields": [
+                    "symbol",
+                    "entry_order_id",
+                    "signal_lineage_status",
+                    "next_evidence_required",
+                ],
+            },
+        },
     }
 
 
@@ -41,7 +54,7 @@ def postmortem_audit_payload():
                 "target_type": "closed_trade",
                 "symbol": "LI",
                 "reason": "worst_closed_symbol_negative_pnl",
-                "evidence": {"symbol": "LI", "pnl_hkd_est": -265.33},
+                "evidence": {"symbol": "LI", "pnl_hkd_est": -265.33, "entry_order_ids": ["ord-li-1"]},
             },
             {
                 "target_id": "open_position:00929",
@@ -101,6 +114,12 @@ class SimulationPostmortemNoteDraftReportTests(unittest.TestCase):
         self.assertEqual(closed["fundamentals_context_status"], "RISK")
         self.assertEqual(closed["source_reliability_status"], "DEGRADED")
         self.assertEqual(closed["event_or_news_context_ids"], ["news-li-1"])
+        self.assertEqual(closed["entry_order_id"], "ord-li-1")
+        self.assertEqual(closed["signal_lineage_status"], "UNKNOWN")
+        self.assertEqual(
+            closed["next_evidence_required"],
+            "lineage_qualified_v5_closed_trade_sample_and_forward_outcome_recovery",
+        )
         self.assertIn("<replace:", closed["reviewed_at"])
         self.assertTrue(payload["append_instructions"]["manual_only"])
         self.assertTrue(payload["append_instructions"]["remove_draft_only_before_append"])

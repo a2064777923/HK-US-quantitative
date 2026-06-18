@@ -57,6 +57,12 @@ PLACEHOLDER_STRINGS = {
     "specific lesson learned from this loss or risk item",
 }
 
+NOTE_FIELD_TEMPLATES = {
+    "entry_order_id": "entry order id, or explicit unknown when legacy/external lineage is unavailable",
+    "signal_lineage_status": "OK|LEGACY_OR_EXTERNAL|MISSING|UNKNOWN",
+    "next_evidence_required": "specific forward evidence required before strategy/watchlist promotion",
+}
+
 
 def now_iso():
     return datetime.now().isoformat(timespec="seconds")
@@ -234,6 +240,35 @@ def contains_placeholder(value):
     return False
 
 
+def unique_fields(fields):
+    rows = []
+    seen = set()
+    for field in fields or []:
+        if not isinstance(field, str):
+            continue
+        name = field.strip()
+        if not name or name in seen:
+            continue
+        rows.append(name)
+        seen.add(name)
+    return rows
+
+
+def required_note_fields(simulation_performance=None):
+    performance = simulation_performance if isinstance(simulation_performance, dict) else {}
+    postmortem = performance.get("failure_postmortem") if isinstance(performance.get("failure_postmortem"), dict) else {}
+    required_record = (
+        postmortem.get("required_learning_record")
+        if isinstance(postmortem.get("required_learning_record"), dict)
+        else {}
+    )
+    required_fields = list(REQUIRED_NOTE_FIELDS)
+    learning_fields = required_record.get("required_fields")
+    if isinstance(learning_fields, list):
+        required_fields.extend(learning_fields)
+    return unique_fields(required_fields)
+
+
 def validate_note(note, required_fields=None):
     required_fields = tuple(required_fields or REQUIRED_NOTE_FIELDS)
     reasons = []
@@ -301,35 +336,38 @@ def audit_notes(notes, targets, required_fields=None):
 
 
 def note_contract(required_fields=None):
-    required_fields = list(required_fields or REQUIRED_NOTE_FIELDS)
+    required_fields = unique_fields(required_fields or REQUIRED_NOTE_FIELDS)
+    append_jsonl_object = {
+        "schema": "simulation_trade_postmortem_note_v1",
+        "portfolio_id": "<copy from simulation_performance.summary.portfolio_id>",
+        "symbol": "<required target symbol>",
+        "target_type": "closed_trade|open_position",
+        "reviewed_at": "ISO-8601 datetime",
+        "reviewer": "hermes|operator",
+        "read_only": True,
+        "submits_orders": False,
+        "changes_strategy": False,
+        "changes_portfolio": False,
+        "auto_apply": False,
+        "closed_at": "closed trade timestamp/date, or open_position for open holdings",
+        "entry_signal_id_or_trade_id": "signal id, trade id, or explicit unknown",
+        "exit_reason": "exit reason, or open_position_not_closed for open holdings",
+        "failure_category": "entry_timing|signal_quality|stop_exit_policy|position_sizing|stale_data_source_issue|event_or_news_surprise|fundamentals_surprise|market_regime_shift|execution_quality|portfolio_risk_management|other",
+        "market_context_status": "reviewed market context status",
+        "intraday_context_status": "reviewed intraday context status",
+        "event_or_news_context_ids": [],
+        "fundamentals_context_status": "reviewed fundamentals status",
+        "source_reliability_status": "reviewed source reliability status",
+        "lesson": "specific lesson learned from this loss or risk item",
+        "proposed_change": "none, or a concrete proposal that remains manual/hash-confirmed",
+        "promotion_gate": "manual_and_hash_confirmed_before_strategy_or_watchlist_change",
+    }
+    for field in required_fields:
+        append_jsonl_object.setdefault(field, NOTE_FIELD_TEMPLATES.get(field, f"<required: {field}>"))
     return {
         "schema": "simulation_postmortem_note_contract_v1",
         "note_file": NOTE_FILE,
-        "append_jsonl_object": {
-            "schema": "simulation_trade_postmortem_note_v1",
-            "portfolio_id": "<copy from simulation_performance.summary.portfolio_id>",
-            "symbol": "<required target symbol>",
-            "target_type": "closed_trade|open_position",
-            "reviewed_at": "ISO-8601 datetime",
-            "reviewer": "hermes|operator",
-            "read_only": True,
-            "submits_orders": False,
-            "changes_strategy": False,
-            "changes_portfolio": False,
-            "auto_apply": False,
-            "closed_at": "closed trade timestamp/date, or open_position for open holdings",
-            "entry_signal_id_or_trade_id": "signal id, trade id, or explicit unknown",
-            "exit_reason": "exit reason, or open_position_not_closed for open holdings",
-            "failure_category": "entry_timing|signal_quality|stop_exit_policy|position_sizing|stale_data_source_issue|event_or_news_surprise|fundamentals_surprise|market_regime_shift|execution_quality|portfolio_risk_management|other",
-            "market_context_status": "reviewed market context status",
-            "intraday_context_status": "reviewed intraday context status",
-            "event_or_news_context_ids": [],
-            "fundamentals_context_status": "reviewed fundamentals status",
-            "source_reliability_status": "reviewed source reliability status",
-            "lesson": "specific lesson learned from this loss or risk item",
-            "proposed_change": "none, or a concrete proposal that remains manual/hash-confirmed",
-            "promotion_gate": "manual_and_hash_confirmed_before_strategy_or_watchlist_change",
-        },
+        "append_jsonl_object": append_jsonl_object,
         "required_fields": required_fields,
         "hard_rules": [
             "Postmortem notes are audit artifacts only; they do not submit orders, change portfolio state, or alter strategy settings.",
@@ -354,18 +392,7 @@ def recommendations(status, missing_targets, failed_notes, targets):
 
 def build_report(simulation_performance=None, notes=None, note_warnings=None):
     performance = simulation_performance if isinstance(simulation_performance, dict) else {}
-    postmortem = performance.get("failure_postmortem") if isinstance(performance.get("failure_postmortem"), dict) else {}
-    required_record = (
-        postmortem.get("required_learning_record")
-        if isinstance(postmortem.get("required_learning_record"), dict)
-        else {}
-    )
-    learning_fields = required_record.get("required_fields")
-    required_fields = list(REQUIRED_NOTE_FIELDS)
-    if isinstance(learning_fields, list):
-        for field in learning_fields:
-            if isinstance(field, str) and field not in required_fields:
-                required_fields.append(field)
+    required_fields = required_note_fields(performance)
 
     targets = required_targets(performance)
     note_rows = list(notes or [])

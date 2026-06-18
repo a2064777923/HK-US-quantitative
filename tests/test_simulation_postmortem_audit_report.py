@@ -89,6 +89,25 @@ class SimulationPostmortemAuditReportTests(unittest.TestCase):
         self.assertIn("open_position:00929", target_ids)
         self.assertIn("failure_category", payload["note_contract"]["required_fields"])
 
+    def test_note_contract_includes_dynamic_learning_fields(self):
+        performance = simulation_performance()
+        performance["failure_postmortem"]["required_learning_record"]["required_fields"] = [
+            "symbol",
+            "entry_order_id",
+            "signal_lineage_status",
+            "next_evidence_required",
+        ]
+
+        payload = report.build_report(performance, [])
+        contract = payload["note_contract"]
+
+        self.assertIn("entry_order_id", contract["required_fields"])
+        self.assertIn("signal_lineage_status", contract["required_fields"])
+        self.assertIn("next_evidence_required", contract["required_fields"])
+        self.assertIn("entry_order_id", contract["append_jsonl_object"])
+        self.assertIn("signal_lineage_status", contract["append_jsonl_object"])
+        self.assertIn("next_evidence_required", contract["append_jsonl_object"])
+
     def test_complete_notes_cover_required_targets(self):
         payload = report.build_report(
             simulation_performance(),
