@@ -106,6 +106,7 @@ The packet combines:
 - user/simulation `position_review` items.
 
 Hermes judgments are advisory artifacts. Position review decisions must stay advisory and must not be confused with user-broker order instructions.
+By default, trade `review_items` are selected only from fresh confirmed directional alerts within the order-intake freshness window. Stale alerts remain in `/tmp/rt_signal_alerts.jsonl`, outcome reports, and non-trade diagnostics, but they are not re-fed to Hermes as current trade-approval work. Operators can run `hermes_review_packet.py --include-stale` for debugging old alerts.
 
 The Feishu/operator bridge consumes this layer, but does not bypass it. With default settings, technical BUY/SELL alerts blocked by Hermes or execution readiness are marked sent locally so they do not repeat-spam Feishu, and remain available in JSONL/event-store data for learning and postmortem reports. If an operator wants diagnostic noise during debugging, set `RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS=1`; those messages are titled as safety-gate-blocked candidates and do not run intake.
 

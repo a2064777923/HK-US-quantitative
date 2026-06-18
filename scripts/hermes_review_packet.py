@@ -152,6 +152,12 @@ POSITION_JUDGMENT_AUDIT_FILE = os.environ.get(
 )
 DEFAULT_REVIEW_LIMIT = int(os.environ.get("HERMES_REVIEW_LIMIT", "20"))
 DEFAULT_QUEUE_SCAN_LIMIT = int(os.environ.get("HERMES_QUEUE_SCAN_LIMIT", "500"))
+MAX_REVIEW_ALERT_AGE_MINUTES = int(
+    os.environ.get(
+        "HERMES_MAX_REVIEW_ALERT_AGE_MINUTES",
+        os.environ.get("RT_ORDER_MAX_ALERT_AGE_MINUTES", "60"),
+    )
+)
 MAX_READINESS_REPORT_AGE_HOURS = int(
     os.environ.get(
         "HERMES_MAX_READINESS_REPORT_AGE_HOURS",
@@ -181,6 +187,27 @@ def parse_timestamp(value):
         return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
     except Exception:
         return None
+
+
+def alert_generated_at(alert):
+    if not isinstance(alert, dict):
+        return None
+    return parse_timestamp(alert.get("generated_at"))
+
+
+def is_fresh_review_alert(alert, now=None, max_age_minutes=MAX_REVIEW_ALERT_AGE_MINUTES):
+    timestamp = alert_generated_at(alert)
+    if timestamp is None:
+        return True
+    now = now or datetime.now()
+    try:
+        max_age_minutes = int(max_age_minutes)
+    except (TypeError, ValueError):
+        max_age_minutes = MAX_REVIEW_ALERT_AGE_MINUTES
+    if max_age_minutes <= 0:
+        return True
+    age_minutes = (now - timestamp).total_seconds() / 60
+    return 0 <= age_minutes <= max_age_minutes
 
 
 def save_json_atomic(path, payload):
@@ -575,6 +602,8 @@ def select_review_alerts(
     include_watch=False,
     include_unconfirmed=False,
     sample_scope_mode="current",
+    fresh_only=False,
+    now=None,
 ):
     scoped_alerts, _scope = apply_sample_scope(alerts, sample_scope_mode=sample_scope_mode)
     if include_watch:
@@ -585,6 +614,8 @@ def select_review_alerts(
             for alert in scoped_alerts
             if is_directional(alert) and (include_unconfirmed or alert.get("confirmed") is True)
         ]
+    if fresh_only:
+        candidates = [alert for alert in candidates if is_fresh_review_alert(alert, now=now)]
     return candidates[-limit:] if limit and limit > 0 else candidates
 
 
@@ -611,6 +642,7 @@ def load_alerts(
     include_watch=False,
     include_unconfirmed=False,
     sample_scope_mode="current",
+    fresh_only=False,
 ):
     source_alerts = load_source_alerts(alert_json, alert_file, queue_file, scan_limit)
     return select_review_alerts(
@@ -619,6 +651,7 @@ def load_alerts(
         include_watch=include_watch,
         include_unconfirmed=include_unconfirmed,
         sample_scope_mode=sample_scope_mode,
+        fresh_only=fresh_only,
     )
 
 
@@ -4190,6 +4223,11 @@ def parse_args():
         action="store_true",
         help="include unconfirmed BUY/SELL alerts in review_items",
     )
+    parser.add_argument(
+        "--include-stale",
+        action="store_true",
+        help="include alerts older than the Hermes/order-intake freshness window for debugging",
+    )
     parser.add_argument("--sample-scope", choices=("current", "all"), default="current")
     parser.add_argument("--state-file", default=intake.STATE_FILE)
     parser.add_argument("--judgment-file", default=intake.JUDGMENT_FILE)
@@ -4271,6 +4309,7 @@ def main():
         include_watch=args.include_watch,
         include_unconfirmed=args.include_unconfirmed,
         sample_scope_mode=args.sample_scope,
+        fresh_only=not args.include_stale,
     )
     health_payload = system_health_check.build_payload()
     portfolio_payload = portfolio_report.build_payload(

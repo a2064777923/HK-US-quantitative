@@ -4335,6 +4335,33 @@ class HermesReviewPacketTests(unittest.TestCase):
 
         self.assertEqual([item["signal_id"] for item in selected], ["w1", "b1", "w2"])
 
+    def test_select_review_alerts_skips_stale_alerts_by_default(self):
+        old = alert("old")
+        old["generated_at"] = "2026-06-18T10:00:00"
+        fresh = alert("fresh")
+        fresh["generated_at"] = "2026-06-18T10:45:00"
+
+        selected = packet.select_review_alerts(
+            [old, fresh],
+            limit=10,
+            fresh_only=True,
+            now=datetime(2026, 6, 18, 11, 1, 0),
+        )
+
+        self.assertEqual([item["signal_id"] for item in selected], ["fresh"])
+
+    def test_select_review_alerts_keeps_stale_when_freshness_not_requested(self):
+        old = alert("old")
+        old["generated_at"] = "2026-06-18T10:00:00"
+
+        selected = packet.select_review_alerts(
+            [old],
+            limit=10,
+            now=datetime(2026, 6, 18, 11, 30, 0),
+        )
+
+        self.assertEqual([item["signal_id"] for item in selected], ["old"])
+
     def test_sample_scope_uses_downgraded_directional_candidate_side(self):
         old = alert("old")
         old.update({"strategy_config_id": "cfg-old", "watchlist_id": "wl"})
