@@ -119,6 +119,46 @@ class UniverseHygieneReportTests(unittest.TestCase):
         self.assertIn("missing_daily_klines", candidate["issues"])
         self.assertEqual(candidate["recommended_action"], "candidate_remove_from_stock_universe")
 
+    def test_us_non_common_equity_instruments_are_remove_candidates(self):
+        payload = report.build_report(
+            [
+                row("MSFT", "2026-06-12", market="US", exchange="NASDAQ"),
+                row(
+                    "XYZW",
+                    "2026-06-12",
+                    market="US",
+                    exchange="NASDAQ",
+                    history=80,
+                )
+                | {"name": "Example Acquisition Corp. Warrant"},
+                row(
+                    "ABCU",
+                    "2026-06-12",
+                    market="US",
+                    exchange="NASDAQ",
+                    history=80,
+                )
+                | {"name": "Example Acquisition Corp Units"},
+                row(
+                    "ABCN",
+                    "2026-06-12",
+                    market="US",
+                    exchange="NYSE",
+                    history=80,
+                )
+                | {"name": "Example 9.875% Senior Notes Due 2030"},
+            ]
+        )
+        us = payload["markets"]["US"]
+        candidates = {item["symbol"]: item for item in us["high_priority_candidates"]}
+
+        self.assertEqual(us["problem_symbol_count"], 3)
+        self.assertNotIn("MSFT", candidates)
+        for symbol in ("XYZW", "ABCU", "ABCN"):
+            self.assertEqual(candidates[symbol]["recommended_action"], "candidate_remove_from_stock_universe")
+            self.assertIn("unsupported_us_equity_instrument", candidates[symbol]["issues"])
+            self.assertIn(symbol, payload["proposal"]["candidate_deactivate_or_remap"]["US"])
+
     def test_problem_lists_are_complete_for_bulk_universe_cleanup(self):
         rows = [row("AAPL", "2026-06-12", market="US", exchange="NASDAQ")]
         rows.extend(

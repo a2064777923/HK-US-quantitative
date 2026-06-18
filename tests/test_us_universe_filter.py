@@ -17,7 +17,10 @@ class USUniverseFilterTests(unittest.TestCase):
     def test_rejects_non_common_stock_instrument_names(self):
         self.assertFalse(is_supported_us_equity({"symbol": "ABR-D", "name": "Arbor Realty Trust Preferred Stock"}))
         self.assertFalse(is_supported_us_equity({"symbol": "XYZW", "name": "Example Warrant"}))
+        self.assertFalse(is_supported_us_equity({"symbol": "XYZU", "name": "Example Acquisition Corp. Units"}))
+        self.assertFalse(is_supported_us_equity({"symbol": "XYZR", "name": "Example Acquisition Corp Rights"}))
         self.assertFalse(is_supported_us_equity({"symbol": "ABC", "name": "Example Notes Due 2030"}))
+        self.assertFalse(is_supported_us_equity({"symbol": "ABC", "name": "Example 9.875% Senior Notes Due 2030"}))
         self.assertTrue(is_supported_us_equity({"symbol": "MSFT", "name": "Microsoft Corporation Common Stock"}))
 
 

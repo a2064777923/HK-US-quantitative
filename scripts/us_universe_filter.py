@@ -2,13 +2,24 @@
 
 EXCLUDED_US_NAME_TERMS = (
     "preferred stock",
+    "preferred shares",
+    "preferred share",
+    "preference shares",
     "preference share",
     "perpetual preferred",
     "depositary shares",
+    "depositary share",
     "warrant",
+    "warrants",
+    "right",
+    "rights",
     "right to purchase",
+    "unit",
+    "units",
     "unit expiring",
+    "senior notes",
     "notes due",
+    "note due",
     "debentures due",
 )
 

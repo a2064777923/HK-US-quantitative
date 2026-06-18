@@ -9,6 +9,11 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime
 
+try:
+    from us_universe_filter import is_supported_us_equity
+except ImportError:
+    from scripts.us_universe_filter import is_supported_us_equity
+
 
 DB_CONTAINER = os.environ.get("QM_DB_CONTAINER", "quantmind-db")
 DB_USER = os.environ.get("QM_DB_USER", "quantmind")
@@ -137,6 +142,12 @@ def valid_symbol_format(row):
     return True
 
 
+def supported_common_equity(row):
+    if row.get("exchange") in ("NASDAQ", "NYSE"):
+        return is_supported_us_equity(row)
+    return True
+
+
 def fetch_universe_rows():
     data_source_expr = "k.data_source" if "data_source" in table_columns("klines") else "'missing'"
     sql = """
@@ -226,6 +237,10 @@ def classify_symbol(row, market_latest_date):
 
     if not valid_symbol_format(row):
         issues.append("symbol_format_unusual_for_exchange")
+        severity = "high"
+        action = "candidate_remove_from_stock_universe"
+    elif not supported_common_equity(row):
+        issues.append("unsupported_us_equity_instrument")
         severity = "high"
         action = "candidate_remove_from_stock_universe"
 
