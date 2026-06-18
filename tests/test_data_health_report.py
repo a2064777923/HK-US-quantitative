@@ -1,5 +1,6 @@
 import unittest
 from datetime import date, datetime, timedelta
+from unittest.mock import patch
 
 from scripts import data_health_report as report
 
@@ -81,6 +82,27 @@ def feature(status="signal_ready", ready=2, expected=2):
 
 
 class DataHealthReportTests(unittest.TestCase):
+    def test_fetch_kline_rows_projects_market_date_for_history_window(self):
+        captured = {}
+
+        def fake_psql(sql, timeout=90):
+            captured["sql"] = sql
+            return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        original_cache = dict(report._COLUMN_CACHE)
+        try:
+            report._COLUMN_CACHE["klines"] = {"data_source"}
+            with patch.object(report, "psql", side_effect=fake_psql):
+                rows, warnings = report.fetch_kline_rows()
+        finally:
+            report._COLUMN_CACHE.clear()
+            report._COLUMN_CACHE.update(original_cache)
+
+        self.assertEqual(rows, [])
+        self.assertEqual(warnings, [])
+        self.assertIn("market_clock.market_date", captured["sql"])
+        self.assertIn("AND k.timestamp >= (a.market_date - INTERVAL '120 days')", captured["sql"])
+
     def test_ok_when_latest_klines_integrity_and_signals_are_current(self):
         stocks = [stock("HK", "00700"), stock("HK", "09988")]
         rows = history("HK", "00700", "2026-06-12") + history("HK", "09988", "2026-06-12")

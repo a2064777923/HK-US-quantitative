@@ -879,31 +879,6 @@ def fetch_kline_rows():
             WHERE is_active = true
               AND exchange IN ('HKEX','NASDAQ','NYSE')
         ),
-        raw_daily AS (
-            SELECT k.symbol,
-                   k.timestamp::date AS trade_date,
-                   count(*) AS raw_symbol_day_row_count
-            FROM klines k
-            JOIN active a ON a.symbol = k.symbol
-            WHERE k.interval = 'day'
-            GROUP BY k.symbol, k.timestamp::date
-        ),
-        daily_bar AS (
-            SELECT DISTINCT ON (k.symbol, k.timestamp::date)
-                   k.symbol,
-                   k.timestamp::date AS trade_date,
-                   k.open_price, k.high_price, k.low_price, k.close_price,
-                   k.volume, {data_source_expr} AS data_source,
-                   COALESCE(r.raw_symbol_day_row_count, 0) AS raw_symbol_day_row_count,
-                   GREATEST(COALESCE(r.raw_symbol_day_row_count, 0) - 1, 0) AS duplicate_symbol_day_count
-            FROM klines k
-            JOIN active a ON a.symbol = k.symbol
-            LEFT JOIN raw_daily r
-              ON r.symbol = k.symbol
-             AND r.trade_date = k.timestamp::date
-            WHERE k.interval = 'day'
-            ORDER BY k.symbol, k.timestamp::date, k.timestamp DESC
-        ),
         market_clock AS (
             SELECT
                 (now() AT TIME ZONE '{market_timezone}')::date AS market_date,
@@ -911,6 +886,7 @@ def fetch_kline_rows():
         ),
         active_expected AS (
             SELECT a.market, a.exchange, a.symbol,
+                   market_clock.market_date,
                    CASE
                        WHEN a.market = 'US' THEN
                            (market_clock.market_date - CASE WHEN market_clock.market_time >= TIME '{us_complete}' THEN 1 ELSE 2 END)
@@ -919,27 +895,6 @@ def fetch_kline_rows():
                        END AS expected_completed_date
             FROM active a
             CROSS JOIN market_clock
-        ),
-        completed_bar AS (
-            SELECT DISTINCT ON (a.symbol)
-                   a.symbol,
-                   d.trade_date, d.open_price, d.high_price, d.low_price, d.close_price,
-                   d.volume, d.data_source, d.raw_symbol_day_row_count, d.duplicate_symbol_day_count
-            FROM active_expected a
-            LEFT JOIN daily_bar d
-              ON d.symbol = a.symbol
-             AND d.trade_date <= a.expected_completed_date
-            ORDER BY a.symbol, d.trade_date DESC NULLS LAST
-        ),
-        newest_bar AS (
-            SELECT DISTINCT ON (a.symbol)
-                   a.symbol,
-                   d.trade_date, d.open_price, d.high_price, d.low_price, d.close_price,
-                   d.volume, d.data_source, d.raw_symbol_day_row_count, d.duplicate_symbol_day_count
-            FROM active_expected a
-            LEFT JOIN daily_bar d
-              ON d.symbol = a.symbol
-            ORDER BY a.symbol, d.trade_date DESC NULLS LAST
         ),
         latest AS (
             SELECT a.market, a.exchange, a.symbol,
@@ -951,44 +906,85 @@ def fetch_kline_rows():
                    COALESCE(completed.close_price, newest.close_price) AS close_price,
                    COALESCE(completed.volume, newest.volume) AS volume,
                    COALESCE(completed.data_source, newest.data_source) AS data_source,
-                   COALESCE(completed.raw_symbol_day_row_count, newest.raw_symbol_day_row_count, 0) AS raw_symbol_day_row_count,
-                   COALESCE(completed.duplicate_symbol_day_count, newest.duplicate_symbol_day_count, 0) AS duplicate_symbol_day_count
+                   COALESCE(completed_counts.raw_symbol_day_row_count, newest_counts.raw_symbol_day_row_count, 0) AS raw_symbol_day_row_count,
+                   COALESCE(completed_counts.duplicate_symbol_day_count, newest_counts.duplicate_symbol_day_count, 0) AS duplicate_symbol_day_count,
+                   COALESCE(history.history_rows_120d, 0) AS history_rows_120d,
+                   COALESCE(history.duplicate_symbol_day_count_120d, 0) AS duplicate_symbol_day_count_120d,
+                   minute_latest.latest_minute_date,
+                   minute_latest.latest_minute_data_source
             FROM active_expected a
-            LEFT JOIN completed_bar completed ON completed.symbol = a.symbol
-            LEFT JOIN newest_bar newest ON newest.symbol = a.symbol
-        ),
-        history AS (
-            SELECT a.symbol,
-                   count(d.*) FILTER (WHERE d.trade_date >= market_clock.market_date - INTERVAL '120 days') AS history_rows_120d,
-                   COALESCE(sum(d.duplicate_symbol_day_count), 0) AS duplicate_symbol_day_count_120d
-            FROM active a
-            CROSS JOIN market_clock
-            LEFT JOIN daily_bar d
-              ON d.symbol = a.symbol
-            GROUP BY a.symbol
-        ),
-        minute_latest AS (
-            SELECT DISTINCT ON (a.symbol)
-                   a.symbol,
-                   k.timestamp::date AS latest_minute_date,
-                   {minute_data_source_expr} AS latest_minute_data_source
-            FROM active a
-            LEFT JOIN klines k
-              ON k.symbol = a.symbol
-             AND k.interval = 'min'
-            ORDER BY a.symbol, k.timestamp DESC NULLS LAST
+            LEFT JOIN LATERAL (
+                SELECT k.timestamp::date AS trade_date,
+                       k.open_price, k.high_price, k.low_price, k.close_price,
+                       k.volume, {data_source_expr} AS data_source
+                FROM klines k
+                WHERE k.symbol = a.symbol
+                  AND k.interval = 'day'
+                  AND k.timestamp < (a.expected_completed_date + INTERVAL '1 day')
+                ORDER BY k.timestamp DESC
+                LIMIT 1
+            ) completed ON true
+            LEFT JOIN LATERAL (
+                SELECT k.timestamp::date AS trade_date,
+                       k.open_price, k.high_price, k.low_price, k.close_price,
+                       k.volume, {data_source_expr} AS data_source
+                FROM klines k
+                WHERE k.symbol = a.symbol
+                  AND k.interval = 'day'
+                ORDER BY k.timestamp DESC
+                LIMIT 1
+            ) newest ON true
+            LEFT JOIN LATERAL (
+                SELECT count(*) AS raw_symbol_day_row_count,
+                       GREATEST(count(*) - 1, 0) AS duplicate_symbol_day_count
+                FROM klines k
+                WHERE k.symbol = a.symbol
+                  AND k.interval = 'day'
+                  AND completed.trade_date IS NOT NULL
+                  AND k.timestamp >= completed.trade_date::timestamp
+                  AND k.timestamp < (completed.trade_date + INTERVAL '1 day')
+            ) completed_counts ON true
+            LEFT JOIN LATERAL (
+                SELECT count(*) AS raw_symbol_day_row_count,
+                       GREATEST(count(*) - 1, 0) AS duplicate_symbol_day_count
+                FROM klines k
+                WHERE k.symbol = a.symbol
+                  AND k.interval = 'day'
+                  AND newest.trade_date IS NOT NULL
+                  AND k.timestamp >= newest.trade_date::timestamp
+                  AND k.timestamp < (newest.trade_date + INTERVAL '1 day')
+            ) newest_counts ON true
+            LEFT JOIN LATERAL (
+                SELECT count(*) AS history_rows_120d,
+                       COALESCE(sum(GREATEST(day_count - 1, 0)), 0) AS duplicate_symbol_day_count_120d
+                FROM (
+                    SELECT k.timestamp::date AS trade_date, count(*) AS day_count
+                    FROM klines k
+                    WHERE k.symbol = a.symbol
+                      AND k.interval = 'day'
+                      AND k.timestamp >= (a.market_date - INTERVAL '120 days')
+                    GROUP BY k.timestamp::date
+                ) grouped
+            ) history ON true
+            LEFT JOIN LATERAL (
+                SELECT k.timestamp::date AS latest_minute_date,
+                       {minute_data_source_expr} AS latest_minute_data_source
+                FROM klines k
+                WHERE k.symbol = a.symbol
+                  AND k.interval = 'min'
+                ORDER BY k.timestamp DESC
+                LIMIT 1
+            ) minute_latest ON true
         )
-        SELECT l.market, l.exchange, l.symbol, COALESCE(h.history_rows_120d, 0),
-               l.latest_date, l.open_price, l.high_price, l.low_price, l.close_price,
-               l.volume, l.data_source, m.latest_minute_date, m.latest_minute_data_source,
-               COALESCE(h.duplicate_symbol_day_count_120d, 0),
-               COALESCE(l.raw_symbol_day_row_count, 0),
-               COALESCE(l.duplicate_symbol_day_count, 0),
-               l.newest_daily_date
-        FROM latest l
-        LEFT JOIN history h ON h.symbol = l.symbol
-        LEFT JOIN minute_latest m ON m.symbol = l.symbol
-        ORDER BY l.market, l.symbol
+        SELECT market, exchange, symbol, history_rows_120d,
+               latest_date, open_price, high_price, low_price, close_price,
+               volume, data_source, latest_minute_date, latest_minute_data_source,
+               duplicate_symbol_day_count_120d,
+               raw_symbol_day_row_count,
+               duplicate_symbol_day_count,
+               newest_daily_date
+        FROM latest
+        ORDER BY market, symbol
     """.format(
         data_source_expr=data_source_expr,
         minute_data_source_expr=minute_data_source_expr,
