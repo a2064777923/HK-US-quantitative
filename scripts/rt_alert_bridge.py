@@ -21,6 +21,7 @@ INCLUDE_PACKET_CONTEXT = os.environ.get("RT_ALERT_INCLUDE_PACKET_CONTEXT", "1") 
 INCLUDE_POSITION_REVIEW = os.environ.get("RT_ALERT_INCLUDE_POSITION_REVIEW", "1") != "0"
 REQUIRE_PACKET_ELIGIBLE = os.environ.get("RT_ALERT_REQUIRE_PACKET_ELIGIBLE", "1") != "0"
 NOTIFY_INELIGIBLE_SIGNALS = os.environ.get("RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS", "0") == "1"
+MARK_INELIGIBLE_SENT = os.environ.get("RT_ALERT_MARK_INELIGIBLE_SENT", "1") != "0"
 POSITION_REVIEW_URGENCY = {
     item.strip().lower()
     for item in os.environ.get("RT_POSITION_REVIEW_URGENCY", "high,medium").split(",")
@@ -603,6 +604,18 @@ def mark_alerts_sent(sent, new_alerts):
     write_sent(sent)
 
 
+def unique_alerts(alerts):
+    rows = []
+    seen = set()
+    for alert in alerts:
+        key = alert_key(alert)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(alert)
+    return rows
+
+
 def mark_position_reviews_sent(sent, items):
     now_epoch = time.time()
     existing = [row for row in sent if isinstance(row, dict)]
@@ -676,10 +689,9 @@ def main():
         if SEND_FEISHU and not send_feishu_text(text):
             return 2
 
-    if actionable:
-        mark_alerts_sent(sent, new_alerts)
-    elif new_alerts:
-        mark_alerts_sent(sent, new_alerts)
+    alerts_to_mark_sent = new_alerts if MARK_INELIGIBLE_SENT else unique_alerts(actionable + diagnostic_alerts)
+    if alerts_to_mark_sent:
+        mark_alerts_sent(sent, alerts_to_mark_sent)
     if pending_reviews:
         mark_position_reviews_sent(position_sent, pending_reviews)
     return 0

@@ -19,6 +19,7 @@ class RtAlertBridgeTests(unittest.TestCase):
             "RT_ALERT_INCLUDE_POSITION_REVIEW",
             "RT_ALERT_REQUIRE_PACKET_ELIGIBLE",
             "RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS",
+            "RT_ALERT_MARK_INELIGIBLE_SENT",
             "RT_POSITION_REVIEW_SENT_FILE",
             "RT_POSITION_REVIEW_ROLES",
             "RT_POSITION_REVIEW_URGENCY",
@@ -272,6 +273,30 @@ class RtAlertBridgeTests(unittest.TestCase):
             intake.assert_not_called()
             self.assertTrue(sent.exists())
             self.assertEqual(json.loads(sent.read_text(encoding="utf-8"))[0]["signal_id"], "sig-bridge")
+
+    def test_ineligible_signal_can_remain_unsent_for_later_packet_eligibility(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "packet.json"
+            queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            packet_file.write_text(json.dumps(self.packet_with_signal_review()), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="notify",
+                RT_ALERT_MARK_INELIGIBLE_SENT="0",
+            )
+
+            with patch("builtins.print") as printed, patch.object(bridge, "run_order_intake") as intake:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            printed.assert_not_called()
+            intake.assert_not_called()
+            self.assertFalse(sent.exists())
 
     def test_ineligible_signal_diagnostic_opt_in_includes_compact_hermes_context_without_intake(self):
         with tempfile.TemporaryDirectory() as td:
