@@ -14,6 +14,8 @@ This document explains how to connect the realtime v5 signal path without breaki
 - Server hotfixes also aligned the container-only holding tools: `/app/scripts/read_positions.py --us` now includes `US/NASDAQ/NYSE/AMEX`, `/app/scripts/trade_update.py list` defaults to open holdings only, and legacy `smart_monitor.py` loads holdings from DB positions at startup to override stale hardcoded holdings.
 - The holding tools are now tracked in GitHub as `scripts/read_positions.py`, `scripts/hk_realtime.py`, `scripts/us_realtime.py`, and `scripts/trade_update.py`. Hermes/operators should treat DB `positions` rows for portfolio `3` with `status='holding'` as the user-holding source of truth; these tools do not submit orders, write Hermes judgments, mutate v5 alert state, or update the portfolio `8` simulation trade ledger.
 - `trade_update.py` supports `US/NASDAQ/NYSE/AMEX` and `HK/HKEX/SEHK/SZSE/SSE`, defaults HK holdings to `HKD`, and keeps the existing DB valuation convention: `avg_cost`, `total_cost`, and `current_price` are quote-currency values, while `market_value` and `unrealized_pnl` are HKD snapshots.
+- `kline_source_granularity_report.py` apply mode now batch-backfills `klines.source_granularity` under the same hash-confirmed proposal, with `--apply-batch-size` and optional `--apply-max-batches`. The proposal hash protects action scope and SQL, not volatile estimated row counts, so live data ingestion no longer makes a reviewed provenance-only apply unusable.
+- `minute_collector.py` is now tracked in GitHub and writes `source_granularity='minute_snapshot_price'` when the column exists. This prevents new Tencent public minute rows from reintroducing missing provenance after the backfill. It still does not make those rows full-OHLCV; source reliability should continue to treat them as low-fidelity cap/challenge context.
 - After the server repair, portfolio `3` user holdings are present in Hermes as 12 DB-sourced open positions; PDD, ARAY, NOK, and BABA use current USD quote prices instead of stale/mis-scaled DB values. Execution readiness remains `BLOCKED`; this reliability fix does not enable paper/live execution.
 
 ### 2026-06-16 live-server fix
@@ -2696,6 +2698,19 @@ Default command:
 ```bash
 /usr/bin/python3 /root/source_reliability_report.py --output /tmp/source_reliability_report.json --text
 ```
+
+For large databases, use batched apply:
+
+```bash
+/usr/bin/python3 /root/kline_source_granularity_report.py \
+  --apply \
+  --confirm-proposal-hash <proposal.proposal_hash> \
+  --apply-batch-size 100000 \
+  --output /tmp/kline_source_granularity_report.json \
+  --text
+```
+
+`--apply-max-batches N` is available for smoke tests or controlled maintenance windows. `status=PARTIAL_APPLIED` means the confirmed scope is valid but the batch cap stopped before all rows were labelled; rerun the report and apply the new current proposal hash to continue.
 
 The output schema is `source_reliability_report_v1`. `status=OK` means every tracked source layer is fresh and not degraded by known coverage problems. `status=DEGRADED` means at least one source is fresh but weakened, for example market context with missing/incomplete native index confirmation, native index evidence that conflicts with stock-pool breadth, intraday context with stale or missing watchlist-symbol minute coverage, intraday timeframe quality with limited/missing/conflicting 5m/15m/30m/60m evidence, pending K-line source-granularity schema/backfill proposals, external context that only contains public fallback headlines, external provider fetch failures, missing capital-flow coverage, fallback fundamentals, partial metric coverage, a WARN/MISSING trusted-source preflight, missing or unverified trusted-source discovery capabilities, data-source inventory weaknesses such as missing context reports or incomplete K-line provenance, missing read-only cron jobs, missing K-line provenance, or repair-source K-lines. `status=STALE` means at least one report timestamp is too old. `status=MISSING` means a report is absent or unreadable. `status=FAIL` means a source layer or safety contract is not trustworthy, for example an invalid schema, failed report, failed data-source inventory, failed K-line source-granularity report, failed trusted-source preflight, failed source discovery, unsafe intraday timeframe-quality safety contract, or dangerous execution cron.
 

@@ -96,6 +96,18 @@ class KlineSourceGranularityReportTests(unittest.TestCase):
         self.assertFalse(result["applied"])
         self.assertIn("confirm_proposal_hash_mismatch", result["validation_reasons"])
 
+    def test_proposal_hash_is_stable_when_only_estimated_row_count_changes(self):
+        one = report.build_report(
+            columns=["symbol", "interval", "timestamp", "data_source"],
+            source_rows=[source_row("min", "tencent_min", row_count=100)],
+        )
+        two = report.build_report(
+            columns=["symbol", "interval", "timestamp", "data_source"],
+            source_rows=[source_row("min", "tencent_min", row_count=200)],
+        )
+
+        self.assertEqual(one["proposal"]["proposal_hash"], two["proposal"]["proposal_hash"])
+
     def test_apply_runs_only_after_hash_confirmation(self):
         payload = report.build_report(
             columns=["symbol", "interval", "timestamp", "data_source"],
@@ -103,16 +115,45 @@ class KlineSourceGranularityReportTests(unittest.TestCase):
         )
         digest = payload["proposal"]["proposal_hash"]
 
+        query_results = [
+            type("Result", (), {"returncode": 0, "stdout": "100\t150\n", "stderr": ""})(),
+            type("Result", (), {"returncode": 0, "stdout": "0\t150\n", "stderr": ""})(),
+        ]
         with mock.patch.object(report, "backup_metadata", return_value="/tmp/backup.json"), mock.patch.object(
-            report, "execute_sql_script", return_value=type("Result", (), {"returncode": 0, "stdout": "OK", "stderr": ""})()
-        ) as execute:
-            result = report.apply_payload(payload, confirm_proposal_hash=digest)
+            report,
+            "execute_sql_script",
+            return_value=type("Result", (), {"returncode": 0, "stdout": "ALTER TABLE\nCOMMENT\n", "stderr": ""})(),
+        ) as execute_script, mock.patch.object(report, "execute_sql_query", side_effect=query_results) as execute_query:
+            result = report.apply_payload(payload, confirm_proposal_hash=digest, batch_size=50)
 
         self.assertEqual(result["status"], "applied")
         self.assertTrue(result["applied"])
-        execute.assert_called_once()
-        self.assertIn("BEGIN;", execute.call_args.args[0])
-        self.assertIn("source_granularity", execute.call_args.args[0])
+        execute_script.assert_called_once()
+        self.assertEqual(execute_query.call_count, 2)
+        self.assertEqual(result["rows_updated"], 100)
+        self.assertEqual(result["action_results"][1]["batches"], 2)
+        self.assertIn("id > 0", execute_query.call_args_list[0].args[0])
+        self.assertIn("ORDER BY id", execute_query.call_args_list[0].args[0])
+        self.assertIn("LIMIT 50", execute_query.call_args_list[0].args[0])
+
+    def test_apply_can_stop_after_max_batches_for_controlled_backfill(self):
+        payload = report.build_report(
+            columns=["symbol", "interval", "timestamp", "data_source", "source_granularity"],
+            source_rows=[source_row("day", "tencent", row_count=100)],
+        )
+        digest = payload["proposal"]["proposal_hash"]
+
+        with mock.patch.object(report, "backup_metadata", return_value="/tmp/backup.json"), mock.patch.object(
+            report,
+            "execute_sql_query",
+            return_value=type("Result", (), {"returncode": 0, "stdout": "10\t100\n", "stderr": ""})(),
+        ) as execute:
+            result = report.apply_payload(payload, confirm_proposal_hash=digest, batch_size=10, max_batches=1)
+
+        self.assertEqual(result["status"], "partial")
+        self.assertFalse(result["applied"])
+        self.assertIn("max_batches_reached", result["validation_reasons"])
+        self.assertEqual(execute.call_count, 1)
 
 
 if __name__ == "__main__":

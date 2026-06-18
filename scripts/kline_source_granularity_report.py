@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 from datetime import datetime
 
@@ -18,6 +19,7 @@ DB_USER = os.environ.get("QM_DB_USER", "quantmind")
 DB_NAME = os.environ.get("QM_DB_NAME", "quantmind")
 REPORT_FILE = os.environ.get("KLINE_SOURCE_GRANULARITY_REPORT_FILE", "/tmp/kline_source_granularity_report.json")
 BACKUP_DIR = os.environ.get("KLINE_SOURCE_GRANULARITY_BACKUP_DIR", "/tmp/kline_source_granularity_backups")
+APPLY_BATCH_SIZE = int(os.environ.get("KLINE_SOURCE_GRANULARITY_APPLY_BATCH_SIZE", "50000"))
 
 MISSING_VALUES = {"", "missing", "null", "unknown", "none"}
 
@@ -330,7 +332,6 @@ def proposal_hash(actions):
             "intervals": action.get("intervals"),
             "data_sources": action.get("data_sources"),
             "source_granularity": action.get("source_granularity"),
-            "estimated_row_count": action.get("estimated_row_count"),
             "sql": action.get("sql"),
         }
         for action in actions or []
@@ -377,6 +378,7 @@ def build_proposal(columns, source_rows):
         "operator_contract": {
             "dry_run_default": True,
             "apply_requires": "--apply --confirm-proposal-hash <proposal_hash>",
+            "backfill_is_batched": True,
             "backs_up_metadata_before_apply": True,
             "does_not_submit_orders": True,
             "does_not_change_portfolios": True,
@@ -492,7 +494,7 @@ def backup_metadata(payload, backup_dir=BACKUP_DIR):
     return path
 
 
-def execute_sql_script(sql_script):
+def execute_sql_script(sql_script, timeout=240):
     return run_cmd(
         [
             "docker",
@@ -508,11 +510,114 @@ def execute_sql_script(sql_script):
             "ON_ERROR_STOP=1",
         ],
         input_text=sql_script,
-        timeout=240,
+        timeout=timeout,
     )
 
 
-def apply_payload(payload, confirm_proposal_hash=""):
+def execute_sql_query(sql, timeout=240):
+    return run_cmd(
+        [
+            "docker",
+            "exec",
+            "-i",
+            DB_CONTAINER,
+            "psql",
+            "-U",
+            DB_USER,
+            "-d",
+            DB_NAME,
+            "-t",
+            "-A",
+            "-F",
+            "\t",
+            "-v",
+            "ON_ERROR_STOP=1",
+        ],
+        input_text=sql,
+        timeout=timeout,
+    )
+
+
+def parse_backfill_result(stdout, default_last_id=0):
+    parsed = rows(stdout)
+    if not parsed:
+        return 0, default_last_id
+    row = parsed[-1]
+    count = as_int(row[0] if len(row) > 0 else 0)
+    last_id = as_int(row[1] if len(row) > 1 else default_last_id, default_last_id)
+    return count, max(last_id, default_last_id)
+
+
+def execute_backfill_action(action, batch_size=APPLY_BATCH_SIZE, max_batches=0):
+    batch_size = max(1, as_int(batch_size, APPLY_BATCH_SIZE))
+    max_batches = max(0, as_int(max_batches, 0))
+    total = 0
+    batches = 0
+    last_id = 0
+    stdout_tail = ""
+    stderr_tail = ""
+    while True:
+        sql = f"""
+WITH target AS (
+    SELECT id
+    FROM klines
+    WHERE id > {int(last_id)}
+      AND interval IN ({sql_in(action.get('intervals') or [])})
+      AND COALESCE(data_source, '') IN ({sql_in(action.get('data_sources') or [])})
+      AND (source_granularity IS NULL OR source_granularity = '')
+    ORDER BY id
+    LIMIT {int(batch_size)}
+),
+updated AS (
+    UPDATE klines AS k
+    SET source_granularity = '{sql_quote(action.get('source_granularity'))}'
+    FROM target
+    WHERE k.id = target.id
+    RETURNING k.id
+)
+SELECT count(*)::text, COALESCE(max(id), {int(last_id)})::text
+FROM updated;
+"""
+        result = execute_sql_query(sql, timeout=240)
+        stdout_tail = (stdout_tail + result.stdout)[-4000:]
+        stderr_tail = (stderr_tail + result.stderr)[-4000:]
+        if result.returncode != 0:
+            return {
+                "id": action.get("id"),
+                "status": "failed",
+                "batches": batches,
+                "rows_updated": total,
+                "batch_size": batch_size,
+                "stdout": stdout_tail,
+                "stderr": stderr_tail,
+            }
+        count, last_id = parse_backfill_result(result.stdout, default_last_id=last_id)
+        batches += 1
+        total += count
+        if count <= 0:
+            return {
+                "id": action.get("id"),
+                "status": "applied",
+                "batches": batches,
+                "rows_updated": total,
+                "batch_size": batch_size,
+                "stdout": stdout_tail,
+                "stderr": stderr_tail,
+            }
+        if max_batches and batches >= max_batches:
+            return {
+                "id": action.get("id"),
+                "status": "partial",
+                "batches": batches,
+                "rows_updated": total,
+                "batch_size": batch_size,
+                "stdout": stdout_tail,
+                "stderr": stderr_tail,
+                "validation_reasons": ["max_batches_reached"],
+            }
+
+
+def apply_payload(payload, confirm_proposal_hash="", batch_size=APPLY_BATCH_SIZE, max_batches=0):
     proposal = payload.get("proposal") if isinstance(payload.get("proposal"), dict) else {}
     actions = proposal.get("actions") if isinstance(proposal.get("actions"), list) else []
     reasons = []
@@ -526,6 +631,8 @@ def apply_payload(payload, confirm_proposal_hash=""):
     unsafe = unsafe_sql_actions(actions)
     if unsafe:
         reasons.append("unsafe_sql_actions")
+    if as_int(batch_size, 0) <= 0:
+        reasons.append("apply_batch_size_must_be_positive")
     if reasons:
         return {
             "schema": "kline_source_granularity_apply_result_v1",
@@ -537,17 +644,45 @@ def apply_payload(payload, confirm_proposal_hash=""):
             "applied": False,
         }
     backup_file = backup_metadata(payload)
-    result = execute_sql_script(proposal.get("sql_script") or build_sql_script(actions))
-    applied = result.returncode == 0
+    action_results = []
+    for action in actions:
+        if action.get("action") == "add_column":
+            result = execute_sql_script(str(action.get("sql") or ""), timeout=120)
+            action_results.append(
+                {
+                    "id": action.get("id"),
+                    "status": "applied" if result.returncode == 0 else "failed",
+                    "rows_updated": None,
+                    "stdout": result.stdout[-4000:],
+                    "stderr": result.stderr[-4000:],
+                }
+            )
+        elif action.get("action") == "backfill_source_granularity":
+            action_results.append(execute_backfill_action(action, batch_size=batch_size, max_batches=max_batches))
+        else:
+            action_results.append({"id": action.get("id"), "status": "failed", "validation_reasons": ["unknown_action_type"]})
+        if action_results[-1].get("status") == "failed":
+            break
+    failed = [row for row in action_results if row.get("status") == "failed"]
+    partial = [row for row in action_results if row.get("status") == "partial"]
+    applied = not failed and not partial
     return {
         "schema": "kline_source_granularity_apply_result_v1",
-        "status": "applied" if applied else "failed",
+        "status": "applied" if applied else ("partial" if partial and not failed else "failed"),
         "expected_proposal_hash": expected_hash,
         "confirm_proposal_hash": confirm_proposal_hash,
-        "validation_reasons": [] if applied else ["sql_execution_failed"],
+        "validation_reasons": []
+        if applied
+        else (
+            ["max_batches_reached"]
+            if partial and not failed
+            else ["sql_execution_failed"]
+        ),
         "backup_file": backup_file,
-        "stdout": result.stdout[-4000:],
-        "stderr": result.stderr[-4000:],
+        "action_results": action_results,
+        "rows_updated": sum(as_int(row.get("rows_updated")) for row in action_results if row.get("rows_updated") is not None),
+        "batch_size": as_int(batch_size, APPLY_BATCH_SIZE),
+        "max_batches": as_int(max_batches, 0),
         "applied": applied,
     }
 
@@ -589,6 +724,8 @@ def parse_args(argv=None):
     parser.add_argument("--text", action="store_true", help="emit text only")
     parser.add_argument("--apply", action="store_true", help="apply the current proposal after hash confirmation")
     parser.add_argument("--confirm-proposal-hash", default="", help="required with --apply")
+    parser.add_argument("--apply-batch-size", type=int, default=APPLY_BATCH_SIZE)
+    parser.add_argument("--apply-max-batches", type=int, default=0, help="0 means no batch limit")
     return parser.parse_args(argv)
 
 
@@ -601,9 +738,16 @@ def main(argv=None):
         payload["source"]["changes_schema"] = any(
             action.get("changes_schema") for action in (payload.get("proposal") or {}).get("actions") or []
         )
-        payload["apply_result"] = apply_payload(payload, confirm_proposal_hash=args.confirm_proposal_hash)
+        payload["apply_result"] = apply_payload(
+            payload,
+            confirm_proposal_hash=args.confirm_proposal_hash,
+            batch_size=args.apply_batch_size,
+            max_batches=args.apply_max_batches,
+        )
         if payload["apply_result"].get("status") == "applied":
             payload["status"] = "APPLIED"
+        elif payload["apply_result"].get("status") == "partial":
+            payload["status"] = "PARTIAL_APPLIED"
         else:
             payload["status"] = "BLOCKED" if payload["apply_result"].get("status") == "blocked" else "FAIL"
     if args.output:

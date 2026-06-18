@@ -226,6 +226,8 @@ python3 scripts/v5_local_replay_report.py \
 
 Use raw minute/hour data for research, replay, and feature engineering, but promote only compact metadata, coverage, freshness, gap, source-quality, and replay reports into Hermes/server workflows.
 
+Minute rows from Tencent public endpoints are persisted as snapshot-like data, not broker-grade minute OHLCV. `scripts/minute_collector.py` writes `data_source='tencent_min'` and, when the DB schema supports it, `source_granularity='minute_snapshot_price'`. `scripts/kline_source_granularity_report.py` can hash-gate and batch-backfill this provenance without changing OHLCV prices, volumes, positions, alerts, or strategy. Hermes may use these rows to cap/challenge confidence and diagnose path risk, but not to claim full intraday execution-quality evidence.
+
 ## Backtesting
 
 Backtest scripts remain under `backtest/`, with summary JSON under `results/`. These are research evidence, not a guarantee of live performance.
