@@ -17,6 +17,8 @@ class RtAlertBridgeTests(unittest.TestCase):
             "RT_ALERT_EXECUTION_MODE",
             "RT_ALERT_SEND_FEISHU",
             "RT_ALERT_INCLUDE_POSITION_REVIEW",
+            "RT_ALERT_REQUIRE_PACKET_ELIGIBLE",
+            "RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS",
             "RT_POSITION_REVIEW_SENT_FILE",
             "HERMES_REVIEW_PACKET_FILE",
             "RT_ORDER_EXECUTE_PILOT_ENABLED",
@@ -53,6 +55,7 @@ class RtAlertBridgeTests(unittest.TestCase):
             "trigger": "unit-test",
             "detail": "bridge test",
             "confirmed": True,
+            "execution_candidate": True,
             "entry_price": 100,
             "stop_loss": 95,
             "take_profit": 112,
@@ -156,6 +159,19 @@ class RtAlertBridgeTests(unittest.TestCase):
             ],
         }
 
+    def packet_with_eligible_signal_review(self):
+        packet = self.packet_with_signal_review()
+        packet["execution_readiness"] = {
+            "schema": "execution_readiness_report_v1",
+            "status": "READY",
+            "ready_for_execute": True,
+        }
+        packet["simulation_performance"] = {"status": "PASS", "reason_codes": []}
+        packet["review_items"][0]["eligible_for_approval"] = True
+        packet["review_items"][0]["recommended_judgment"] = "approve_or_reduce_allowed_after_llm_review"
+        packet["review_items"][0]["blocking_reasons"] = []
+        return packet
+
     def test_local_mode_reads_queue_and_writes_sent_without_ssh(self):
         with tempfile.TemporaryDirectory() as td:
             queue = Path(td) / "alerts.jsonl"
@@ -166,6 +182,7 @@ class RtAlertBridgeTests(unittest.TestCase):
                 RT_ALERT_QUEUE_FILE=str(queue),
                 RT_ALERT_SENT_FILE=str(sent),
                 RT_ALERT_EXECUTION_MODE="notify",
+                RT_ALERT_REQUIRE_PACKET_ELIGIBLE="0",
             )
 
             with patch("builtins.print") as printed, patch.object(bridge.subprocess, "run") as run:
@@ -181,11 +198,14 @@ class RtAlertBridgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             queue = Path(td) / "alerts.jsonl"
             sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "packet.json"
             queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            packet_file.write_text(json.dumps(self.packet_with_eligible_signal_review()), encoding="utf-8")
             bridge = self.load_bridge(
                 RT_ALERT_REMOTE="local",
                 RT_ALERT_QUEUE_FILE=str(queue),
                 RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
                 RT_ALERT_EXECUTION_MODE="alert-sim",
                 RT_ORDER_EXECUTE_PILOT_ENABLED="1",
                 RT_ORDER_US_BROKER="alpaca-paper",
@@ -220,7 +240,7 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("ALPACA_BASE_URL=https://paper-api.alpaca.markets/v2", command)
             self.assertIn("RT_ORDER_EXECUTION_MODE=execute", command)
 
-    def test_signal_notification_includes_compact_hermes_context(self):
+    def test_signal_notification_requires_hermes_eligible_and_ready_by_default(self):
         with tempfile.TemporaryDirectory() as td:
             queue = Path(td) / "alerts.jsonl"
             sent = Path(td) / "sent.json"
@@ -235,11 +255,39 @@ class RtAlertBridgeTests(unittest.TestCase):
                 RT_ALERT_EXECUTION_MODE="notify",
             )
 
-            with patch("builtins.print") as printed:
+            with patch("builtins.print") as printed, patch.object(bridge, "run_order_intake") as intake:
                 code = bridge.main()
 
             self.assertEqual(code, 0)
+            printed.assert_not_called()
+            intake.assert_not_called()
+            self.assertTrue(sent.exists())
+            self.assertEqual(json.loads(sent.read_text(encoding="utf-8"))[0]["signal_id"], "sig-bridge")
+
+    def test_ineligible_signal_diagnostic_opt_in_includes_compact_hermes_context_without_intake(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "packet.json"
+            queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            packet_file.write_text(json.dumps(self.packet_with_signal_review()), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="alert-sim",
+                RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS="1",
+            )
+
+            with patch("builtins.print") as printed, patch.object(bridge, "run_order_intake") as intake:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            intake.assert_not_called()
             text = printed.call_args.args[0]
+            self.assertIn("候選信號（安全門未放行）", text)
+            self.assertNotIn("實時操作信號", text)
             self.assertIn("Hermes審核：eligible=False judgment=reject_or_hold", text)
             self.assertIn("執行準備：WARN ready=False", text)
             self.assertIn("模擬表現：FAIL reasons=recent_closed_trades_negative", text)
@@ -248,6 +296,30 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("分鐘證據：challenges codes=intraday_down_momentum ack=required", text)
             self.assertIn("事件審核：challenge=1 support=0", text)
             self.assertIn("來源可靠性：DEGRADED fundamentals_context:partial_metric_coverage", text)
+
+    def test_eligible_signal_notification_uses_review_candidate_title(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "packet.json"
+            queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            packet_file.write_text(json.dumps(self.packet_with_eligible_signal_review()), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="notify",
+            )
+
+            with patch("builtins.print") as printed:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            text = printed.call_args.args[0]
+            self.assertIn("Hermes可審操作候選", text)
+            self.assertNotIn("實時操作信號", text)
+            self.assertIn("Hermes審核：eligible=True", text)
 
     def test_signal_notification_marks_missing_packet_match(self):
         with tempfile.TemporaryDirectory() as td:
@@ -264,6 +336,7 @@ class RtAlertBridgeTests(unittest.TestCase):
                 RT_ALERT_SENT_FILE=str(sent),
                 HERMES_REVIEW_PACKET_FILE=str(packet_file),
                 RT_ALERT_EXECUTION_MODE="notify",
+                RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS="1",
             )
 
             with patch("builtins.print") as printed:
@@ -276,11 +349,14 @@ class RtAlertBridgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             queue = Path(td) / "alerts.jsonl"
             sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "packet.json"
             queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            packet_file.write_text(json.dumps(self.packet_with_eligible_signal_review()), encoding="utf-8")
             bridge = self.load_bridge(
                 RT_ALERT_REMOTE="local",
                 RT_ALERT_QUEUE_FILE=str(queue),
                 RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
                 RT_ALERT_EXECUTION_MODE="notify",
                 RT_ALERT_SEND_FEISHU="1",
             )
@@ -297,11 +373,14 @@ class RtAlertBridgeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             queue = Path(td) / "alerts.jsonl"
             sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "packet.json"
             queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            packet_file.write_text(json.dumps(self.packet_with_eligible_signal_review()), encoding="utf-8")
             bridge = self.load_bridge(
                 RT_ALERT_REMOTE="local",
                 RT_ALERT_QUEUE_FILE=str(queue),
                 RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
                 RT_ALERT_EXECUTION_MODE="notify",
                 RT_ALERT_SEND_FEISHU="1",
             )

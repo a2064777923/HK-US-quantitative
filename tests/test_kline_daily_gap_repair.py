@@ -152,6 +152,36 @@ class KlineDailyGapRepairTests(unittest.TestCase):
 
         self.assertEqual(first["plan_hash"], second["plan_hash"])
 
+    def test_parallel_fetch_preserves_candidate_order_and_single_fetch(self):
+        calls = []
+
+        def fake_fetch(row, count=repair.FETCH_COUNT):
+            calls.append(row["symbol"])
+            rows = source_rows()
+            for item in rows:
+                item["source_code"] = f"hk{row['symbol']}"
+            return rows, [], [
+                {
+                    "source_code": f"hk{row['symbol']}",
+                    "status": "has_rows",
+                    "row_count": len(rows),
+                    "earliest_source_date": "2026-06-10",
+                    "latest_source_date": "2026-06-12",
+                }
+            ]
+
+        candidates = [candidate("00001"), candidate("00002"), candidate("00003")]
+        with patch.object(repair, "FETCH_WORKERS", 3), patch.object(
+            repair,
+            "fetch_tencent_day_rows",
+            side_effect=fake_fetch,
+        ):
+            payload = repair.build_report(candidates)
+
+        self.assertCountEqual(calls, ["00001", "00002", "00003"])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual([action["symbol"] for action in payload["actions"]], ["00001", "00002", "00003"])
+
     def test_sql_for_action_upserts_only_day_interval_target_rows(self):
         with patch.object(repair, "fetch_tencent_day_rows", return_value=(source_rows(), [])):
             action = repair.build_report([candidate()])["actions"][0]

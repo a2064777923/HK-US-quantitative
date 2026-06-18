@@ -14,6 +14,9 @@ from datetime import datetime
 
 REPORT_FILE = os.environ.get("READINESS_REFRESH_REPORT_FILE", "/tmp/readiness_refresh_report.json")
 DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("READINESS_REFRESH_STEP_TIMEOUT_SECONDS", "120"))
+KLINE_DAILY_GAP_REPAIR_TIMEOUT_SECONDS = int(
+    os.environ.get("READINESS_REFRESH_KLINE_DAILY_GAP_REPAIR_TIMEOUT_SECONDS", "600")
+)
 
 STEPS = [
     {
@@ -198,6 +201,7 @@ STEPS = [
         "name": "kline_daily_gap_repair",
         "cmd": ["kline_daily_gap_repair.py", "--output", "/tmp/kline_daily_gap_repair.json", "--text"],
         "network": True,
+        "timeout_seconds": KLINE_DAILY_GAP_REPAIR_TIMEOUT_SECONDS,
     },
     {
         "name": "universe_hygiene",
@@ -408,6 +412,7 @@ def missing_step_script(step, scripts_dir):
 
 def run_step(step, scripts_dir, timeout_seconds=DEFAULT_TIMEOUT_SECONDS, dry_run=False):
     cmd = command_for_step(step, scripts_dir)
+    step_timeout_seconds = int(step.get("timeout_seconds") or timeout_seconds)
     if dry_run:
         return {
             "name": step["name"],
@@ -415,6 +420,7 @@ def run_step(step, scripts_dir, timeout_seconds=DEFAULT_TIMEOUT_SECONDS, dry_run
             "cmd": cmd,
             "returncode": None,
             "duration_seconds": 0.0,
+            "timeout_seconds": step_timeout_seconds,
             "stdout_tail": "",
             "stderr_tail": "",
         }
@@ -426,13 +432,14 @@ def run_step(step, scripts_dir, timeout_seconds=DEFAULT_TIMEOUT_SECONDS, dry_run
             "cmd": cmd,
             "returncode": None,
             "duration_seconds": 0.0,
+            "timeout_seconds": step_timeout_seconds,
             "stdout_tail": "",
             "stderr_tail": f"missing_refresh_script:{missing_script}",
             "missing_script": missing_script,
         }
     started = datetime.now()
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=step_timeout_seconds)
         status = "PASS" if result.returncode == 0 else "FAIL"
         stdout = result.stdout or ""
         stderr = result.stderr or ""
@@ -440,7 +447,7 @@ def run_step(step, scripts_dir, timeout_seconds=DEFAULT_TIMEOUT_SECONDS, dry_run
     except subprocess.TimeoutExpired as exc:
         status = "FAIL"
         stdout = exc.stdout or ""
-        stderr = (exc.stderr or "") + f"\ntimeout_after_seconds:{timeout_seconds}"
+        stderr = (exc.stderr or "") + f"\ntimeout_after_seconds:{step_timeout_seconds}"
         returncode = None
     duration = round((datetime.now() - started).total_seconds(), 3)
     return {
@@ -449,6 +456,7 @@ def run_step(step, scripts_dir, timeout_seconds=DEFAULT_TIMEOUT_SECONDS, dry_run
         "cmd": cmd,
         "returncode": returncode,
         "duration_seconds": duration,
+        "timeout_seconds": step_timeout_seconds,
         "stdout_tail": tail_text(stdout),
         "stderr_tail": tail_text(stderr),
     }

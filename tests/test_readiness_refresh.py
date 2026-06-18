@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from scripts import readiness_refresh as refresh
 
@@ -30,10 +31,12 @@ class ReadinessRefreshTests(unittest.TestCase):
 
     def test_default_steps_include_read_only_daily_gap_repair_plan(self):
         names = [step["name"] for step in refresh.selected_steps()]
+        daily_gap_step = [step for step in refresh.selected_steps() if step["name"] == "kline_daily_gap_repair"][0]
 
         self.assertIn("source_reliability", names)
         self.assertIn("kline_source_granularity", names)
         self.assertIn("kline_daily_gap_repair", names)
+        self.assertGreater(daily_gap_step["timeout_seconds"], refresh.DEFAULT_TIMEOUT_SECONDS)
         self.assertIn("universe_hygiene", names)
         self.assertIn("kline_gap_source_diagnostic", names)
         self.assertIn("kline_gap_alternate_provider_probe", names)
@@ -145,6 +148,21 @@ class ReadinessRefreshTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["failed_count"], 1)
         self.assertIn("deploy_missing_refresh_script:bad", payload["recommendations"])
         self.assertIn("missing_script.py", payload["failed_steps"][0]["missing_script"])
+
+    def test_step_timeout_override_is_used(self):
+        steps = [{"name": "slow", "cmd": ["readiness_refresh.py", "--dry-run"], "network": True, "timeout_seconds": 7}]
+
+        with patch.object(refresh.subprocess, "run") as run_mock:
+            run_mock.return_value.returncode = 0
+            run_mock.return_value.stdout = "ok"
+            run_mock.return_value.stderr = ""
+
+            payload = refresh.build_report(steps=steps, scripts_dir="scripts", timeout_seconds=1)
+
+        run_mock.assert_called_once()
+        self.assertEqual(run_mock.call_args.kwargs["timeout"], 7)
+        self.assertEqual(payload["steps"][0]["timeout_seconds"], 7)
+        self.assertEqual(payload["status"], "OK")
 
     def test_existing_script_failure_is_still_runtime_failure(self):
         steps = [{"name": "bad", "cmd": ["readiness_refresh.py", "--bad-arg"], "network": False}]

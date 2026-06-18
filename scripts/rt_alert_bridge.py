@@ -19,6 +19,8 @@ REQUIRE_CONFIRMED = os.environ.get("RT_ALERT_REQUIRE_CONFIRMED", "1") != "0"
 SEND_FEISHU = os.environ.get("RT_ALERT_SEND_FEISHU", "0") == "1"
 INCLUDE_PACKET_CONTEXT = os.environ.get("RT_ALERT_INCLUDE_PACKET_CONTEXT", "1") != "0"
 INCLUDE_POSITION_REVIEW = os.environ.get("RT_ALERT_INCLUDE_POSITION_REVIEW", "1") != "0"
+REQUIRE_PACKET_ELIGIBLE = os.environ.get("RT_ALERT_REQUIRE_PACKET_ELIGIBLE", "1") != "0"
+NOTIFY_INELIGIBLE_SIGNALS = os.environ.get("RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS", "0") == "1"
 POSITION_REVIEW_URGENCY = {
     item.strip().lower()
     for item in os.environ.get("RT_POSITION_REVIEW_URGENCY", "high,medium").split(",")
@@ -235,16 +237,70 @@ def run_order_intake(alert, mode):
     return run_cmd(cmd)
 
 
-def actionable_alerts(alerts):
+def base_actionable_alerts(alerts):
     rows = []
     for alert in alerts:
         if alert.get("signal_type") not in ("BUY", "SELL"):
+            continue
+        if alert.get("execution_candidate") is not True:
             continue
         if REQUIRE_CONFIRMED and not alert.get("confirmed", True):
             continue
         if not alert.get("entry_price") or not alert.get("stop_loss") or not alert.get("take_profit"):
             continue
         rows.append(alert)
+    return rows
+
+
+def packet_readiness_reasons(packet):
+    if not REQUIRE_PACKET_ELIGIBLE:
+        return []
+    if not isinstance(packet, dict) or packet.get("schema") != "hermes_signal_review_packet_v1":
+        return ["hermes_packet_missing_or_invalid"]
+    readiness = packet.get("execution_readiness") if isinstance(packet.get("execution_readiness"), dict) else {}
+    reasons = []
+    if readiness.get("schema") and readiness.get("schema") != "execution_readiness_report_v1":
+        reasons.append("execution_readiness_schema_invalid")
+    if readiness.get("status") != "READY":
+        reasons.append(f"execution_readiness_status_{str(readiness.get('status') or 'missing').lower()}")
+    if readiness.get("ready_for_execute") is not True:
+        reasons.append("execution_readiness_ready_for_execute_false")
+    return reasons
+
+
+def alert_review_reasons(alert, packet, items_by_signal):
+    reasons = packet_readiness_reasons(packet)
+    if not REQUIRE_PACKET_ELIGIBLE:
+        return reasons
+    item = matching_review_item(alert, items_by_signal)
+    if not item:
+        reasons.append("hermes_review_item_missing")
+        return reasons
+    if item.get("eligible_for_approval") is not True:
+        reasons.append("hermes_review_item_not_eligible")
+        for reason in item.get("blocking_reasons") or []:
+            if reason:
+                reasons.append(f"hermes:{reason}")
+    return reasons
+
+
+def actionable_alerts(alerts, packet=None):
+    packet = packet if isinstance(packet, dict) else {}
+    items_by_signal = review_items_by_signal(packet)
+    rows = []
+    for alert in base_actionable_alerts(alerts):
+        if not alert_review_reasons(alert, packet, items_by_signal):
+            rows.append(alert)
+    return rows
+
+
+def ineligible_actionable_alerts(alerts, packet=None):
+    packet = packet if isinstance(packet, dict) else {}
+    items_by_signal = review_items_by_signal(packet)
+    rows = []
+    for alert in base_actionable_alerts(alerts):
+        if alert_review_reasons(alert, packet, items_by_signal):
+            rows.append(alert)
     return rows
 
 
@@ -473,10 +529,11 @@ def build_position_review_output(items, packet):
     return "\n".join(lines)
 
 
-def build_output(actionable, execution_mode, packet=None):
+def build_output(actionable, execution_mode, packet=None, title=None, run_intake=True):
     packet = packet if isinstance(packet, dict) else {}
     items_by_signal = review_items_by_signal(packet)
-    lines = ["🎯 **實時操作信號**\n"]
+    title = title or "🎯 **Hermes可審操作候選**"
+    lines = [f"{title}\n"]
     for alert in actionable:
         icon = "🟢" if alert.get("signal_type") == "BUY" else "🔴"
         lines.append(f"{icon} **{alert['symbol']}** — {alert['signal_type']}")
@@ -500,11 +557,13 @@ def build_output(actionable, execution_mode, packet=None):
             lines.append(sim_result)
     elif execution_mode == "notify":
         lines.append("📎 模擬倉：未執行（RT_ALERT_EXECUTION_MODE=notify）")
-    elif execution_mode in ("alert-dry-run", "alert-sim"):
+    elif execution_mode in ("alert-dry-run", "alert-sim") and run_intake:
         lines.append(f"📊 **Alert-specific intake（{execution_mode}）：**")
         for alert in actionable:
             result = run_order_intake(alert, execution_mode)
             lines.append(summarize_intake(result) if result else f"{alert.get('signal_id', alert.get('symbol'))}: intake無輸出")
+    elif execution_mode in ("alert-dry-run", "alert-sim"):
+        lines.append("📎 模擬倉：未執行（Hermes/安全門未放行，僅診斷）")
     else:
         lines.append(f"⚠️ 未知執行模式：{execution_mode}，已跳過模擬倉操作")
     return "\n".join(lines)
@@ -552,7 +611,8 @@ def main():
     sent_keys = {alert_key(alert) for alert in sent if isinstance(alert, dict)}
     new_alerts = [alert for alert in alerts if alert_key(alert) not in sent_keys]
 
-    actionable = actionable_alerts(new_alerts)
+    actionable = actionable_alerts(new_alerts, packet)
+    diagnostic_alerts = ineligible_actionable_alerts(new_alerts, packet) if NOTIFY_INELIGIBLE_SIGNALS else []
     position_sent_raw = read_text_file(POSITION_REVIEW_SENT_FILE)
     try:
         position_sent = json.loads(position_sent_raw) if position_sent_raw else []
@@ -568,6 +628,16 @@ def main():
     outputs = []
     if actionable:
         outputs.append(build_output(actionable, EXECUTION_MODE, packet=packet))
+    if diagnostic_alerts:
+        outputs.append(
+            build_output(
+                diagnostic_alerts,
+                EXECUTION_MODE,
+                packet=packet,
+                title="🧪 **候選信號（安全門未放行）**",
+                run_intake=False,
+            )
+        )
     if pending_reviews:
         outputs.append(build_position_review_output(pending_reviews, packet))
 

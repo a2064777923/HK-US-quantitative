@@ -13,6 +13,7 @@ This repository is not configured for automatic real-money trading. Real broker 
 - v5.1 adds guarded short-term momentum breakout handling: large positive same-session moves can become BUY candidates, and upper Bollinger-band breaks are BUY candidates only when momentum context supports breakout continuation.
 - Minute/hour data is read-only context for Hermes and quality reports; it is not the core v5 scoring authority.
 - `scripts/rt_alert_bridge.py` defaults to notify-only mode.
+- The alert bridge is fail-closed: a BUY/SELL raw trigger is not sent as an operator trade candidate unless v5 marks `execution_candidate=true`, Hermes review marks the matching item `eligible_for_approval=true`, and execution readiness is `READY` with `ready_for_execute=true`.
 - `scripts/portfolio_report.py` produces advisory `position_review` items for user and simulation holdings, including large unrealized losses and daily holding moves that need trailing-stop/take-profit/reduction review.
 - `scripts/rt_order_intake.py` is the gated paper/simulation intake path.
 - HK simulated orders use the QuantMind simulation API.
@@ -94,6 +95,8 @@ The packet combines:
 
 Hermes judgments are advisory artifacts. Position review decisions must stay advisory and must not be confused with user-broker order instructions.
 
+The Feishu/operator bridge consumes this layer, but does not bypass it. With default settings, technical BUY/SELL alerts blocked by Hermes or execution readiness are marked sent locally so they do not repeat-spam Feishu, and remain available in JSONL/event-store data for learning and postmortem reports. If an operator wants diagnostic noise during debugging, set `RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS=1`; those messages are titled as safety-gate-blocked candidates and do not run intake.
+
 ## Feishu Notifications
 
 `scripts/feishu_notify.py` reads credentials from env or `FEISHU_ENV_FILE`, defaulting to `/root/.quantmind_env`.
@@ -115,7 +118,8 @@ RT_ALERT_REMOTE=local RT_ALERT_SEND_FEISHU=1 RT_ALERT_EXECUTION_MODE=notify \
 python3 scripts/rt_alert_bridge.py
 ```
 
-The bridge marks alerts or position reviews as sent only after Feishu delivery succeeds.
+The bridge marks emitted alerts or position reviews as sent only after Feishu delivery succeeds. Safety-gate-blocked technical triggers are suppressed by default and marked locally so they do not repeat-spam Feishu.
+For trade-signal notifications, the default also requires `RT_ALERT_REQUIRE_PACKET_ELIGIBLE=1`: the matching Hermes packet item must be eligible and execution readiness must be READY. This prevents raw technical triggers from being presented as operation signals during blocked or risk-off system states.
 Position-review notifications include `high,medium` urgency by default and cap at 20 items, so user holdings such as `SPCX` are not hidden behind simulation-only or high-risk rows. These notifications remain advisory-only and do not submit orders.
 
 ## Recommended Server Jobs
@@ -146,6 +150,8 @@ Readiness refresh, useful after deploy or missing cron:
 python3 scripts/readiness_refresh.py --output /tmp/readiness_refresh_report.json --text
 python3 scripts/execution_readiness_report.py --output /tmp/execution_readiness_report.json --text
 ```
+
+`readiness_refresh.py` keeps the daily-gap repair planner in the same read-only report flow, but gives that full-universe network step a bounded worker pool and a longer per-step timeout. Tune with `KLINE_DAILY_GAP_FETCH_WORKERS` and `READINESS_REFRESH_KLINE_DAILY_GAP_REPAIR_TIMEOUT_SECONDS` rather than skipping the report.
 
 ## Data Policy
 

@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 try:
@@ -25,6 +26,7 @@ DB_NAME = os.environ.get("QM_DB_NAME", "quantmind")
 REPORT_FILE = os.environ.get("KLINE_DAILY_GAP_REPAIR_FILE", "/tmp/kline_daily_gap_repair.json")
 BACKUP_DIR = os.environ.get("KLINE_DAILY_GAP_BACKUP_DIR", "/tmp/kline_daily_gap_backups")
 FETCH_COUNT = int(os.environ.get("KLINE_DAILY_GAP_FETCH_COUNT", "800"))
+FETCH_WORKERS = int(os.environ.get("KLINE_DAILY_GAP_FETCH_WORKERS", "8"))
 DATA_SOURCE = "tencent_day_repair"
 
 
@@ -463,13 +465,7 @@ def build_report(candidates=None, fetch_count=FETCH_COUNT, symbols=None, limit=N
     warnings = []
     actions = []
     unresolved = []
-    for candidate in candidates:
-        fetched = fetch_tencent_day_rows(candidate, count=fetch_count)
-        if len(fetched) == 2:
-            source_rows, fetch_warnings = fetched
-            source_attempts = None
-        else:
-            source_rows, fetch_warnings, source_attempts = fetched
+    for candidate, source_rows, fetch_warnings, source_attempts in fetch_candidate_source_rows(candidates, fetch_count):
         warnings.extend(fetch_warnings)
         action, issue = plan_action(candidate, source_rows, source_attempts=source_attempts)
         if action:
@@ -511,6 +507,32 @@ def build_report(candidates=None, fetch_count=FETCH_COUNT, symbols=None, limit=N
             ],
         },
     }
+
+
+def normalize_fetch_result(fetched):
+    if len(fetched) == 2:
+        source_rows, fetch_warnings = fetched
+        source_attempts = None
+    else:
+        source_rows, fetch_warnings, source_attempts = fetched
+    return source_rows, fetch_warnings, source_attempts
+
+
+def fetch_candidate_source_rows(candidates, fetch_count=FETCH_COUNT, workers=FETCH_WORKERS):
+    if not candidates:
+        return []
+    worker_count = max(1, min(int(workers or 1), len(candidates)))
+    if worker_count == 1:
+        return [
+            (candidate, *normalize_fetch_result(fetch_tencent_day_rows(candidate, count=fetch_count)))
+            for candidate in candidates
+        ]
+
+    def fetch_one(candidate):
+        return candidate, *normalize_fetch_result(fetch_tencent_day_rows(candidate, count=fetch_count))
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        return list(executor.map(fetch_one, candidates))
 
 
 def backup_current_rows(actions, backup_dir=BACKUP_DIR):
