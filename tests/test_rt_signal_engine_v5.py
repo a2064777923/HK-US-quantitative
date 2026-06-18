@@ -477,7 +477,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertAlmostEqual(evidence["score"], 0.7)
         self.assertIn("當日動量+3.5%", evidence["reasons"])
         self.assertIn(
-            ("same_session_momentum", "BUY", 0.4, "當日動量+3.5%"),
+            ("momentum", "BUY", 0.4, "當日動量+3.5%"),
             [
                 (item["category"], item["direction"], item["score_delta"], item["reason"])
                 for item in evidence["factor_contributions"]
@@ -953,7 +953,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertTrue(alert["confirmed"])
         self.assertTrue(alert["execution_candidate"])
         self.assertTrue(alert["risk_geometry_valid"])
-        self.assertEqual(alert["factor_confluence_categories"], ["momentum", "rsi", "same_session_momentum", "trend"])
+        self.assertEqual(alert["factor_confluence_categories"], ["momentum", "rsi", "trend"])
         self.assertGreaterEqual(alert["factor_confluence_supporting_count"], 2)
         self.assertIsNotNone(alert["entry_price"])
         self.assertIsNotNone(alert["stop_loss"])
@@ -2792,6 +2792,65 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(alert["factor_confluence_categories"], ["macd", "trend"])
         self.assertEqual(alert["factor_contributions"][0]["category"], "trend")
         self.assertEqual(alert["factor_contributions"][1]["category"], "macd")
+
+    def test_same_source_momentum_contributions_count_as_one_factor(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+                "trigger_overrides": {
+                    "BUY:急漲": {"min_full_score": 0.75},
+                },
+            }
+        )
+        indicators = FakeIndicators(
+            score=0.8,
+            reasons=["當日動量+7.2%", "5日動量+12.0%"],
+            factor_contributions=[
+                {
+                    "category": "same_session_momentum",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "當日動量+7.2%",
+                },
+                {"category": "momentum", "direction": "BUY", "score_delta": 0.2, "reason": "5日動量+12.0%"},
+            ],
+        )
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 107.2,
+                "high": 108,
+                "low": 106,
+                "prev_close": 100,
+                "volume": 4_000,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 7.2,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "急漲"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertFalse(alert["factor_confluence_valid"])
+        self.assertEqual(alert["factor_confluence_reason"], "supporting_factor_count_below_minimum")
+        self.assertEqual(alert["factor_confluence_categories"], ["momentum"])
+        self.assertEqual(alert["factor_confluence_supporting_count"], 1)
+        self.assertEqual(
+            [item["category"] for item in alert["factor_contributions"]],
+            ["momentum", "momentum"],
+        )
+        self.assertIn(
+            "factor_confluence_invalid:supporting_factor_count_below_minimum",
+            alert["execution_blocked_reasons"],
+        )
 
     def test_low_rr_directional_is_downgraded_to_watch(self):
         engine = rt.TriggerEngine(

@@ -178,6 +178,14 @@ def as_bool(value, default=False):
         return False
     return default
 
+def canonical_factor_category(category):
+    category = str(category or "").strip().lower()
+    same_source_aliases = {
+        "same_session_momentum": "momentum",
+    }
+    return same_source_aliases.get(category, category)
+
+
 def score_contribution(category, direction, score_delta, reason):
     direction = str(direction or "").upper()
     score_delta = as_float(score_delta)
@@ -188,7 +196,7 @@ def score_contribution(category, direction, score_delta, reason):
     if direction == "SELL" and score_delta > 0:
         return None
     return {
-        "category": str(category or "").strip().lower(),
+        "category": canonical_factor_category(category),
         "direction": direction,
         "score_delta": round(score_delta, 4),
         "reason": str(reason or ""),
@@ -1751,7 +1759,7 @@ class IncrementalIndicators:
         ):
             add(
                 same_session_momentum_score_delta(quote_context),
-                "same_session_momentum",
+                "momentum",
                 "BUY",
                 f"當日動量{change_pct:+.1f}%",
             )
@@ -1810,7 +1818,7 @@ def contribution_categories(signal_type, contributions):
     categories = set()
     for contribution in normalize_score_contributions(contributions):
         if contribution.get("direction") == signal_type:
-            category = str(contribution.get("category") or "").strip().lower()
+            category = canonical_factor_category(contribution.get("category"))
             if category:
                 categories.add(category)
     return sorted(categories)
