@@ -191,7 +191,7 @@ python3 scripts/trade_update.py sell --symbol PDD
 
 The `positions` table stores HKD-valued `market_value`/`unrealized_pnl` snapshots, while `avg_cost`, `total_cost`, and `current_price` remain quote-currency prices. `trade_update.py` preserves that convention, including USD-to-HKD valuation for US holdings.
 
-Hermes portfolio context and the portfolio `3` price refresh intentionally read/update only `status='holding'` user rows. The simulation portfolio `8` path remains compatible with both `active` and `holding` rows because older simulation jobs used both states.
+Hermes portfolio context and the portfolio `3` price refresh intentionally read/update only `status='holding'` user rows. Full sells mark the row `closed` and clear open quantity/valuation fields, so historical closed rows cannot be mistaken for current exposure. The simulation portfolio `8` path remains compatible with both `active` and `holding` rows because older simulation jobs used both states.
 
 Readiness refresh, useful after deploy or missing cron:
 

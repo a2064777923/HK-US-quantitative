@@ -33,6 +33,21 @@ def default_portfolio_id():
     return 3
 
 
+def user_portfolio_ids():
+    ids = set()
+    for name in ("QM_HOLDINGS_PORTFOLIO_ID", "QM_USER_PORTFOLIO_ID", "QM_USER_PORTFOLIO_IDS"):
+        raw = os.environ.get(name, "")
+        for item in str(raw).split(","):
+            item = item.strip()
+            if item.isdigit():
+                ids.add(int(item))
+    return ids or {3}
+
+
+def portfolio_total_statuses(portfolio_id):
+    return ("holding",) if int(portfolio_id) in user_portfolio_ids() else ("active", "holding")
+
+
 def positive_int(value):
     parsed = int(value)
     if parsed <= 0:
@@ -103,8 +118,10 @@ def position_values(qty, avg_cost, current_price, currency):
 
 
 def refresh_portfolio_totals(cur, portfolio_id):
+    statuses = portfolio_total_statuses(portfolio_id)
+    placeholders = ", ".join(["%s"] * len(statuses))
     cur.execute(
-        """
+        f"""
         UPDATE portfolios p
         SET current_capital = COALESCE(p.available_cash, 0) + COALESCE(x.positions_value, 0),
             total_value = COALESCE(p.available_cash, 0) + COALESCE(x.positions_value, 0),
@@ -113,12 +130,12 @@ def refresh_portfolio_totals(cur, portfolio_id):
             SELECT COALESCE(SUM(market_value), 0) AS positions_value
             FROM positions
             WHERE portfolio_id = %s
-              AND status IN ('active', 'holding')
+              AND status IN ({placeholders})
               AND COALESCE(quantity, 0) > 0
         ) x
         WHERE p.id = %s
         """,
-        (datetime.utcnow(), portfolio_id, portfolio_id),
+        (datetime.utcnow(), portfolio_id, *statuses, portfolio_id),
     )
 
 
@@ -265,8 +282,14 @@ def cmd_sell(args):
                 """
                 UPDATE positions
                 SET status = 'closed',
+                    quantity = 0,
                     available_quantity = 0,
                     frozen_quantity = 0,
+                    total_cost = 0,
+                    market_value = 0,
+                    unrealized_pnl = 0,
+                    unrealized_pnl_rate = 0,
+                    weight = 0,
                     closed_at = %s,
                     updated_at = %s
                 WHERE id = %s

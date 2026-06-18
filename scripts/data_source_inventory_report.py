@@ -324,16 +324,23 @@ def fetch_portfolio_rows():
     if not table_columns("portfolios"):
         return [], ["portfolios_table_missing"]
     position_cols = table_columns("positions")
-    name_expr = first_existing("portfolios", ("name", "portfolio_name"), "''")
+    name_col = first_existing("portfolios", ("name", "portfolio_name"))
+    name_expr = f"p.{name_col}" if name_col else "''"
     if position_cols:
-        quantity_expr = first_existing("positions", ("quantity", "shares"), "0")
+        quantity_col = first_existing("positions", ("quantity", "shares"))
+        status_col = first_existing("positions", ("status",))
+        quantity_expr = f"pos.{quantity_col}" if quantity_col else "0"
+        status_expr = f"pos.{status_col}" if status_col else "'holding'"
         sql = f"""
             SELECT p.id, {name_expr} AS name,
                    count(pos.*) AS position_count,
-                   count(pos.*) FILTER (WHERE COALESCE({quantity_expr}, 0) <> 0) AS open_position_count
+                   count(pos.*) FILTER (
+                       WHERE COALESCE(({quantity_expr})::numeric, 0) <> 0
+                         AND {status_expr} IN ('active','holding')
+                   ) AS open_position_count
             FROM portfolios p
             LEFT JOIN positions pos ON pos.portfolio_id = p.id
-            GROUP BY p.id, name
+            GROUP BY p.id, {name_expr}
             ORDER BY p.id
         """
     else:

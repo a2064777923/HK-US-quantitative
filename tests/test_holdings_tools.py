@@ -2,6 +2,7 @@ import argparse
 import contextlib
 import io
 import unittest
+from unittest.mock import patch
 
 from scripts import read_positions
 from scripts import trade_update
@@ -61,6 +62,89 @@ class TradeUpdateTests(unittest.TestCase):
         parser = trade_update.build_parser()
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["sell", "--symbol", "PDD", "--qty", "0"])
+
+    def test_refresh_portfolio_totals_uses_user_holding_status_only(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+
+        cur = Cursor()
+
+        with patch.dict("os.environ", {"QM_USER_PORTFOLIO_IDS": "3"}, clear=False):
+            trade_update.refresh_portfolio_totals(cur, 3)
+
+        sql, params = cur.calls[0]
+        self.assertIn("status IN (%s)", sql)
+        self.assertEqual(params[1:], (3, "holding", 3))
+
+    def test_refresh_portfolio_totals_keeps_non_user_active_compatibility(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+
+        cur = Cursor()
+
+        with patch.dict("os.environ", {"QM_USER_PORTFOLIO_IDS": "3"}, clear=False):
+            trade_update.refresh_portfolio_totals(cur, 8)
+
+        sql, params = cur.calls[0]
+        self.assertIn("status IN (%s, %s)", sql)
+        self.assertEqual(params[1:], (8, "active", "holding", 8))
+
+    def test_full_sell_closes_and_clears_open_position_values(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+                self.fetchone_rows = [(42, 10, 82.48, 824.8, 79.86, "USD")]
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+
+            def fetchone(self):
+                return self.fetchone_rows.pop(0)
+
+        class Connection:
+            def __init__(self):
+                self.cur = Cursor()
+                self.committed = False
+                self.closed = False
+
+            def cursor(self):
+                return self.cur
+
+            def commit(self):
+                self.committed = True
+
+            def close(self):
+                self.closed = True
+
+        conn = Connection()
+        args = argparse.Namespace(portfolio_id=3, symbol="PDD", qty=None)
+
+        with patch.object(trade_update, "get_connection", return_value=conn), contextlib.redirect_stdout(io.StringIO()):
+            code = trade_update.cmd_sell(args)
+
+        self.assertEqual(code, 0)
+        close_sql = next(sql for sql, _params in conn.cur.calls if "SET status = 'closed'" in sql)
+        for fragment in (
+            "quantity = 0",
+            "available_quantity = 0",
+            "frozen_quantity = 0",
+            "total_cost = 0",
+            "market_value = 0",
+            "unrealized_pnl = 0",
+            "unrealized_pnl_rate = 0",
+            "weight = 0",
+        ):
+            self.assertIn(fragment, close_sql)
+        self.assertTrue(conn.committed)
+        self.assertTrue(conn.closed)
 
 
 class UsRealtimeTests(unittest.TestCase):

@@ -1,5 +1,6 @@
 import unittest
 from datetime import datetime
+from unittest.mock import patch
 
 from scripts import data_source_inventory_report as report
 
@@ -75,6 +76,31 @@ class DataSourceInventoryReportTests(unittest.TestCase):
         self.assertIn("context_reports_missing", codes)
         self.assertIn("optional_context_reports_not_ready", codes)
         self.assertIn("refresh_missing_context_reports_before_hermes_review", payload["recommendations"])
+
+    def test_portfolio_inventory_open_positions_ignore_closed_quantity(self):
+        captured = {}
+
+        def fake_psql(sql, timeout=120):
+            captured["sql"] = sql
+            return type("Result", (), {"returncode": 0, "stdout": "3\tUser\t14\t12\n", "stderr": ""})()
+
+        def fake_columns(table):
+            if table == "portfolios":
+                return {"id", "name"}
+            if table == "positions":
+                return {"portfolio_id", "quantity", "status"}
+            return set()
+
+        with patch.object(report, "table_columns", side_effect=fake_columns), patch.object(report, "psql", side_effect=fake_psql):
+            rows, warnings = report.fetch_portfolio_rows()
+
+        self.assertEqual(warnings, [])
+        self.assertEqual(rows[0]["position_count"], 14)
+        self.assertEqual(rows[0]["open_position_count"], 12)
+        self.assertIn("COALESCE((pos.quantity)::numeric, 0)", captured["sql"])
+        self.assertIn("pos.status IN ('active','holding')", captured["sql"])
+        self.assertIn("status IN ('active','holding')", captured["sql"])
+        self.assertIn("open_position_count", captured["sql"])
 
 
 if __name__ == "__main__":
