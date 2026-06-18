@@ -163,8 +163,8 @@ Cron jobs that need runtime portfolio IDs or Feishu credentials should source en
 Refresh position price snapshots for both the simulation and user portfolio. These jobs update only `current_price`, `market_value`, unrealized PnL fields, and portfolio totals; they do not change quantities, submit orders, or write Hermes judgments:
 
 ```cron
-*/15 9-16 * * 1-5 QM_PRICE_UPDATE_PORTFOLIO_ID=8 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update.log 2>&1
-*/15 9-16 * * 1-5 QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1
+*/15 9-16 * * 1-5 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=8 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update.log 2>&1"
+*/15 9-16 * * 1-5 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1"
 ```
 
 ## User Holdings Source Of Truth
@@ -183,15 +183,15 @@ python3 scripts/trade_update.py list
 python3 scripts/trade_update.py buy --symbol 09988 --exchange HKEX --qty 200 --cost 85.50 --name "Alibaba-W"
 python3 scripts/trade_update.py buy --symbol PDD --exchange NASDAQ --qty 10 --cost 82.48
 python3 scripts/trade_update.py add --symbol PDD --qty 5 --cost 80.00
-python3 scripts/trade_update.py sell --symbol PDD --qty 5
-python3 scripts/trade_update.py sell --symbol PDD
+python3 scripts/trade_update.py sell --symbol PDD --qty 5 --price 90.00
+python3 scripts/trade_update.py sell --symbol PDD --price 90.00
 ```
 
-`read_positions.py`, `hk_realtime.py`, and `us_realtime.py` read DB holdings and quote data only. `trade_update.py` mutates user holding rows and portfolio totals only; it does not submit broker orders, append Hermes judgments, write v5 alert state, or change the portfolio `8` simulation ledger. The default portfolio id can be overridden with `QM_HOLDINGS_PORTFOLIO_ID`, `QM_USER_PORTFOLIO_ID`, or `--portfolio-id`.
+`read_positions.py`, `hk_realtime.py`, and `us_realtime.py` read DB holdings and quote data only. `trade_update.py` mutates user holding rows, adjusts the internal `available_cash` estimate by trade notional by default, and recomputes portfolio total value from cash plus open holding value. Use `--no-cash-adjust` only when syncing positions that have already been settled in an external brokerage ledger. The tool does not submit broker orders, append Hermes judgments, write v5 alert state, or change the portfolio `8` simulation ledger. The default portfolio id can be overridden with `QM_HOLDINGS_PORTFOLIO_ID`, `QM_USER_PORTFOLIO_ID`, or `--portfolio-id`.
 
 The `positions` table stores HKD-valued `market_value`/`unrealized_pnl` snapshots, while `avg_cost`, `total_cost`, and `current_price` remain quote-currency prices. `trade_update.py` preserves that convention, including USD-to-HKD valuation for US holdings.
 
-Hermes portfolio context and the portfolio `3` price refresh intentionally read/update only `status='holding'` user rows. Full sells mark the row `closed` and clear open quantity/valuation fields, so historical closed rows cannot be mistaken for current exposure. The simulation portfolio `8` path remains compatible with both `active` and `holding` rows because older simulation jobs used both states.
+Hermes portfolio context and user-portfolio price refreshes intentionally read/update only `status='holding'` user rows. A portfolio is treated as user-owned when its id appears in `QM_HOLDINGS_PORTFOLIO_ID`, `QM_USER_PORTFOLIO_ID`, or `QM_USER_PORTFOLIO_IDS`; otherwise price refresh keeps the simulation-compatible `active/holding` status filter. Full sells mark the row `closed` and clear open quantity/valuation fields, so historical closed rows cannot be mistaken for current exposure. The simulation portfolio `8` path remains compatible with both `active` and `holding` rows because older simulation jobs used both states.
 
 Readiness refresh, useful after deploy or missing cron:
 

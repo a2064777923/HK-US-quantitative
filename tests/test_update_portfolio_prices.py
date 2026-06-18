@@ -54,8 +54,17 @@ class UpdatePortfolioPricesTests(unittest.TestCase):
         self.assertIn("status = 'holding'", sql)
         self.assertNotIn("status IN ('active','holding')", sql)
 
+    def test_configured_user_portfolio_price_update_is_holding_only(self):
+        with patch.object(updater, "PORTFOLIO_ID", 7), patch.dict(
+            "os.environ",
+            {"QM_USER_PORTFOLIO_IDS": "7,9"},
+            clear=False,
+        ):
+            self.assertEqual(updater.position_status_sql(), "status = 'holding'")
+            self.assertEqual(updater.position_status_sql(alias="pos"), "pos.status = 'holding'")
+
     def test_simulation_price_update_keeps_active_compatibility(self):
-        with patch.object(updater, "PORTFOLIO_ID", 8):
+        with patch.object(updater, "PORTFOLIO_ID", 8), patch.dict("os.environ", {"QM_USER_PORTFOLIO_IDS": "3"}, clear=False):
             self.assertEqual(updater.position_status_sql(), "status IN ('active','holding')")
 
     def test_update_portfolio_totals_updates_current_capital_and_total_value(self):

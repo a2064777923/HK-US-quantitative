@@ -100,6 +100,10 @@ def fx_to_hkd(currency):
     return 1.0 if str(currency or "").upper() == "HKD" else USD_TO_HKD
 
 
+def trade_notional_hkd(qty, price, currency):
+    return round(int(qty) * float(price) * fx_to_hkd(currency), 2)
+
+
 def position_values(qty, avg_cost, current_price, currency):
     qty = int(qty)
     avg_cost = float(avg_cost)
@@ -115,6 +119,18 @@ def position_values(qty, avg_cost, current_price, currency):
         "unrealized_pnl": round(unrealized_pnl, 2),
         "unrealized_pnl_rate": round(unrealized_pnl_rate, 6),
     }
+
+
+def adjust_available_cash(cur, portfolio_id, delta_hkd):
+    cur.execute(
+        """
+        UPDATE portfolios
+        SET available_cash = COALESCE(available_cash, 0) + %s,
+            updated_at = %s
+        WHERE id = %s
+        """,
+        (round(float(delta_hkd), 2), datetime.utcnow(), portfolio_id),
+    )
 
 
 def refresh_portfolio_totals(cur, portfolio_id):
@@ -201,6 +217,8 @@ def cmd_buy(args):
             ),
         )
         position_id = cur.fetchone()[0]
+        if getattr(args, "cash_adjust", True):
+            adjust_available_cash(cur, portfolio_id, -trade_notional_hkd(args.qty, args.cost, currency))
         refresh_portfolio_totals(cur, portfolio_id)
         conn.commit()
     finally:
@@ -252,6 +270,8 @@ def cmd_add(args):
                 position_id,
             ),
         )
+        if getattr(args, "cash_adjust", True):
+            adjust_available_cash(cur, portfolio_id, -trade_notional_hkd(args.qty, args.cost, currency))
         refresh_portfolio_totals(cur, portfolio_id)
         conn.commit()
     finally:
@@ -277,6 +297,9 @@ def cmd_sell(args):
             print(f"[ERROR] sell qty {sell_qty} exceeds holding qty {qty}.", file=sys.stderr)
             return 1
         now = datetime.utcnow()
+        currency = infer_currency(symbol, None, currency)
+        sell_price = float(getattr(args, "price", None) or current_price or avg_cost)
+        realized_delta = trade_notional_hkd(sell_qty, sell_price - float(avg_cost), currency)
         if sell_qty == qty:
             cur.execute(
                 """
@@ -289,42 +312,48 @@ def cmd_sell(args):
                     market_value = 0,
                     unrealized_pnl = 0,
                     unrealized_pnl_rate = 0,
+                    realized_pnl = COALESCE(realized_pnl, 0) + %s,
                     weight = 0,
                     closed_at = %s,
                     updated_at = %s
                 WHERE id = %s
                 """,
-                (now, now, position_id),
+                (realized_delta, now, now, position_id),
             )
             print(f"[OK] Sold ALL {symbol} ({qty} shares). Position CLOSED.")
         else:
             new_qty = qty - sell_qty
-            currency = infer_currency(symbol, None, currency)
-            values = position_values(new_qty, float(avg_cost), float(current_price or avg_cost), currency)
+            values = position_values(new_qty, float(avg_cost), sell_price, currency)
             cur.execute(
                 """
                 UPDATE positions
                 SET quantity = %s,
                     available_quantity = %s,
+                    current_price = %s,
                     total_cost = %s,
                     market_value = %s,
                     unrealized_pnl = %s,
                     unrealized_pnl_rate = %s,
+                    realized_pnl = COALESCE(realized_pnl, 0) + %s,
                     updated_at = %s
                 WHERE id = %s
                 """,
                 (
                     new_qty,
                     new_qty,
+                    sell_price,
                     values["total_cost"],
                     values["market_value"],
                     values["unrealized_pnl"],
                     values["unrealized_pnl_rate"],
+                    realized_delta,
                     now,
                     position_id,
                 ),
             )
             print(f"[OK] Sold {sell_qty} x {symbol}. Remaining: {new_qty}")
+        if getattr(args, "cash_adjust", True):
+            adjust_available_cash(cur, portfolio_id, trade_notional_hkd(sell_qty, sell_price, currency))
         refresh_portfolio_totals(cur, portfolio_id)
         conn.commit()
     finally:
@@ -381,6 +410,16 @@ def add_portfolio_arg(parser):
     parser.add_argument("--portfolio-id", type=int, default=default_portfolio_id())
 
 
+def add_cash_adjust_arg(parser):
+    parser.add_argument(
+        "--no-cash-adjust",
+        dest="cash_adjust",
+        action="store_false",
+        default=True,
+        help="Do not change portfolio available_cash; use only when syncing an already-settled broker position.",
+    )
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="Manual user position manager")
     sub = parser.add_subparsers(dest="command")
@@ -393,17 +432,21 @@ def build_parser():
     p_buy.add_argument("--cost", required=True, type=positive_float)
     p_buy.add_argument("--currency", default=None)
     p_buy.add_argument("--name", default=None)
+    add_cash_adjust_arg(p_buy)
 
     p_add = sub.add_parser("add", help="Add to existing position")
     add_portfolio_arg(p_add)
     p_add.add_argument("--symbol", required=True)
     p_add.add_argument("--qty", required=True, type=positive_int)
     p_add.add_argument("--cost", required=True, type=positive_float)
+    add_cash_adjust_arg(p_add)
 
     p_sell = sub.add_parser("sell", help="Sell position, partial or full")
     add_portfolio_arg(p_sell)
     p_sell.add_argument("--symbol", required=True)
     p_sell.add_argument("--qty", type=positive_int, default=None, help="Sell qty; omit for all")
+    p_sell.add_argument("--price", type=positive_float, default=None, help="Execution price; defaults to current_price")
+    add_cash_adjust_arg(p_sell)
 
     p_delete = sub.add_parser("delete", help="Force delete records")
     add_portfolio_arg(p_delete)

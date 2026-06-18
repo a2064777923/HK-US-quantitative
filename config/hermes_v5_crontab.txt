@@ -32,8 +32,8 @@
 20 5 * * 2-6 /usr/bin/python3 -u /root/kline_batch.py --market us --lock-file /tmp/kline_batch_us.lock >> /tmp/kline_batch_us.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py --market us >> /tmp/signal_v4_us.log 2>&1
 
 # Position price snapshots. These update current_price/market_value/PnL only.
-*/15 9-16 * * 1-5 QM_PRICE_UPDATE_PORTFOLIO_ID=8 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update.log 2>&1
-*/15 9-16 * * 1-5 QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1
+*/15 9-16 * * 1-5 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=8 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update.log 2>&1"
+*/15 9-16 * * 1-5 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1"
 
 # Optional read-only health report for Hermes/operator logs.
 */5 * * * * /usr/bin/python3 /root/system_health_check.py --output /tmp/quantmind_system_health.json >> /tmp/quantmind_health.log 2>&1

@@ -18,7 +18,7 @@
 20 5 * * 2-6 /usr/bin/python3 -u /root/kline_batch.py --market us --lock-file /tmp/kline_batch_us.lock >> /tmp/kline_batch_us.log 2>&1 && /usr/bin/python3 -u /root/signal_engine_v4.py --market us >> /tmp/signal_v4_us.log 2>&1
 
 # 模擬盤持倉價格更新（每15分鐘）
-*/15 9-16 * * 1-5 QM_PRICE_UPDATE_PORTFOLIO_ID=8 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update.log 2>&1
+*/15 9-16 * * 1-5 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=8 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update.log 2>&1"
 
 # 用戶持倉價格快照（每15分鐘，只更新 current_price/market_value/PnL，不改持倉數量）
-*/15 9-16 * * 1-5 QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1
+*/15 9-16 * * 1-5 /bin/bash -lc "cd /root && set -a; [ -f /root/.quantmind_env ] && . /root/.quantmind_env; [ -f /root/.env ] && . /root/.env; set +a; QM_PRICE_UPDATE_PORTFOLIO_ID=3 /usr/bin/python3 /root/update_portfolio_prices.py >> /tmp/portfolio_update_user.log 2>&1"

@@ -9,9 +9,19 @@ USD_TO_HKD = float(os.environ.get("USD_TO_HKD", "7.80"))
 PORTFOLIO_ID = int(os.environ.get("QM_PRICE_UPDATE_PORTFOLIO_ID", os.environ.get("QM_PORTFOLIO_ID", "8")))
 _COLUMN_CACHE = {}
 
+def user_portfolio_ids():
+    ids = set()
+    for name in ("QM_HOLDINGS_PORTFOLIO_ID", "QM_USER_PORTFOLIO_ID", "QM_USER_PORTFOLIO_IDS"):
+        raw = os.environ.get(name, "")
+        for item in str(raw).split(","):
+            item = item.strip()
+            if item.isdigit():
+                ids.add(int(item))
+    return ids or {3}
+
 def position_status_sql(alias=None):
     prefix = f"{alias}." if alias else ""
-    if PORTFOLIO_ID == 3:
+    if int(PORTFOLIO_ID) in user_portfolio_ids():
         return f"{prefix}status = 'holding'"
     return f"{prefix}status IN ('active','holding')"
 

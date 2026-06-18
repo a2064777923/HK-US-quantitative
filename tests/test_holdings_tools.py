@@ -58,6 +58,10 @@ class TradeUpdateTests(unittest.TestCase):
         self.assertEqual(values["unrealized_pnl"], -204.36)
         self.assertAlmostEqual(values["unrealized_pnl_rate"], -0.031765, places=6)
 
+    def test_trade_notional_hkd_uses_quote_currency_fx(self):
+        self.assertEqual(trade_update.trade_notional_hkd(10, 82.48, "USD"), 6433.44)
+        self.assertEqual(trade_update.trade_notional_hkd(200, 85.5, "HKD"), 17100.0)
+
     def test_sell_quantity_must_be_positive(self):
         parser = trade_update.build_parser()
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -145,6 +149,108 @@ class TradeUpdateTests(unittest.TestCase):
             self.assertIn(fragment, close_sql)
         self.assertTrue(conn.committed)
         self.assertTrue(conn.closed)
+
+    def test_buy_adjusts_available_cash_by_default(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+
+            def fetchone(self):
+                return None if "SELECT id, quantity" in self.calls[-1][0] else (42,)
+
+        class Connection:
+            def __init__(self):
+                self.cur = Cursor()
+                self.committed = False
+
+            def cursor(self):
+                return self.cur
+
+            def commit(self):
+                self.committed = True
+
+            def close(self):
+                pass
+
+        conn = Connection()
+        args = argparse.Namespace(
+            portfolio_id=3,
+            symbol="PDD",
+            exchange="NASDAQ",
+            qty=10,
+            cost=82.48,
+            currency=None,
+            name=None,
+            cash_adjust=True,
+        )
+
+        with patch.object(trade_update, "get_connection", return_value=conn), contextlib.redirect_stdout(io.StringIO()):
+            code = trade_update.cmd_buy(args)
+
+        self.assertEqual(code, 0)
+        cash_params = next(params for sql, params in conn.cur.calls if "SET available_cash" in sql)
+        self.assertEqual(cash_params[0], -6433.44)
+        self.assertTrue(conn.committed)
+
+    def test_no_cash_adjust_skips_available_cash_update(self):
+        parser = trade_update.build_parser()
+        args = parser.parse_args(
+            [
+                "buy",
+                "--symbol",
+                "PDD",
+                "--exchange",
+                "NASDAQ",
+                "--qty",
+                "10",
+                "--cost",
+                "82.48",
+                "--no-cash-adjust",
+            ]
+        )
+
+        self.assertFalse(args.cash_adjust)
+
+    def test_full_sell_adjusts_cash_and_realized_pnl(self):
+        class Cursor:
+            def __init__(self):
+                self.calls = []
+                self.fetchone_rows = [(42, 10, 82.48, 824.8, 90.0, "USD")]
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+
+            def fetchone(self):
+                return self.fetchone_rows.pop(0)
+
+        class Connection:
+            def __init__(self):
+                self.cur = Cursor()
+
+            def cursor(self):
+                return self.cur
+
+            def commit(self):
+                pass
+
+            def close(self):
+                pass
+
+        conn = Connection()
+        args = argparse.Namespace(portfolio_id=3, symbol="PDD", qty=None, price=90.0, cash_adjust=True)
+
+        with patch.object(trade_update, "get_connection", return_value=conn), contextlib.redirect_stdout(io.StringIO()):
+            code = trade_update.cmd_sell(args)
+
+        self.assertEqual(code, 0)
+        close_sql, close_params = next((sql, params) for sql, params in conn.cur.calls if "SET status = 'closed'" in sql)
+        self.assertIn("realized_pnl = COALESCE(realized_pnl, 0) + %s", close_sql)
+        self.assertEqual(close_params[0], 586.56)
+        cash_params = next(params for sql, params in conn.cur.calls if "SET available_cash" in sql)
+        self.assertEqual(cash_params[0], 7020.0)
 
 
 class UsRealtimeTests(unittest.TestCase):
