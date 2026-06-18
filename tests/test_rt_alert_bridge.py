@@ -471,6 +471,59 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("不代表已通過 Hermes 交易審批", text)
             self.assertIn("order_submission=false", text)
 
+    def test_position_review_uses_stable_thread_key_for_action_churn(self):
+        bridge = self.load_bridge(
+            RT_ALERT_REMOTE="local",
+            RT_ALERT_EXECUTION_MODE="notify",
+            RT_POSITION_REVIEW_REMINDER_HOURS="6",
+        )
+        packet = self.packet_with_position_review()
+        item = packet["position_review"]["items"][0]
+        item["review_thread_key"] = "user:3:AAPL"
+        item["review_id"] = "user:3:AAPL:2026-06-13:reduce_or_exit_review"
+        item["recommended_action"] = "reduce_or_exit_review"
+        item["urgency"] = "high"
+        sent_rows = [
+            {
+                "review_id": "user:3:AAPL:2026-06-12:exit_review",
+                "symbol": "AAPL",
+                "urgency": "high",
+                "recommended_action": "exit_review",
+                "sent_at_epoch": 1000,
+            }
+        ]
+
+        pending = bridge.pending_position_reviews(packet, sent_rows, now_epoch=1100)
+
+        self.assertEqual(pending, [])
+
+    def test_position_review_thread_allows_immediate_risk_escalation(self):
+        bridge = self.load_bridge(
+            RT_ALERT_REMOTE="local",
+            RT_ALERT_EXECUTION_MODE="notify",
+            RT_POSITION_REVIEW_REMINDER_HOURS="6",
+        )
+        packet = self.packet_with_position_review()
+        item = packet["position_review"]["items"][0]
+        item["review_thread_key"] = "user:3:AAPL"
+        item["review_id"] = "user:3:AAPL:2026-06-13:exit_review"
+        item["recommended_action"] = "exit_review"
+        item["urgency"] = "high"
+        sent_rows = [
+            {
+                "review_thread_key": "user:3:AAPL",
+                "review_id": "user:3:AAPL:2026-06-12:reduce_or_exit_review",
+                "symbol": "AAPL",
+                "urgency": "medium",
+                "recommended_action": "reduce_or_exit_review",
+                "sent_at_epoch": 1000,
+            }
+        ]
+
+        pending = bridge.pending_position_reviews(packet, sent_rows, now_epoch=1100)
+
+        self.assertEqual([row["review_id"] for row in pending], ["user:3:AAPL:2026-06-13:exit_review"])
+
     def test_position_review_summary_counts_filtered_items_not_global_coverage(self):
         with tempfile.TemporaryDirectory() as td:
             queue = Path(td) / "alerts.jsonl"

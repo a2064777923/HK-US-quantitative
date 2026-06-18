@@ -454,6 +454,7 @@ class PortfolioReportTests(unittest.TestCase):
 
         self.assertEqual(payload["item_count"], 1)
         self.assertEqual(payload["counts_by_urgency"]["high"], 1)
+        self.assertEqual(payload["items"][0]["review_thread_key"], "simulation:8:00700")
         self.assertEqual(payload["items"][0]["recommended_action"], "reduce_or_exit_review")
         self.assertEqual(
             payload["items"][0]["advisory_plan"]["primary_action"],

@@ -986,8 +986,10 @@ def build_position_review_item(report, position):
     symbol = position.get("symbol")
     signal_date = (position.get("signal") or {}).get("trade_date") or "no_signal_date"
     review_id = f"{role}:{report.get('portfolio_id')}:{symbol}:{signal_date}:{action}"
+    review_thread_key = f"{role}:{report.get('portfolio_id')}:{symbol}"
     return {
         "review_id": review_id,
+        "review_thread_key": review_thread_key,
         "portfolio_id": report.get("portfolio_id"),
         "role": role,
         "symbol": symbol,

@@ -180,6 +180,49 @@ def sent_record_time(record):
         return 0.0
 
 
+def position_review_thread_key(item):
+    if not isinstance(item, dict):
+        return None
+    key = item.get("review_thread_key")
+    if key:
+        return str(key)
+    role = item.get("role")
+    portfolio_id = item.get("portfolio_id")
+    symbol = item.get("symbol")
+    if role and portfolio_id is not None and symbol:
+        return f"{role}:{portfolio_id}:{symbol}"
+    review_id = item.get("review_id")
+    if review_id:
+        parts = str(review_id).split(":")
+        if len(parts) >= 3:
+            return ":".join(parts[:3])
+    return None
+
+
+def urgency_rank(value):
+    return {"low": 1, "medium": 2, "high": 3}.get(str(value or "").lower(), 0)
+
+
+def position_action_rank(value):
+    return {
+        "hold_watch_review": 0,
+        "risk_review": 1,
+        "take_profit_or_trailing_stop_review": 2,
+        "reduce_or_exit_review": 3,
+        "exit_review": 4,
+    }.get(str(value or ""), 0)
+
+
+def position_review_escalated(item, sent_record):
+    if not isinstance(sent_record, dict):
+        return True
+    if urgency_rank(item.get("urgency")) > urgency_rank(sent_record.get("urgency")):
+        return True
+    return position_action_rank(item.get("recommended_action")) > position_action_rank(
+        sent_record.get("recommended_action")
+    )
+
+
 def fmt_number(value):
     try:
         return f"{float(value):.0f}"
@@ -487,17 +530,24 @@ def position_review_items(packet):
 
 def pending_position_reviews(packet, sent_rows, now_epoch=None):
     now_epoch = time.time() if now_epoch is None else now_epoch
-    sent_by_id = {
-        row.get("review_id"): sent_record_time(row)
-        for row in sent_rows
-        if isinstance(row, dict) and row.get("review_id")
-    }
+    sent_by_thread = {}
+    for row in sent_rows:
+        key = position_review_thread_key(row)
+        if not key:
+            continue
+        if key not in sent_by_thread or sent_record_time(row) >= sent_record_time(sent_by_thread[key]):
+            sent_by_thread[key] = row
     reminder_seconds = POSITION_REVIEW_REMINDER_HOURS * 3600
     pending = []
     for item in position_review_items(packet):
-        review_id = item.get("review_id")
-        last_sent = sent_by_id.get(review_id)
-        if last_sent is None or (reminder_seconds > 0 and now_epoch - last_sent >= reminder_seconds):
+        thread_key = position_review_thread_key(item)
+        last_sent = sent_by_thread.get(thread_key)
+        last_sent_at = sent_record_time(last_sent)
+        if (
+            last_sent is None
+            or position_review_escalated(item, last_sent)
+            or (reminder_seconds > 0 and now_epoch - last_sent_at >= reminder_seconds)
+        ):
             pending.append(item)
     return pending
 
@@ -641,22 +691,24 @@ def unique_alerts(alerts):
 def mark_position_reviews_sent(sent, items):
     now_epoch = time.time()
     existing = [row for row in sent if isinstance(row, dict)]
-    existing_keys = {row.get("review_id") for row in existing if row.get("review_id")}
+    existing_keys = {position_review_thread_key(row) for row in existing if position_review_thread_key(row)}
     for item in items:
         review_id = item.get("review_id")
         if not review_id:
             continue
+        thread_key = position_review_thread_key(item)
         row = {
             "review_id": review_id,
+            "review_thread_key": thread_key,
             "symbol": item.get("symbol"),
             "urgency": item.get("urgency"),
             "recommended_action": item.get("recommended_action"),
             "sent_at_epoch": now_epoch,
         }
-        if review_id in existing_keys:
-            existing = [old for old in existing if old.get("review_id") != review_id]
+        if thread_key in existing_keys:
+            existing = [old for old in existing if position_review_thread_key(old) != thread_key]
         existing.append(row)
-        existing_keys.add(review_id)
+        existing_keys.add(thread_key)
     write_position_review_sent(existing)
 
 
