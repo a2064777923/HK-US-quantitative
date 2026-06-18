@@ -1705,6 +1705,14 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(payload["position_judgment_contract"]["judgment_file"], "/tmp/position_judgments.jsonl")
         self.assertFalse(payload["position_judgment_contract"]["append_jsonl_object"]["submits_orders"])
         self.assertIn(
+            "review_thread_key",
+            payload["position_judgment_contract"]["append_jsonl_object"],
+        )
+        self.assertIn(
+            "reviewed_recommended_action",
+            payload["position_judgment_contract"]["append_jsonl_object"],
+        )
+        self.assertIn(
             "position_attention_acknowledged",
             payload["position_judgment_contract"]["append_jsonl_object"],
         )
@@ -3876,6 +3884,8 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(template["allowed_decisions"], ["hold", "watch", "reduce", "exit", "trail_stop"])
         self.assertEqual(draft["packet_id"], payload["packet_id"])
         self.assertEqual(draft["review_id"], "simulation:8:00700:2026-06-12:risk_review")
+        self.assertEqual(draft["review_thread_key"], "simulation:8:00700")
+        self.assertEqual(draft["reviewed_recommended_action"], "risk_review")
         self.assertEqual(draft["portfolio_id"], 8)
         self.assertEqual(draft["role"], "simulation")
         self.assertEqual(draft["symbol"], "00700")

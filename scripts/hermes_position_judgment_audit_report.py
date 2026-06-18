@@ -23,6 +23,14 @@ REPORT_FILE = os.environ.get(
 )
 MAX_JUDGMENT_AGE_MINUTES = int(os.environ.get("HERMES_POSITION_MAX_JUDGMENT_AGE_MINUTES", "1440"))
 VALID_DECISIONS = {"hold", "watch", "reduce", "exit", "trail_stop"}
+ACTION_RANKS = {
+    "hold": 0,
+    "watch": 0,
+    "risk_review": 1,
+    "take_profit_or_trailing_stop_review": 2,
+    "reduce_or_exit_review": 3,
+    "exit_review": 4,
+}
 REQUIRED_CONTEXT_REVIEW_FLAGS = (
     "position_context_reviewed",
     "portfolio_risk_reviewed",
@@ -116,6 +124,65 @@ def as_int(value, default=None):
         return default
 
 
+def review_thread_key_for(value):
+    if not isinstance(value, dict):
+        return ""
+    explicit = str(value.get("review_thread_key") or "").strip()
+    if explicit:
+        return explicit
+    role = str(value.get("role") or "").strip()
+    portfolio_id = as_int(value.get("portfolio_id"))
+    symbol = str(value.get("symbol") or "").strip().upper()
+    if not role or portfolio_id is None or not symbol:
+        return ""
+    return f"{role}:{portfolio_id}:{symbol}"
+
+
+def reviewed_action_from_id(review_id):
+    parts = str(review_id or "").split(":")
+    return parts[-1] if len(parts) >= 5 else ""
+
+
+def reviewed_action_for_judgment(judgment):
+    return str(
+        (judgment or {}).get("reviewed_recommended_action")
+        or (judgment or {}).get("recommended_action")
+        or reviewed_action_from_id((judgment or {}).get("review_id"))
+        or ""
+    ).strip()
+
+
+def action_rank(action):
+    return ACTION_RANKS.get(str(action or "").strip(), 1)
+
+
+def current_action_covered_by_judgment(judgment, item):
+    current_action = str((item or {}).get("recommended_action") or reviewed_action_from_id((item or {}).get("review_id")) or "").strip()
+    reviewed_action = reviewed_action_for_judgment(judgment)
+    if not current_action:
+        return True, []
+    if not reviewed_action:
+        return False, ["thread_match_missing_reviewed_action"]
+    if action_rank(current_action) > action_rank(reviewed_action):
+        return False, ["thread_match_current_action_escalated"]
+    return True, []
+
+
+def judgment_expiry_minutes(judgment):
+    expiry = (judgment or {}).get("expiry_minutes", MAX_JUDGMENT_AGE_MINUTES)
+    try:
+        return int(expiry)
+    except (TypeError, ValueError):
+        return MAX_JUDGMENT_AGE_MINUTES
+
+
+def judgment_is_expired(judgment, now):
+    reviewed_at = intake.parse_time((judgment or {}).get("reviewed_at") or (judgment or {}).get("created_at"))
+    if not reviewed_at:
+        return False
+    return now - reviewed_at > timedelta(minutes=judgment_expiry_minutes(judgment))
+
+
 def packet_position_review_maps(packet):
     position_review = (packet or {}).get("position_review") or {}
     items = position_review.get("items") if isinstance(position_review, dict) else []
@@ -125,6 +192,17 @@ def packet_position_review_maps(packet):
         if rid:
             by_id[rid] = item
     return by_id
+
+
+def packet_position_review_thread_map(packet):
+    position_review = (packet or {}).get("position_review") or {}
+    items = position_review.get("items") if isinstance(position_review, dict) else []
+    by_thread = {}
+    for item in items or []:
+        key = review_thread_key_for(item)
+        if key and key not in by_thread:
+            by_thread[key] = item
+    return by_thread
 
 
 def packet_for_judgment(judgment, latest_packet, archive_dir=PACKET_ARCHIVE_DIR):
@@ -151,6 +229,8 @@ def validate_judgment_contract(judgment):
         reasons.append("missing_packet_id")
     if not str(judgment.get("review_id", "")).strip():
         reasons.append("missing_review_id")
+    if not review_thread_key_for(judgment):
+        reasons.append("missing_review_thread_key")
     if not str(judgment.get("symbol", "")).strip():
         reasons.append("missing_symbol")
     if as_int(judgment.get("portfolio_id")) is None:
@@ -179,6 +259,63 @@ def validate_judgment_contract(judgment):
     if decision in ("reduce", "exit") and as_float(judgment.get("max_exit_quantity"), 0) < 0:
         reasons.append("max_exit_quantity_invalid")
     return reasons
+
+
+def select_review_item_for_judgment(
+    judgment,
+    packet_review_by_id,
+    now=None,
+    latest_review_by_id=None,
+    latest_review_by_thread=None,
+):
+    review_id = str(judgment.get("review_id", "")).strip()
+    packet_review_by_id = packet_review_by_id or {}
+    latest_review_by_id = latest_review_by_id or {}
+    latest_review_by_thread = latest_review_by_thread or {}
+
+    if review_id and review_id in latest_review_by_id:
+        item = latest_review_by_id[review_id]
+        return item, {
+            "match_type": "latest_review_id",
+            "current_packet_coverage": True,
+            "covered_review_id": item.get("review_id"),
+            "thread_rejected_reasons": [],
+        }
+
+    thread_key = review_thread_key_for(judgment)
+    if thread_key and thread_key in latest_review_by_thread and not judgment_is_expired(judgment, now or datetime.now()):
+        item = latest_review_by_thread[thread_key]
+        covered, rejected = current_action_covered_by_judgment(judgment, item)
+        if covered:
+            return item, {
+                "match_type": "latest_review_thread_key",
+                "current_packet_coverage": True,
+                "covered_review_id": item.get("review_id"),
+                "thread_rejected_reasons": [],
+            }
+        if review_id and review_id not in packet_review_by_id:
+            return None, {
+                "match_type": "none",
+                "current_packet_coverage": False,
+                "covered_review_id": None,
+                "thread_rejected_reasons": rejected,
+            }
+
+    if review_id and review_id in packet_review_by_id:
+        item = packet_review_by_id[review_id]
+        return item, {
+            "match_type": "packet_review_id",
+            "current_packet_coverage": False,
+            "covered_review_id": item.get("review_id"),
+            "thread_rejected_reasons": [],
+        }
+
+    return None, {
+        "match_type": "none",
+        "current_packet_coverage": False,
+        "covered_review_id": None,
+        "thread_rejected_reasons": [],
+    }
 
 
 def context_review_reasons(judgment, item):
@@ -218,7 +355,11 @@ def position_attention_acknowledgement_reasons(judgment, item):
     if not set(attention).issubset(acknowledged):
         reasons.append("position_attention_codes_missing_or_unmatched")
     notes = judgment.get("position_attention_notes")
-    if not isinstance(notes, list) or not notes:
+    if isinstance(notes, str):
+        notes_present = bool(notes.strip())
+    else:
+        notes_present = isinstance(notes, list) and bool(notes)
+    if not notes_present:
         reasons.append("position_attention_notes_missing")
     effects = judgment.get("position_attention_effects")
     if not isinstance(effects, list) or not effects:
@@ -242,12 +383,31 @@ def position_attention_acknowledgement_reasons(judgment, item):
     return reasons
 
 
-def audit_judgment(judgment, packet, review_by_id, now=None, packet_source="latest_packet", packet_reasons=None):
+def audit_judgment(
+    judgment,
+    packet,
+    review_by_id,
+    now=None,
+    packet_source="latest_packet",
+    packet_reasons=None,
+    latest_review_by_id=None,
+    latest_review_by_thread=None,
+):
     now = now or datetime.now()
     review_id = str(judgment.get("review_id", "")).strip()
     reasons = validate_judgment_contract(judgment)
-    reasons.extend(packet_reasons or [])
-    item = review_by_id.get(review_id)
+    item, match = select_review_item_for_judgment(
+        judgment,
+        review_by_id,
+        now=now,
+        latest_review_by_id=latest_review_by_id,
+        latest_review_by_thread=latest_review_by_thread,
+    )
+    reasons.extend(match.get("thread_rejected_reasons") or [])
+    if match.get("current_packet_coverage") and match.get("match_type") == "latest_review_thread_key":
+        packet_source = "latest_packet_thread_key"
+    else:
+        reasons.extend(packet_reasons or [])
     decision = str(judgment.get("decision", "")).strip().lower()
     if not item:
         reasons.append("orphan_position_judgment_not_in_packet")
@@ -272,12 +432,7 @@ def audit_judgment(judgment, packet, review_by_id, now=None, packet_source="late
 
     reviewed_at = intake.parse_time(judgment.get("reviewed_at") or judgment.get("created_at"))
     if reviewed_at:
-        expiry = judgment.get("expiry_minutes", MAX_JUDGMENT_AGE_MINUTES)
-        try:
-            expiry = int(expiry)
-        except (TypeError, ValueError):
-            expiry = MAX_JUDGMENT_AGE_MINUTES
-        if now - reviewed_at > timedelta(minutes=expiry):
+        if judgment_is_expired(judgment, now):
             reasons.append("judgment_expired")
 
     return {
@@ -290,6 +445,11 @@ def audit_judgment(judgment, packet, review_by_id, now=None, packet_source="late
         "reviewed_at": judgment.get("reviewed_at") or judgment.get("created_at"),
         "packet_id": str(judgment.get("packet_id", "")).strip(),
         "packet_source": packet_source,
+        "review_thread_key": review_thread_key_for(judgment),
+        "match_type": match.get("match_type"),
+        "covered_review_id": match.get("covered_review_id") or review_id,
+        "current_packet_coverage": bool(match.get("current_packet_coverage")),
+        "thread_rejected_reasons": match.get("thread_rejected_reasons") or [],
         "status": "PASS" if not reasons else "FAIL",
         "reasons": sorted(set(reasons)),
     }
@@ -311,7 +471,7 @@ def row_in_current_packet_scope(row, latest_packet_id):
 
 
 def duplicate_review_counts_from_rows(rows):
-    counts = Counter(str(row.get("review_id", "")).strip() for row in rows if row.get("review_id"))
+    counts = Counter(str(row.get("covered_review_id") or row.get("review_id") or "").strip() for row in rows if row.get("covered_review_id") or row.get("review_id"))
     return {rid: count for rid, count in counts.items() if count > 1}
 
 
@@ -362,18 +522,18 @@ def build_recommendations(rows, reason_counts):
 
 def coverage_summary(review_by_id, rows):
     current_pass_judged_ids = {
-        str(row.get("review_id") or "").strip()
+        str(row.get("covered_review_id") or row.get("review_id") or "").strip()
         for row in rows
         if row.get("audit_scope") == "current_packet"
         and row.get("status") == "PASS"
-        and str(row.get("review_id") or "").strip() in (review_by_id or {})
+        and str(row.get("covered_review_id") or row.get("review_id") or "").strip() in (review_by_id or {})
     }
     current_failed_judged_ids = {
-        str(row.get("review_id") or "").strip()
+        str(row.get("covered_review_id") or row.get("review_id") or "").strip()
         for row in rows
         if row.get("audit_scope") == "current_packet"
         and row.get("status") != "PASS"
-        and str(row.get("review_id") or "").strip() in (review_by_id or {})
+        and str(row.get("covered_review_id") or row.get("review_id") or "").strip() in (review_by_id or {})
     }
     high_priority = [
         item
@@ -424,6 +584,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
     latest_packet = load_json_file(PACKET_FILE, {}) if packet is None else packet
     latest_packet_id = latest_packet.get("packet_id") if isinstance(latest_packet, dict) else None
     latest_review_by_id = packet_position_review_maps(latest_packet)
+    latest_review_by_thread = packet_position_review_thread_map(latest_packet)
     rows = []
     packet_source_counts = Counter()
     for judgment in judgments:
@@ -442,12 +603,14 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
                 now=now,
                 packet_source=packet_source,
                 packet_reasons=packet_reasons,
+                latest_review_by_id=latest_review_by_id,
+                latest_review_by_thread=latest_review_by_thread,
             )
         )
     current_rows = []
     historical_rows = []
     for row in rows:
-        if row_in_current_packet_scope(row, latest_packet_id):
+        if row.get("current_packet_coverage") or row_in_current_packet_scope(row, latest_packet_id):
             row["audit_scope"] = "current_packet"
             current_rows.append(row)
         else:

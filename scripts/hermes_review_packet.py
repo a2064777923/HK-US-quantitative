@@ -2359,6 +2359,19 @@ def position_attention_codes_from_item(item):
     return deduped
 
 
+def position_review_thread_key_for_item(item):
+    item = item if isinstance(item, dict) else {}
+    explicit = str(item.get("review_thread_key") or "").strip()
+    if explicit:
+        return explicit
+    role = str(item.get("role") or "").strip()
+    portfolio_id = item.get("portfolio_id")
+    symbol = str(item.get("symbol") or "").strip().upper()
+    if not role or portfolio_id in (None, "") or not symbol:
+        return None
+    return f"{role}:{portfolio_id}:{symbol}"
+
+
 def position_judgment_template_for_item(item, packet_id, judgment_file):
     item = item if isinstance(item, dict) else {}
     attention_codes = position_attention_codes_from_item(item)
@@ -2385,6 +2398,8 @@ def position_judgment_template_for_item(item, packet_id, judgment_file):
             "schema": POSITION_JUDGMENT_SCHEMA,
             "packet_id": packet_id,
             "review_id": item.get("review_id"),
+            "review_thread_key": position_review_thread_key_for_item(item),
+            "reviewed_recommended_action": item.get("recommended_action"),
             "portfolio_id": item.get("portfolio_id"),
             "role": item.get("role"),
             "symbol": item.get("symbol"),
@@ -2802,6 +2817,8 @@ def position_judgment_contract(judgment_file):
             "schema": POSITION_JUDGMENT_SCHEMA,
             "packet_id": "<copy from packet_id>",
             "review_id": "<copy from position_review.items[].review_id>",
+            "review_thread_key": "<copy from position_review.items[].review_thread_key>",
+            "reviewed_recommended_action": "<copy from position_review.items[].recommended_action>",
             "portfolio_id": "<copy from position_review.items[].portfolio_id>",
             "role": "<copy from position_review.items[].role>",
             "symbol": "<copy from position_review.items[].symbol>",
@@ -2839,7 +2856,7 @@ def position_judgment_contract(judgment_file):
             "Position judgments are advisory review artifacts only.",
             "Position judgments do not approve trades and must not be consumed by rt_order_intake.py.",
             "Always set advisory_only=true and submits_orders=false.",
-            "Copy packet_id and review_id exactly so audits can resolve the packet and position_review item reviewed.",
+            "Copy packet_id and review_id exactly so audits can resolve the packet and position_review item reviewed; also copy review_thread_key and reviewed_recommended_action so fresh same-position reviews can survive packet refresh without covering escalated actions.",
             "Review position_review.items[].context_digest before writing hold, watch, reduce, exit, or trail_stop advice; negative external context, risk-off sentiment, partial fundamentals, stale intraday data, or source-reliability limits must be reflected in supporting_factors, opposing_factors, risk_notes, or follow_up.",
             "When position_review.items[].context_digest.position_attention is non-empty, set position_attention_acknowledged=true, copy all attention codes into position_attention_codes, explain the overall effect in position_attention_notes, and include one position_attention_effects[] object per reviewed code with code, effect, and decision_impact.",
             "For user role, keep machine-readable decisions to hold or watch; put manual reduce/exit advice only in risk_notes.",

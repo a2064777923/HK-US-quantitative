@@ -87,6 +87,11 @@ def judgment(review_id="simulation:8:00929:2026-06-12:reduce_or_exit_review", de
         "risk_notes": ["unit test risk"],
     }
     item.update(extra)
+    item.setdefault(
+        "review_thread_key",
+        f"{item.get('role')}:{item.get('portfolio_id')}:{str(item.get('symbol')).upper()}",
+    )
+    item.setdefault("reviewed_recommended_action", audit.reviewed_action_from_id(item.get("review_id")))
     return item
 
 
@@ -154,6 +159,67 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "OK")
         self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 0)
+
+    def test_unexpired_thread_judgment_can_cover_refreshed_same_position_review(self):
+        current = position_item(
+            "simulation:8:00929:2026-06-18:reduce_or_exit_review",
+            urgency="high",
+            recommended_action="reduce_or_exit_review",
+        )
+        prior = judgment(
+            "simulation:8:00929:2026-06-17:reduce_or_exit_review",
+            packet_id="old-packet",
+            reviewed_at="2026-06-18T09:30:00",
+            decision="watch",
+            opposing_factors=["support held above stop", "liquidity risk makes immediate exit worse"],
+            risk_notes=["review again next session", "do not add exposure before review"],
+        )
+
+        payload = audit.build_report(
+            [prior],
+            packet([current], packet_id="latest-packet"),
+            now=datetime(2026, 6, 18, 10, 0),
+            packet_archive_dir="/tmp/does-not-exist-for-test",
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(row["status"], "PASS")
+        self.assertEqual(row["audit_scope"], "current_packet")
+        self.assertEqual(row["packet_source"], "latest_packet_thread_key")
+        self.assertEqual(row["match_type"], "latest_review_thread_key")
+        self.assertEqual(row["covered_review_id"], "simulation:8:00929:2026-06-18:reduce_or_exit_review")
+        self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 0)
+
+    def test_thread_judgment_does_not_cover_escalated_current_action(self):
+        current = position_item(
+            "simulation:8:00929:2026-06-18:exit_review",
+            urgency="high",
+            recommended_action="exit_review",
+        )
+        prior = judgment(
+            "simulation:8:00929:2026-06-17:reduce_or_exit_review",
+            packet_id="old-packet",
+            reviewed_at="2026-06-18T09:30:00",
+            reviewed_recommended_action="reduce_or_exit_review",
+            decision="watch",
+            opposing_factors=["support held above stop", "liquidity risk makes immediate exit worse"],
+            risk_notes=["review again next session", "do not add exposure before review"],
+        )
+
+        payload = audit.build_report(
+            [prior],
+            packet([current], packet_id="latest-packet"),
+            now=datetime(2026, 6, 18, 10, 0),
+            packet_archive_dir="/tmp/does-not-exist-for-test",
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "WARN")
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("thread_match_current_action_escalated", row["reasons"])
+        self.assertEqual(row["audit_scope"], "historical_packet")
+        self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 1)
 
     def test_historical_or_failed_judgments_do_not_cover_current_high_urgency_review(self):
         high = position_item(
@@ -285,6 +351,25 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
         self.assertIn("position_attention_effect_detail_missing", row["reasons"])
         self.assertIn("position_attention_effect_decision_impact_missing", row["reasons"])
 
+    def test_position_attention_notes_accepts_non_empty_string_for_legacy_judgments(self):
+        ack = position_attention_acknowledgement()
+        ack["position_attention_notes"] = "position attention items were reviewed"
+
+        payload = audit.build_report(
+            [
+                judgment(
+                    context_review=context_review(),
+                    **ack,
+                )
+            ],
+            packet([position_item_with_context()]),
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(row["status"], "PASS")
+        self.assertNotIn("position_attention_notes_missing", row["reasons"])
+
     def test_enriched_position_review_partial_context_review_flags_missing_fields(self):
         payload = audit.build_report(
             [
@@ -302,7 +387,16 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
         self.assertIn("position_judgments_require_context_review_for_enriched_items", payload["recommendations"])
 
     def test_orphan_review_id_is_flagged(self):
-        payload = audit.build_report([judgment("missing-review")], packet())
+        payload = audit.build_report(
+            [
+                judgment(
+                    "missing-review",
+                    review_thread_key="simulation:8:MISSING",
+                    symbol="MISSING",
+                )
+            ],
+            packet(),
+        )
         row = payload["judgments"][0]
 
         self.assertEqual(payload["status"], "FAIL")
