@@ -99,6 +99,61 @@ def base_payloads():
                 "recommendations": ["wait_for_fresh_confirmed_alerts_or_run_packet_during_market_session"],
             },
             "non_actionable_observation_count": 20,
+            "position_judgment_tasks": {
+                "schema": "hermes_position_judgment_task_index_v1",
+                "advisory_only": True,
+                "submits_orders": False,
+                "task_count": 1,
+                "included_task_count": 1,
+                "high_urgency_task_count": 1,
+                "judgment_file": "/tmp/hermes_position_judgments.jsonl",
+                "tasks": [
+                    {
+                        "review_id": "simulation:8:00816:2026-06-12:exit_review",
+                        "review_thread_key": "simulation:8:00816",
+                        "portfolio_id": 8,
+                        "role": "simulation",
+                        "symbol": "00816",
+                        "urgency": "high",
+                        "recommended_action": "exit_review",
+                        "allowed_decisions": ["hold", "watch", "reduce", "exit", "trail_stop"],
+                        "required_attention_codes": [
+                            "position_dynamic_management_requires_review",
+                            "position_exit_or_reduce_review_requires_contextual_rationale",
+                        ],
+                        "dynamic_management": {
+                            "target_status": "below_signal_stop",
+                            "price_snapshot_age_hours": 0.25,
+                            "price_snapshot_fresh": True,
+                            "distance_to_signal_take_profit_pct": 8.5,
+                            "distance_above_signal_stop_loss_pct": -2.1,
+                            "review_focus": [
+                                "confirm_exit_pressure_with_market_and_intraday_context",
+                                "review_reduce_or_exit_before_adding_exposure",
+                            ],
+                        },
+                        "intraday_review_contract": {
+                            "decision_use": "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation",
+                            "required_timeframes": ["session", "5m", "15m", "60m"],
+                            "required_checks": [
+                                "confirm_symbol_session_direction_and_change_pct",
+                                "review_5m_15m_60m_alignment_before_action",
+                                "confirm_sell_or_stop_pressure_is_not_only_stale_daily_signal",
+                            ],
+                            "hard_limits": [
+                                "intraday_context_must_not_replace_completed_daily_ohlcv",
+                                "position_advice_path_submits_no_orders",
+                            ],
+                        },
+                        "required_output": {
+                            "append_jsonl_object_to": "/tmp/hermes_position_judgments.jsonl",
+                            "schema": "hermes_position_judgment_v1",
+                            "advisory_only": True,
+                            "submits_orders": False,
+                        },
+                    }
+                ],
+            },
             "position_review": {
                 "position_judgment_template_summary": {
                     "schema": "portfolio_position_judgment_template_summary_v1",
@@ -642,6 +697,17 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertFalse(actions["write_high_urgency_position_judgments"]["operator_effect"]["changes_crontab"])
         self.assertIn("template_summary", actions["write_high_urgency_position_judgments"]["evidence"])
         self.assertEqual(
+            actions["write_high_urgency_position_judgments"]["evidence"]["task_index"]["schema"],
+            "hermes_position_judgment_task_index_v1",
+        )
+        self.assertEqual(
+            actions["write_high_urgency_position_judgments"]["evidence"]["task_index"]["included_task_count"],
+            1,
+        )
+        self.assertTrue(
+            actions["write_high_urgency_position_judgments"]["evidence"]["task_index"]["used_for_write_plan"]
+        )
+        self.assertEqual(
             actions["write_high_urgency_position_judgments"]["evidence"]["manual_append_target"],
             report.POSITION_JUDGMENT_FILE,
         )
@@ -652,7 +718,6 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         write_plan = actions["write_high_urgency_position_judgments"]["evidence"]["position_judgment_write_plan"]
         self.assertEqual(write_plan[0]["review_id"], "simulation:8:00816:2026-06-12:exit_review")
         self.assertEqual(write_plan[0]["review_thread_key"], "simulation:8:00816")
-        self.assertTrue(write_plan[0]["packet_item_found"])
         self.assertEqual(write_plan[0]["allowed_decisions"], ["hold", "watch", "reduce", "exit", "trail_stop"])
         self.assertIn("position_dynamic_management_requires_review", write_plan[0]["required_attention_codes"])
         self.assertEqual(write_plan[0]["dynamic_management"]["target_status"], "below_signal_stop")
@@ -665,9 +730,9 @@ class OperatorActionQueueReportTests(unittest.TestCase):
             "review_5m_15m_60m_alignment_before_action",
             write_plan[0]["intraday_review_contract"]["required_checks"],
         )
-        self.assertEqual(write_plan[0]["operator_decision_points"][0]["decision"], "exit")
-        self.assertEqual(write_plan[0]["operator_decision_points"][0]["quantity_hint"], 1200)
-        self.assertEqual(write_plan[0]["operator_decision_points"][1]["condition"], "if liquidity is thin")
+        self.assertEqual(write_plan[0]["required_output"]["schema"], "hermes_position_judgment_v1")
+        self.assertTrue(write_plan[0]["required_output"]["advisory_only"])
+        self.assertFalse(write_plan[0]["required_output"]["submits_orders"])
         self.assertIn("hermes_review_packet.py", actions["write_high_urgency_position_judgments"]["operator_command"])
         self.assertIn(
             "--output /tmp/hermes_position_judgment_audit_report.json --text",

@@ -441,67 +441,74 @@ def position_actions(position_audit, packet):
         packet_review = packet.get("position_review") if isinstance(packet.get("position_review"), dict) else {}
         packet_items = safe_list(packet_review.get("items"))
         template_summary = packet_review.get("position_judgment_template_summary") or {}
+        task_index = safe_dict(packet.get("position_judgment_tasks"))
+        task_rows = safe_list(task_index.get("tasks"))
+        task_index_schema = str(task_index.get("schema") or "").strip()
+        task_index_usable = task_index_schema == "hermes_position_judgment_task_index_v1" and bool(task_rows)
         items_by_id = {str(item.get("review_id") or "").strip(): item for item in packet_items if isinstance(item, dict)}
         items_by_thread = {
             review_thread_key_for_item(item): item
             for item in packet_items
             if isinstance(item, dict) and review_thread_key_for_item(item)
         }
-        write_plan = []
-        for example in examples[: min(high_unjudged, 20)]:
-            if not isinstance(example, dict):
-                continue
-            review_id = str(example.get("review_id") or "").strip()
-            item = items_by_id.get(review_id)
-            if item is None:
-                item = items_by_thread.get(review_thread_key_for_item(example))
-            advisory_plan = safe_dict(item.get("advisory_plan")) if isinstance(item, dict) else {}
-            dynamic = safe_dict(advisory_plan.get("dynamic_management_context"))
-            intraday_contract = safe_dict(advisory_plan.get("intraday_review_contract"))
-            decision_points = [
-                {
-                    "decision": point.get("decision"),
-                    "quantity_fraction": point.get("quantity_fraction"),
-                    "quantity_hint": point.get("quantity_hint"),
-                    "price_reference": point.get("price_reference"),
-                    "manual_only": point.get("manual_only"),
-                    "condition": point.get("condition"),
-                }
-                for point in safe_list(advisory_plan.get("operator_decision_points"))[:5]
-                if isinstance(point, dict)
-            ]
-            template = safe_dict(item.get("position_judgment_template")) if isinstance(item, dict) else {}
-            digest = safe_dict(item.get("context_digest")) if isinstance(item, dict) else {}
-            write_plan.append(
-                {
-                    "review_id": review_id,
-                    "review_thread_key": review_thread_key_for_item(item or example),
-                    "portfolio_id": example.get("portfolio_id"),
-                    "role": example.get("role"),
-                    "symbol": example.get("symbol"),
-                    "urgency": example.get("urgency"),
-                    "recommended_action": example.get("recommended_action"),
-                    "packet_item_found": item is not None,
-                    "allowed_decisions": template.get("allowed_decisions"),
-                    "required_attention_codes": safe_list(template.get("required_position_attention_codes"))
-                    or safe_list(digest.get("position_attention")),
-                    "dynamic_management": {
-                        "target_status": dynamic.get("target_status"),
-                        "price_snapshot_age_hours": dynamic.get("price_snapshot_age_hours"),
-                        "price_snapshot_fresh": dynamic.get("price_snapshot_fresh"),
-                        "distance_to_signal_take_profit_pct": dynamic.get("distance_to_signal_take_profit_pct"),
-                        "distance_above_signal_stop_loss_pct": dynamic.get("distance_above_signal_stop_loss_pct"),
-                        "review_focus": safe_list(dynamic.get("review_focus"))[:4],
-                    },
-                    "intraday_review_contract": {
-                        "decision_use": intraday_contract.get("decision_use"),
-                        "required_timeframes": safe_list(intraday_contract.get("required_timeframes"))[:6],
-                        "required_checks": safe_list(intraday_contract.get("required_checks"))[:6],
-                        "hard_limits": safe_list(intraday_contract.get("hard_limits"))[:4],
-                    } if intraday_contract else {},
-                    "operator_decision_points": decision_points,
-                }
-            )
+        if task_index_usable:
+            write_plan = [safe_dict(row) for row in task_rows[: min(high_unjudged, 20)] if isinstance(row, dict)]
+        else:
+            write_plan = []
+            for example in examples[: min(high_unjudged, 20)]:
+                if not isinstance(example, dict):
+                    continue
+                review_id = str(example.get("review_id") or "").strip()
+                item = items_by_id.get(review_id)
+                if item is None:
+                    item = items_by_thread.get(review_thread_key_for_item(example))
+                advisory_plan = safe_dict(item.get("advisory_plan")) if isinstance(item, dict) else {}
+                dynamic = safe_dict(advisory_plan.get("dynamic_management_context"))
+                intraday_contract = safe_dict(advisory_plan.get("intraday_review_contract"))
+                decision_points = [
+                    {
+                        "decision": point.get("decision"),
+                        "quantity_fraction": point.get("quantity_fraction"),
+                        "quantity_hint": point.get("quantity_hint"),
+                        "price_reference": point.get("price_reference"),
+                        "manual_only": point.get("manual_only"),
+                        "condition": point.get("condition"),
+                    }
+                    for point in safe_list(advisory_plan.get("operator_decision_points"))[:5]
+                    if isinstance(point, dict)
+                ]
+                template = safe_dict(item.get("position_judgment_template")) if isinstance(item, dict) else {}
+                digest = safe_dict(item.get("context_digest")) if isinstance(item, dict) else {}
+                write_plan.append(
+                    {
+                        "review_id": review_id,
+                        "review_thread_key": review_thread_key_for_item(item or example),
+                        "portfolio_id": example.get("portfolio_id"),
+                        "role": example.get("role"),
+                        "symbol": example.get("symbol"),
+                        "urgency": example.get("urgency"),
+                        "recommended_action": example.get("recommended_action"),
+                        "packet_item_found": item is not None,
+                        "allowed_decisions": template.get("allowed_decisions"),
+                        "required_attention_codes": safe_list(template.get("required_position_attention_codes"))
+                        or safe_list(digest.get("position_attention")),
+                        "dynamic_management": {
+                            "target_status": dynamic.get("target_status"),
+                            "price_snapshot_age_hours": dynamic.get("price_snapshot_age_hours"),
+                            "price_snapshot_fresh": dynamic.get("price_snapshot_fresh"),
+                            "distance_to_signal_take_profit_pct": dynamic.get("distance_to_signal_take_profit_pct"),
+                            "distance_above_signal_stop_loss_pct": dynamic.get("distance_above_signal_stop_loss_pct"),
+                            "review_focus": safe_list(dynamic.get("review_focus"))[:4],
+                        },
+                        "intraday_review_contract": {
+                            "decision_use": intraday_contract.get("decision_use"),
+                            "required_timeframes": safe_list(intraday_contract.get("required_timeframes"))[:6],
+                            "required_checks": safe_list(intraday_contract.get("required_checks"))[:6],
+                            "hard_limits": safe_list(intraday_contract.get("hard_limits"))[:4],
+                        } if intraday_contract else {},
+                        "operator_decision_points": decision_points,
+                    }
+                )
         review_workflow_command = (
             f"/usr/bin/python3 /root/hermes_review_packet.py --ephemeral-state --output {PACKET_FILE} && "
             f"/usr/bin/python3 /root/hermes_position_judgment_audit_report.py "
@@ -523,6 +530,14 @@ def position_actions(position_audit, packet):
                     "manual_append_target": POSITION_JUDGMENT_FILE,
                     "template_source": f"{PACKET_FILE} position_review.items[].position_judgment_template",
                     "template_summary": template_summary,
+                    "task_index": {
+                        "schema": task_index.get("schema"),
+                        "task_count": task_index.get("task_count"),
+                        "included_task_count": task_index.get("included_task_count"),
+                        "high_urgency_task_count": task_index.get("high_urgency_task_count"),
+                        "submits_orders": task_index.get("submits_orders"),
+                        "used_for_write_plan": task_index_usable,
+                    } if task_index else {},
                     "unjudged_examples": examples,
                     "position_judgment_write_plan": write_plan,
                     "safety": {
