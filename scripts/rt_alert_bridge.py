@@ -950,6 +950,10 @@ def compact_worklist_summary(work_item):
                 orders=required.get("submits_orders", "?"),
             )
         )
+        lines.append(
+            "├─ JSONL寫入：append一行到/tmp/hermes_position_judgments.jsonl；必填reviewed_at,confidence,"
+            "decision,supporting_factors,opposing_factors,risk_notes,context_review"
+        )
     if dynamic:
         lines.append(
             "├─ Worklist動態：status={status} pnl={pnl} day={day} dist_stop={dist_stop} px_age={age}".format(

@@ -606,6 +606,8 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("use=can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation", text)
             self.assertIn("Hermes優先入口：position_judgment_worklist.items[]", text)
             self.assertIn("Worklist輸出：schema=hermes_position_judgment_v1 advisory_only=True submits_orders=False", text)
+            self.assertIn("JSONL寫入：append一行到/tmp/hermes_position_judgments.jsonl", text)
+            self.assertIn("reviewed_at,confidence,decision,supporting_factors,opposing_factors,risk_notes,context_review", text)
             self.assertIn("Worklist盤中證據：align=supports_recommended_action", text)
             self.assertIn("intent=risk_reduction", text)
             self.assertIn("support=session_down_supports_reduce_exit", text)
