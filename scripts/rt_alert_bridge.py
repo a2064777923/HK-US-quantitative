@@ -390,6 +390,29 @@ def short_list(values, limit=4):
     return ",".join(rows)
 
 
+def factor_evidence_basis_line(alert):
+    basis = alert.get("factor_evidence_basis") if isinstance(alert, dict) else {}
+    if not isinstance(basis, dict) or not basis:
+        return ""
+    parts = []
+    for key in ("completed_daily_ohlcv", "current_session_quote", "unspecified"):
+        value = basis.get(key)
+        if value not in (None, "", 0):
+            parts.append(f"{key}={value}")
+    for key, value in sorted(basis.items()):
+        if key in ("completed_daily_ohlcv", "current_session_quote", "unspecified"):
+            continue
+        if value not in (None, "", 0):
+            parts.append(f"{key}={value}")
+    if not parts:
+        return ""
+    current_session = alert.get("current_session_quote_evidence")
+    suffix = ""
+    if isinstance(current_session, dict) and current_session.get("used_in_full_score"):
+        suffix = " quote_in_score=true"
+    return "├─ 證據來源：" + " ".join(parts[:4]) + suffix
+
+
 def compact_source_components(source_limits):
     components = source_limits.get("components") if isinstance(source_limits, dict) else []
     rows = []
@@ -669,6 +692,9 @@ def build_output(actionable, execution_mode, packet=None, title=None, run_intake
         lines.append(f"├─ 止損：${alert['stop_loss']}")
         lines.append(f"├─ 風險回報：{alert.get('rr_ratio', '?')}")
         lines.append(f"├─ 多因子分：{alert.get('full_score', '?')} | 確認：{alert.get('confirmed', True)}")
+        evidence_line = factor_evidence_basis_line(alert)
+        if evidence_line:
+            lines.append(evidence_line)
         lines.extend(build_hermes_context_lines(alert, packet, items_by_signal))
         lines.append(
             f"└─ 當前：${float(alert.get('price', alert['entry_price'])):.2f} "

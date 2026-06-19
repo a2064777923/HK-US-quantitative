@@ -259,6 +259,55 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertIn("hermes_judgment_gate_failed", result["reasons"])
             submit.assert_not_called()
 
+    def test_hermes_request_preserves_intraday_quote_evidence_contract(self):
+        alert = fresh_alert("sig-intraday-contract", "AAPL")
+        alert.update(
+            {
+                "market": "US",
+                "factor_evidence_basis": {
+                    "completed_daily_ohlcv": 2,
+                    "current_session_quote": 1,
+                },
+                "factor_contributions": [
+                    {
+                        "category": "momentum",
+                        "raw_category": "same_session_momentum",
+                        "evidence_basis": "current_session_quote",
+                        "direction": "BUY",
+                        "score_delta": 0.4,
+                        "reason": "當日動量+7.2%",
+                    }
+                ],
+                "current_session_quote_evidence": {
+                    "schema": "current_session_quote_evidence_v1",
+                    "used_in_full_score": True,
+                    "provisional": True,
+                    "mutates_completed_daily_history": False,
+                    "replaces_completed_daily_bar": False,
+                },
+                "intraday_evidence_policy": "single_quote_current_session_plus_external_read_only_context",
+                "completed_daily_mutation_allowed": False,
+                "partial_daily_bar_used_as_completed_daily": False,
+            }
+        )
+        plan = {
+            "symbol": "AAPL",
+            "side": "buy",
+            "quantity": 1,
+            "price_reference": 100,
+            "risk_hkd": 39,
+            "notional_hkd": 780,
+        }
+
+        request = intake.build_judgment_request(alert, plan, self.context)
+
+        alert_request = request["alert"]
+        self.assertEqual(alert_request["factor_evidence_basis"]["current_session_quote"], 1)
+        self.assertEqual(alert_request["factor_contributions"][0]["raw_category"], "same_session_momentum")
+        self.assertTrue(alert_request["current_session_quote_evidence"]["used_in_full_score"])
+        self.assertFalse(alert_request["current_session_quote_evidence"]["mutates_completed_daily_history"])
+        self.assertFalse(alert_request["partial_daily_bar_used_as_completed_daily"])
+
     def test_execute_requires_strategy_evidence_gate(self):
         with tempfile.TemporaryDirectory() as td:
             state_file = str(Path(td) / "state.json")

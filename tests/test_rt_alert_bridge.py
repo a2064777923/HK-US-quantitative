@@ -66,6 +66,16 @@ class RtAlertBridgeTests(unittest.TestCase):
             "take_profit": 112,
             "rr_ratio": 2.4,
             "full_score": 0.7,
+            "factor_evidence_basis": {
+                "completed_daily_ohlcv": 2,
+                "current_session_quote": 1,
+            },
+            "current_session_quote_evidence": {
+                "schema": "current_session_quote_evidence_v1",
+                "used_in_full_score": True,
+                "mutates_completed_daily_history": False,
+                "replaces_completed_daily_bar": False,
+            },
             "price": 100,
             "change_pct": 1.2,
         }
@@ -379,6 +389,7 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("Hermes可審操作候選", text)
             self.assertNotIn("實時操作信號", text)
             self.assertIn("Hermes審核：eligible=True", text)
+            self.assertIn("證據來源：completed_daily_ohlcv=2 current_session_quote=1 quote_in_score=true", text)
 
     def test_signal_notification_marks_missing_packet_match(self):
         with tempfile.TemporaryDirectory() as td:
