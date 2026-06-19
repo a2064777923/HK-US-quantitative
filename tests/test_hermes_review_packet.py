@@ -560,11 +560,22 @@ class HermesReviewPacketTests(unittest.TestCase):
                 "factor_contributions": [
                     {
                         "category": "trend",
+                        "raw_category": "trend",
+                        "evidence_basis": "completed_daily_ohlcv",
                         "direction": "BUY",
                         "score_delta": 0.8,
                         "reason": "多頭排列",
                     }
                 ],
+                "factor_evidence_basis": {"completed_daily_ohlcv": 1},
+                "current_session_quote_evidence": {
+                    "schema": "current_session_quote_evidence_v1",
+                    "used_in_full_score": False,
+                    "change_pct": 0.5,
+                    "provisional": True,
+                    "mutates_completed_daily_history": False,
+                    "replaces_completed_daily_bar": False,
+                },
             }
         )
 
@@ -599,12 +610,17 @@ class HermesReviewPacketTests(unittest.TestCase):
             [
                 {
                     "category": "trend",
+                    "raw_category": "trend",
+                    "evidence_basis": "completed_daily_ohlcv",
                     "direction": "BUY",
                     "score_delta": 0.8,
                     "reason": "多頭排列",
                 }
             ],
         )
+        self.assertEqual(summary["factor_evidence_basis"], {"completed_daily_ohlcv": 1})
+        self.assertFalse(summary["current_session_quote_evidence"]["mutates_completed_daily_history"])
+        self.assertFalse(summary["current_session_quote_evidence"]["replaces_completed_daily_bar"])
 
     def test_packet_marks_valid_dry_run_as_eligible_for_review_approval(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}

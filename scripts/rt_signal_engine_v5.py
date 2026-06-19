@@ -189,7 +189,29 @@ def canonical_factor_category(category):
     return same_source_aliases.get(category, category)
 
 
-def score_contribution(category, direction, score_delta, reason):
+def factor_evidence_basis(raw_category, fallback=None):
+    raw_category = str(raw_category or "").strip().lower()
+    if fallback:
+        return str(fallback)
+    if raw_category == "same_session_momentum":
+        return "current_session_quote"
+    if raw_category:
+        return "completed_daily_ohlcv"
+    return "unspecified"
+
+
+def inferred_raw_factor_category(category, reason=None, raw_category=None):
+    explicit = str(raw_category or "").strip().lower()
+    if explicit:
+        return explicit
+    category = str(category or "").strip().lower()
+    reason_text = str(reason or "").strip()
+    if category == "momentum" and reason_text.startswith("當日動量"):
+        return "same_session_momentum"
+    return category
+
+
+def score_contribution(category, direction, score_delta, reason, evidence_basis=None, raw_category=None):
     direction = str(direction or "").upper()
     score_delta = as_float(score_delta)
     if direction not in ("BUY", "SELL") or score_delta is None or score_delta == 0:
@@ -198,8 +220,11 @@ def score_contribution(category, direction, score_delta, reason):
         return None
     if direction == "SELL" and score_delta > 0:
         return None
+    raw_category = inferred_raw_factor_category(category, reason=reason, raw_category=raw_category)
     return {
-        "category": canonical_factor_category(category),
+        "category": canonical_factor_category(raw_category),
+        "raw_category": raw_category,
+        "evidence_basis": factor_evidence_basis(raw_category, fallback=evidence_basis),
         "direction": direction,
         "score_delta": round(score_delta, 4),
         "reason": str(reason or ""),
@@ -220,6 +245,8 @@ def normalize_score_contributions(contributions):
             contribution.get("direction"),
             raw_delta,
             contribution.get("reason"),
+            evidence_basis=contribution.get("evidence_basis"),
+            raw_category=contribution.get("raw_category"),
         )
         if item and item["category"] and item["reason"]:
             normalized.append(item)
@@ -230,6 +257,45 @@ def score_result(score, reasons, contributions):
         "score": score,
         "reasons": reasons,
         "factor_contributions": normalize_score_contributions(contributions),
+    }
+
+
+def factor_evidence_basis_summary(contributions):
+    counts = defaultdict(int)
+    for contribution in contributions or []:
+        if not isinstance(contribution, dict):
+            continue
+        basis = str(contribution.get("evidence_basis") or "unspecified").strip() or "unspecified"
+        counts[basis] += 1
+    return dict(sorted(counts.items()))
+
+
+def has_current_session_factor(contributions):
+    return any(
+        isinstance(contribution, dict)
+        and str(contribution.get("evidence_basis") or "").strip() == "current_session_quote"
+        for contribution in contributions or []
+    )
+
+
+def current_session_quote_evidence(quote, factor_contributions=None):
+    quote = quote if isinstance(quote, dict) else {}
+    change_pct = as_float(quote.get("change_pct"))
+    prev_close = as_float(quote.get("prev_close"))
+    price = as_float(quote.get("price"))
+    return {
+        "schema": "current_session_quote_evidence_v1",
+        "used_in_full_score": has_current_session_factor(factor_contributions),
+        "used_for_realtime_alignment": True,
+        "used_for_trigger_detection": True,
+        "basis": "latest_realtime_quote_vs_previous_completed_close",
+        "quote_time": quote.get("time", ""),
+        "price": price,
+        "prev_close": prev_close if prev_close is not None and prev_close > 0 else None,
+        "change_pct": change_pct,
+        "provisional": True,
+        "mutates_completed_daily_history": False,
+        "replaces_completed_daily_bar": False,
     }
 
 def unpack_score_result(raw_result):
@@ -943,7 +1009,9 @@ def alert_timeframe_metadata():
         "primary_timeframe": "1d",
         "realtime_input": "single_quote_temporary_bar",
         "intraday_minute_bars_used": False,
-        "intraday_evidence_policy": "external_read_only_context_only",
+        "intraday_evidence_policy": "single_quote_current_session_plus_external_read_only_context",
+        "completed_daily_mutation_allowed": False,
+        "partial_daily_bar_used_as_completed_daily": False,
     }
 
 def alert_daily_history_metadata(indicators):
@@ -1943,7 +2011,7 @@ class IncrementalIndicators:
         ):
             add(
                 same_session_momentum_score_delta(quote_context),
-                "momentum",
+                "same_session_momentum",
                 "BUY",
                 f"當日動量{change_pct:+.1f}%",
             )
@@ -2765,7 +2833,9 @@ class TriggerEngine:
                 "buy_realtime_alignment_blocked": buy_realtime_alignment_blocked,
                 "full_score": round(full_score, 3) if full_score is not None else None,
                 "full_reasons": full_reasons,
+                "factor_evidence_basis": factor_evidence_basis_summary(factor_contributions),
                 "factor_contributions": factor_contributions,
+                "current_session_quote_evidence": current_session_quote_evidence(quote, factor_contributions),
                 "price": c,
                 "change_pct": quote.get("change_pct", 0),
                 "quote_time": quote.get("time", ""),

@@ -477,12 +477,44 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertAlmostEqual(evidence["score"], 0.7)
         self.assertIn("當日動量+3.5%", evidence["reasons"])
         self.assertIn(
-            ("momentum", "BUY", 0.4, "當日動量+3.5%"),
+            ("momentum", "same_session_momentum", "current_session_quote", "BUY", 0.4, "當日動量+3.5%"),
             [
-                (item["category"], item["direction"], item["score_delta"], item["reason"])
+                (
+                    item["category"],
+                    item["raw_category"],
+                    item["evidence_basis"],
+                    item["direction"],
+                    item["score_delta"],
+                    item["reason"],
+                )
                 for item in evidence["factor_contributions"]
             ],
         )
+
+    def test_legacy_same_session_momentum_contribution_keeps_intraday_basis(self):
+        contributions = rt.normalize_score_contributions(
+            [
+                {
+                    "category": "momentum",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "當日動量+7.2%",
+                },
+                {
+                    "category": "momentum",
+                    "direction": "BUY",
+                    "score_delta": 0.2,
+                    "reason": "5日動量+8.0%",
+                },
+            ]
+        )
+
+        self.assertEqual(contributions[0]["category"], "momentum")
+        self.assertEqual(contributions[0]["raw_category"], "same_session_momentum")
+        self.assertEqual(contributions[0]["evidence_basis"], "current_session_quote")
+        self.assertEqual(contributions[1]["category"], "momentum")
+        self.assertEqual(contributions[1]["raw_category"], "momentum")
+        self.assertEqual(contributions[1]["evidence_basis"], "completed_daily_ohlcv")
 
     def test_momentum_uses_true_five_bar_lookback_not_four_bar_window(self):
         ind = rt.IncrementalIndicators("AAPL")
@@ -1898,7 +1930,12 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(alert["primary_timeframe"], "1d")
         self.assertEqual(alert["realtime_input"], "single_quote_temporary_bar")
         self.assertFalse(alert["intraday_minute_bars_used"])
-        self.assertEqual(alert["intraday_evidence_policy"], "external_read_only_context_only")
+        self.assertEqual(
+            alert["intraday_evidence_policy"],
+            "single_quote_current_session_plus_external_read_only_context",
+        )
+        self.assertFalse(alert["completed_daily_mutation_allowed"])
+        self.assertFalse(alert["partial_daily_bar_used_as_completed_daily"])
 
     def test_load_strategy_config_from_json_file(self):
         with tempfile.TemporaryDirectory() as td:

@@ -776,7 +776,9 @@ def alert_summary(alert):
         "factor_confluence_categories": alert.get("factor_confluence_categories") or [],
         "factor_confluence_supporting_count": alert.get("factor_confluence_supporting_count"),
         "factor_confluence_min_count": alert.get("factor_confluence_min_count"),
+        "factor_evidence_basis": alert.get("factor_evidence_basis") or {},
         "factor_contributions": alert.get("factor_contributions") or [],
+        "current_session_quote_evidence": alert.get("current_session_quote_evidence") or {},
         "generated_at": alert.get("generated_at"),
         "quote_time": alert.get("quote_time") or alert.get("time"),
     }

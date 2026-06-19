@@ -77,7 +77,14 @@ Each v5 alert declares its timeframe basis:
 - `primary_timeframe=1d`
 - `realtime_input=single_quote_temporary_bar`
 - `intraday_minute_bars_used=false`
-- `intraday_evidence_policy=external_read_only_context_only`
+- `intraday_evidence_policy=single_quote_current_session_plus_external_read_only_context`
+
+The realtime quote is allowed to contribute current-session evidence such as
+same-session momentum, trigger detection, and BUY alignment, but each alert also
+marks `partial_daily_bar_used_as_completed_daily=false` and
+`completed_daily_mutation_allowed=false`. Stored 5m/15m/30m/60m context remains a
+separate read-only Hermes evidence layer and must not be promoted into completed
+daily history.
 
 Executable alerts must be confirmed directional BUY/SELL candidates with valid entry, stop, take-profit, risk/reward, liquidity, and execution-candidate fields. Diagnostic `WATCH` rows may still carry candidate geometry for review, but order intake rejects them as non-executable.
 
