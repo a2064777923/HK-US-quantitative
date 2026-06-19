@@ -570,6 +570,7 @@ class HermesReviewPacketTests(unittest.TestCase):
                     }
                 ],
                 "factor_evidence_basis": {"completed_daily_ohlcv": 1},
+                "factor_evidence_roles": {"completed_daily_threshold_with_current_quote": 1},
                 "current_session_quote_evidence": {
                     "schema": "current_session_quote_evidence_v1",
                     "used_in_full_score": False,
@@ -621,6 +622,10 @@ class HermesReviewPacketTests(unittest.TestCase):
             ],
         )
         self.assertEqual(summary["factor_evidence_basis"], {"completed_daily_ohlcv": 1})
+        self.assertEqual(
+            summary["factor_evidence_roles"],
+            {"completed_daily_threshold_with_current_quote": 1},
+        )
         self.assertFalse(summary["current_session_quote_evidence"]["mutates_completed_daily_history"])
         self.assertFalse(summary["current_session_quote_evidence"]["replaces_completed_daily_bar"])
 

@@ -620,7 +620,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             ],
         )
 
-    def test_realtime_score_evidence_marks_overlay_factors_as_current_session_quote(self):
+    def test_realtime_score_evidence_marks_overlay_factor_roles(self):
         ind = rt.IncrementalIndicators("AAPL")
         for _ in range(30):
             ind._update(100, 101, 99, 1000)
@@ -636,13 +636,32 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         )
 
         self.assertTrue(evidence["factor_contributions"])
-        self.assertTrue(
-            all(
-                item["evidence_basis"] == "current_session_quote"
-                for item in evidence["factor_contributions"]
-                if item["raw_category"] != "momentum"
-            )
+        by_raw_category = {
+            item["raw_category"]: item
+            for item in evidence["factor_contributions"]
+        }
+        self.assertEqual(by_raw_category["trend"]["evidence_basis"], "current_session_quote")
+        self.assertEqual(
+            by_raw_category["trend"]["evidence_role"],
+            "completed_daily_threshold_with_current_quote",
         )
+        self.assertEqual(
+            by_raw_category["rsi"]["evidence_role"],
+            "completed_daily_series_plus_temporary_quote",
+        )
+        self.assertEqual(
+            by_raw_category["macd"]["evidence_role"],
+            "completed_daily_series_plus_temporary_quote",
+        )
+        self.assertEqual(
+            by_raw_category["volume"]["evidence_role"],
+            "current_session_volume_pace",
+        )
+        self.assertEqual(
+            by_raw_category["same_session_momentum"]["evidence_role"],
+            "current_session_change_pct",
+        )
+        self.assertNotIn("momentum", by_raw_category)
 
     def test_full_score_reasons_cover_moderate_negative_contributions(self):
         ind = rt.IncrementalIndicators("AAPL")
@@ -1151,6 +1170,60 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         alert = [item for item in engine.alerts if item["trigger"] == "布林上軌突破"][0]
         self.assertEqual(alert["candidate_signal_type"], "SELL")
         self.assertNotIn("布林上軌動量突破", [item["trigger"] for item in engine.alerts])
+
+    def test_alert_summarizes_factor_evidence_roles_for_hermes(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(
+            score=0.9,
+            reasons=["短均線偏強", "當日動量+6.0%"],
+            factor_contributions=[
+                {
+                    "category": "trend",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "短均線偏強",
+                    "evidence_basis": "current_session_quote",
+                    "evidence_role": "completed_daily_threshold_with_current_quote",
+                },
+                {
+                    "category": "same_session_momentum",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "當日動量+6.0%",
+                    "evidence_basis": "current_session_quote",
+                    "evidence_role": "current_session_change_pct",
+                },
+            ],
+        )
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AMD",
+            indicators,
+            {
+                "price": 110,
+                "high": 111,
+                "low": 108,
+                "prev_close": 100,
+                "volume": 4_000,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 10.0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "急漲"][0]
+        self.assertEqual(
+            alert["factor_evidence_roles"],
+            {
+                "completed_daily_threshold_with_current_quote": 1,
+                "current_session_change_pct": 1,
+            },
+        )
+        self.assertEqual(alert["factor_contributions"][0]["evidence_role"], "completed_daily_threshold_with_current_quote")
+        self.assertEqual(alert["factor_contributions"][1]["evidence_role"], "current_session_change_pct")
 
     def test_send_alert_writes_latest_file_and_append_only_queue(self):
         alerts = [

@@ -216,7 +216,36 @@ def inferred_raw_factor_category(category, reason=None, raw_category=None):
     return category
 
 
-def score_contribution(category, direction, score_delta, reason, evidence_basis=None, raw_category=None):
+def factor_evidence_role(raw_category, evidence_basis=None, evidence_role=None):
+    explicit = str(evidence_role or "").strip()
+    if explicit:
+        return explicit
+    raw_category = str(raw_category or "").strip().lower()
+    basis = str(evidence_basis or "").strip()
+    if raw_category == "same_session_momentum":
+        return "current_session_change_pct"
+    if raw_category == "volume" and basis == "current_session_quote":
+        return "current_session_volume_pace"
+    if raw_category in ("trend", "bollinger") and basis == "current_session_quote":
+        return "completed_daily_threshold_with_current_quote"
+    if raw_category in ("rsi", "macd") and basis == "current_session_quote":
+        return "completed_daily_series_plus_temporary_quote"
+    if raw_category == "momentum" and basis == "current_session_quote":
+        return "completed_daily_lookback_with_current_quote"
+    if basis:
+        return basis
+    return "unspecified"
+
+
+def score_contribution(
+    category,
+    direction,
+    score_delta,
+    reason,
+    evidence_basis=None,
+    raw_category=None,
+    evidence_role=None,
+):
     direction = str(direction or "").upper()
     score_delta = as_float(score_delta)
     if direction not in ("BUY", "SELL") or score_delta is None or score_delta == 0:
@@ -230,6 +259,7 @@ def score_contribution(category, direction, score_delta, reason, evidence_basis=
         "category": canonical_factor_category(raw_category),
         "raw_category": raw_category,
         "evidence_basis": factor_evidence_basis(raw_category, fallback=evidence_basis),
+        "evidence_role": factor_evidence_role(raw_category, evidence_basis=evidence_basis, evidence_role=evidence_role),
         "direction": direction,
         "score_delta": round(score_delta, 4),
         "reason": str(reason or ""),
@@ -252,6 +282,7 @@ def normalize_score_contributions(contributions):
             contribution.get("reason"),
             evidence_basis=contribution.get("evidence_basis"),
             raw_category=contribution.get("raw_category"),
+            evidence_role=contribution.get("evidence_role"),
         )
         if item and item["category"] and item["reason"]:
             normalized.append(item)
@@ -272,6 +303,16 @@ def factor_evidence_basis_summary(contributions):
             continue
         basis = str(contribution.get("evidence_basis") or "unspecified").strip() or "unspecified"
         counts[basis] += 1
+    return dict(sorted(counts.items()))
+
+
+def factor_evidence_role_summary(contributions):
+    counts = defaultdict(int)
+    for contribution in contributions or []:
+        if not isinstance(contribution, dict):
+            continue
+        role = str(contribution.get("evidence_role") or "unspecified").strip() or "unspecified"
+        counts[role] += 1
     return dict(sorted(counts.items()))
 
 
@@ -1989,7 +2030,7 @@ class IncrementalIndicators:
         contributions = []
         overlay_evidence_basis = "current_session_quote" if self.rt_close is not None else None
 
-        def add(delta, category, direction, reason):
+        def add(delta, category, direction, reason, evidence_role=None):
             nonlocal score
             score += delta
             reasons.append(reason)
@@ -1999,6 +2040,7 @@ class IncrementalIndicators:
                 delta,
                 reason,
                 evidence_basis=overlay_evidence_basis,
+                evidence_role=evidence_role,
             )
             if contribution:
                 contributions.append(contribution)
@@ -2006,42 +2048,46 @@ class IncrementalIndicators:
         # 趨勢
         ma5, ma10, ma20 = signal_moving_averages(self)
         if ma5 and ma10 and ma20:
+            trend_role = "completed_daily_threshold_with_current_quote" if self.rt_close is not None else None
             if c > ma5 > ma10 > ma20:
-                add(0.8, "trend", "BUY", "多頭排列")
+                add(0.8, "trend", "BUY", "多頭排列", evidence_role=trend_role)
             elif c > ma5 and c > ma10:
-                add(0.4, "trend", "BUY", "短均線偏強")
+                add(0.4, "trend", "BUY", "短均線偏強", evidence_role=trend_role)
             elif c < ma5 < ma10 < ma20:
-                add(-0.8, "trend", "SELL", "空頭排列")
+                add(-0.8, "trend", "SELL", "空頭排列", evidence_role=trend_role)
             elif c < ma5 and c < ma10:
-                add(-0.4, "trend", "SELL", "短均線偏弱")
+                add(-0.4, "trend", "SELL", "短均線偏弱", evidence_role=trend_role)
 
         # RSI
         if self.rsi_14 is not None:
+            rsi_role = "completed_daily_series_plus_temporary_quote" if self.rt_close is not None else None
             if self.rsi_14 > 70:
-                add(-0.3, "rsi", "SELL", f"RSI偏高({self.rsi_14:.0f})")
+                add(-0.3, "rsi", "SELL", f"RSI偏高({self.rsi_14:.0f})", evidence_role=rsi_role)
             elif self.rsi_14 > 55:
-                add(0.3, "rsi", "BUY", f"RSI偏強({self.rsi_14:.0f})")
+                add(0.3, "rsi", "BUY", f"RSI偏強({self.rsi_14:.0f})", evidence_role=rsi_role)
             elif self.rsi_14 < 30:
-                add(0.3, "rsi", "BUY", f"RSI超賣({self.rsi_14:.0f})")
+                add(0.3, "rsi", "BUY", f"RSI超賣({self.rsi_14:.0f})", evidence_role=rsi_role)
             elif self.rsi_14 < 45:
-                add(-0.2, "rsi", "SELL", f"RSI偏弱({self.rsi_14:.0f})")
+                add(-0.2, "rsi", "SELL", f"RSI偏弱({self.rsi_14:.0f})", evidence_role=rsi_role)
 
         # MACD
         if self.macd_hist is not None and self.macd_dif is not None:
+            macd_role = "completed_daily_series_plus_temporary_quote" if self.rt_close is not None else None
             if self.macd_hist > 0 and self.macd_dif > 0:
-                add(0.3, "macd", "BUY", "MACD金叉+正值")
+                add(0.3, "macd", "BUY", "MACD金叉+正值", evidence_role=macd_role)
             elif self.macd_hist > 0:
-                add(0.1, "macd", "BUY", "MACD柱轉正")
+                add(0.1, "macd", "BUY", "MACD柱轉正", evidence_role=macd_role)
             elif self.macd_hist < 0 and self.macd_dif < 0:
-                add(-0.3, "macd", "SELL", "MACD死叉+負值")
+                add(-0.3, "macd", "SELL", "MACD死叉+負值", evidence_role=macd_role)
             elif self.macd_hist < 0:
-                add(-0.1, "macd", "SELL", "MACD柱轉負")
+                add(-0.1, "macd", "SELL", "MACD柱轉負", evidence_role=macd_role)
 
         # 布林帶
         bb_upper, bb_lower = signal_bollinger_bands(self)
         if bb_upper and bb_lower:
+            bollinger_role = "completed_daily_threshold_with_current_quote" if self.rt_close is not None else None
             if c <= bb_lower * 1.02:
-                add(0.3, "bollinger", "BUY", "觸及布林下軌")
+                add(0.3, "bollinger", "BUY", "觸及布林下軌", evidence_role=bollinger_role)
             elif c >= bb_upper * 0.98:
                 buy_categories = contribution_categories("BUY", contributions)
                 five_day_momentum_pct = None
@@ -2054,20 +2100,21 @@ class IncrementalIndicators:
                     buy_categories,
                     five_day_momentum_pct=five_day_momentum_pct,
                 ):
-                    add(0.2, "bollinger", "BUY", "布林上軌動量突破")
+                    add(0.2, "bollinger", "BUY", "布林上軌動量突破", evidence_role=bollinger_role)
                 else:
-                    add(-0.2, "bollinger", "SELL", "觸及布林上軌")
+                    add(-0.2, "bollinger", "SELL", "觸及布林上軌", evidence_role=bollinger_role)
 
         # 成交量
         vr = self.score_volume_ratio(volumes, quote_context=quote_context)
         if vr is not None:
             prior_close = closes[-2] if len(closes) >= 2 else None
+            volume_role = "current_session_volume_pace" if self.rt_close is not None else None
             if vr > 2.0 and prior_close is not None and c > prior_close:
-                add(0.2, "volume", "BUY", f"放量上漲{vr:.1f}倍")
+                add(0.2, "volume", "BUY", f"放量上漲{vr:.1f}倍", evidence_role=volume_role)
             elif vr > 2.0 and prior_close is not None and c < prior_close:
-                add(-0.2, "volume", "SELL", f"放量下跌{vr:.1f}倍")
+                add(-0.2, "volume", "SELL", f"放量下跌{vr:.1f}倍", evidence_role=volume_role)
             elif vr > 1.5 and prior_close is not None and c > prior_close:
-                add(0.1, "volume", "BUY", f"溫和放量上漲{vr:.1f}倍")
+                add(0.1, "volume", "BUY", f"溫和放量上漲{vr:.1f}倍", evidence_role=volume_role)
 
         # 當日/日內動量反轉。這是獨立於長線技術分的短週期確認，不污染日線歷史。
         change_pct = quote_change_pct(quote_context)
@@ -2081,6 +2128,7 @@ class IncrementalIndicators:
                 "same_session_momentum",
                 "BUY",
                 f"當日動量{change_pct:+.1f}%",
+                evidence_role="current_session_change_pct",
             )
 
         # 動量
@@ -2088,7 +2136,14 @@ class IncrementalIndicators:
         if base_close is not None and base_close > 0:
             mom = (c / base_close - 1) * 100
             if abs(mom) > MOMENTUM_THRESHOLD_PCT + 1e-9:
-                add(0.2 if mom > 0 else -0.2, "momentum", "BUY" if mom > 0 else "SELL", f"5日動量{mom:+.1f}%")
+                momentum_role = "completed_daily_lookback_with_current_quote" if self.rt_close is not None else None
+                add(
+                    0.2 if mom > 0 else -0.2,
+                    "momentum",
+                    "BUY" if mom > 0 else "SELL",
+                    f"5日動量{mom:+.1f}%",
+                    evidence_role=momentum_role,
+                )
 
         return score_result(max(-1, min(1, score)), reasons, contributions)
 
@@ -3019,6 +3074,7 @@ class TriggerEngine:
                 "full_score": round(full_score, 3) if full_score is not None else None,
                 "full_reasons": full_reasons,
                 "factor_evidence_basis": factor_evidence_basis_summary(factor_contributions),
+                "factor_evidence_roles": factor_evidence_role_summary(factor_contributions),
                 "factor_contributions": factor_contributions,
                 "current_session_quote_evidence": current_session_quote_evidence(quote, factor_contributions),
                 "price": c,

@@ -99,6 +99,7 @@ those factor rows as `factor_evidence_basis.current_session_quote` and sets
 `current_session_quote_evidence.used_in_full_score=true`. Hermes must treat that
 evidence as provisional: useful for live management and momentum checks, but not
 equivalent to a completed daily bar.
+v5.8 also exposes `factor_evidence_roles` so Hermes can distinguish whether a factor came from current-session change, current-session volume pace, or a completed-daily threshold tested against the realtime quote.
 
 Executable alerts must be confirmed directional BUY/SELL candidates with valid entry, stop, take-profit, risk/reward, liquidity, and execution-candidate fields. Diagnostic `WATCH` rows may still carry candidate geometry for review, but order intake rejects them as non-executable.
 

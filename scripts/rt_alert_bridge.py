@@ -476,6 +476,19 @@ def factor_evidence_basis_line(alert):
     return "├─ 證據來源：" + " ".join(parts[:4]) + suffix
 
 
+def factor_evidence_roles_line(alert):
+    roles = alert.get("factor_evidence_roles") if isinstance(alert, dict) else {}
+    if not isinstance(roles, dict) or not roles:
+        return ""
+    parts = []
+    for key, value in sorted(roles.items()):
+        if value not in (None, "", 0):
+            parts.append(f"{key}={value}")
+    if not parts:
+        return ""
+    return "├─ 證據角色：" + " ".join(parts[:4])
+
+
 def compact_source_components(source_limits):
     components = source_limits.get("components") if isinstance(source_limits, dict) else []
     rows = []
@@ -1084,6 +1097,9 @@ def build_output(actionable, execution_mode, packet=None, title=None, run_intake
         evidence_line = factor_evidence_basis_line(alert)
         if evidence_line:
             lines.append(evidence_line)
+        role_line = factor_evidence_roles_line(alert)
+        if role_line:
+            lines.append(role_line)
         lines.extend(build_hermes_context_lines(alert, packet, items_by_signal))
         lines.append(
             f"└─ 當前：${float(alert.get('price', alert['entry_price'])):.2f} "

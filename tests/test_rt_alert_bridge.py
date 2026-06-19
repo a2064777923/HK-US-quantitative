@@ -75,6 +75,10 @@ class RtAlertBridgeTests(unittest.TestCase):
                 "completed_daily_ohlcv": 2,
                 "current_session_quote": 1,
             },
+            "factor_evidence_roles": {
+                "completed_daily_threshold_with_current_quote": 2,
+                "current_session_change_pct": 1,
+            },
             "current_session_quote_evidence": {
                 "schema": "current_session_quote_evidence_v1",
                 "used_in_full_score": True,
@@ -90,6 +94,12 @@ class RtAlertBridgeTests(unittest.TestCase):
         alert["signal_id"] = "sig-watch"
         alert["signal_type"] = "WATCH"
         return alert
+
+    def test_factor_evidence_roles_line_summarizes_roles(self):
+        bridge = self.load_bridge()
+        line = bridge.factor_evidence_roles_line(self.fresh_alert())
+        self.assertIn("completed_daily_threshold_with_current_quote=2", line)
+        self.assertIn("current_session_change_pct=1", line)
 
     def packet_with_position_review(self):
         return {
