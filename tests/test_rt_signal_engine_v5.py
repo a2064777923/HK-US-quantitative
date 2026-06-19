@@ -2145,6 +2145,36 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertNotIn("invalid_buy_min_supporting_factor_count_using_default", warnings)
         self.assertNotIn("invalid_sell_min_supporting_factor_count_using_default", warnings)
 
+    def test_strategy_config_does_not_allow_looser_large_move_non_momentum_requirement(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "momentum_breakout_model": {
+                    "large_move_buy_min_non_momentum_factors": 1,
+                }
+            }
+        )
+
+        self.assertEqual(
+            config["momentum_breakout_model"]["large_move_buy_min_non_momentum_factors"],
+            2,
+        )
+        self.assertIn("invalid_large_move_buy_min_non_momentum_factors_using_default", warnings)
+
+    def test_strategy_config_allows_stricter_large_move_non_momentum_requirement(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "momentum_breakout_model": {
+                    "large_move_buy_min_non_momentum_factors": 3,
+                }
+            }
+        )
+
+        self.assertEqual(
+            config["momentum_breakout_model"]["large_move_buy_min_non_momentum_factors"],
+            3,
+        )
+        self.assertNotIn("invalid_large_move_buy_min_non_momentum_factors_using_default", warnings)
+
     def test_strategy_config_drops_out_of_range_trigger_threshold_override(self):
         config, warnings = rt.normalize_strategy_config(
             {
@@ -2373,7 +2403,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         config = self.repo_strategy_config()
         normalized, warnings = rt.normalize_strategy_config(config)
         self.assertEqual(warnings, [])
-        self.assertEqual(normalized["version"], "v5.6-diagnostic-summary-only-20260619")
+        self.assertEqual(normalized["version"], "v5.7-intraday-breadth-and-momentum-discipline-20260619")
 
         expected_modes = {
             "BUY:布林下軌突破": "disabled_pending_rework",
@@ -2397,6 +2427,11 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(overrides["SELL:布林上軌突破"]["summary_only_when"], ["downgraded_directional"])
         self.assertTrue(normalized["market_breadth_model"]["enabled"])
         self.assertTrue(normalized["market_breadth_model"]["block_new_buy_in_risk_off"])
+        self.assertTrue(normalized["market_breadth_model"]["block_new_buy_when_context_missing"])
+        self.assertEqual(
+            normalized["momentum_breakout_model"]["large_move_buy_min_non_momentum_factors"],
+            2,
+        )
         self.assertEqual(normalized["realtime_alignment"]["block_buy_when_change_pct_below"], 0.0)
 
     def test_market_breadth_context_summarizes_realtime_quotes(self):
@@ -2519,6 +2554,126 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(alert["market_breadth_status"], "risk_off")
         self.assertEqual(alert["suppressed_directional_reason"], "market_breadth_risk_off")
         self.assertIn("market_breadth_risk_off", alert["execution_blocked_reasons"])
+
+    def test_repo_config_missing_market_breadth_downgrades_new_buy(self):
+        config = self.repo_strategy_config()
+        engine = rt.TriggerEngine(strategy_config=config)
+        indicators = FakeIndicators(
+            score=1.0,
+            reasons=["短均線偏強", "RSI偏強(66)", "當日動量+7.2%", "5日動量+12.0%"],
+            factor_contributions=[
+                {"category": "trend", "direction": "BUY", "score_delta": 0.4, "reason": "短均線偏強"},
+                {"category": "rsi", "direction": "BUY", "score_delta": 0.3, "reason": "RSI偏強(66)"},
+                {
+                    "category": "same_session_momentum",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "當日動量+7.2%",
+                },
+                {"category": "momentum", "direction": "BUY", "score_delta": 0.2, "reason": "5日動量+12.0%"},
+            ],
+        )
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AMD",
+            indicators,
+            {
+                "price": 110,
+                "high": 111,
+                "low": 108,
+                "prev_close": 100,
+                "volume": 4_000,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 10.0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "急漲"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertTrue(alert["factor_confluence_valid"])
+        self.assertEqual(alert["market_breadth_status"], "missing")
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertEqual(alert["suppressed_directional_reason"], "market_breadth_context_missing")
+        self.assertIn("market_breadth_context_missing:missing", alert["execution_blocked_reasons"])
+        self.assertIsNone(alert["entry_price"])
+
+    def test_large_move_buy_requires_two_non_momentum_factor_families_for_execution(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+                "market_breadth_model": {
+                    "enabled": True,
+                    "block_new_buy_in_risk_off": True,
+                    "block_new_buy_when_context_missing": False,
+                },
+                "trigger_overrides": {
+                    "BUY:急漲": {"min_full_score": 0.75},
+                },
+            }
+        )
+        indicators = FakeIndicators(
+            score=1.0,
+            reasons=["短均線偏強", "當日動量+7.2%", "5日動量+12.0%"],
+            factor_contributions=[
+                {"category": "trend", "direction": "BUY", "score_delta": 0.4, "reason": "短均線偏強"},
+                {
+                    "category": "same_session_momentum",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "當日動量+7.2%",
+                },
+                {"category": "momentum", "direction": "BUY", "score_delta": 0.2, "reason": "5日動量+12.0%"},
+            ],
+        )
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AMD",
+            indicators,
+            {
+                "price": 110,
+                "high": 111,
+                "low": 108,
+                "prev_close": 100,
+                "volume": 4_000,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 10.0,
+                "market_breadth": {
+                    "sample_count": 20,
+                    "advancer_pct": 60.0,
+                    "decliner_pct": 30.0,
+                    "avg_change_pct": 0.4,
+                },
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "急漲"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertTrue(alert["factor_confluence_valid"])
+        self.assertEqual(alert["factor_confluence_categories"], ["momentum", "trend"])
+        self.assertEqual(alert["non_momentum_buy_factor_categories"], ["trend"])
+        self.assertEqual(alert["non_momentum_buy_factor_count"], 1)
+        self.assertEqual(alert["large_move_non_momentum_min_count"], 2)
+        self.assertTrue(alert["large_move_non_momentum_blocked"])
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertEqual(
+            alert["suppressed_directional_reason"],
+            "large_move_non_momentum_factor_count_below_minimum",
+        )
+        self.assertIn(
+            "large_move_non_momentum_factor_count_below_minimum",
+            alert["execution_blocked_reasons"],
+        )
+        self.assertIsNone(alert["entry_price"])
 
     def test_buy_execution_candidate_requires_non_negative_realtime_change(self):
         engine = rt.TriggerEngine(

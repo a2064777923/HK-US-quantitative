@@ -61,7 +61,9 @@ MARKET_BREADTH_MIN_SAMPLE = 10
 MARKET_BREADTH_RISK_OFF_MAX_ADVANCER_PCT = 35.0
 MARKET_BREADTH_RISK_OFF_MIN_DECLINER_PCT = 50.0
 MARKET_BREADTH_RISK_OFF_MAX_AVG_CHANGE_PCT = -0.6
+MARKET_BREADTH_BLOCK_NEW_BUY_WHEN_CONTEXT_MISSING = False
 BUY_REALTIME_ALIGNMENT_MIN_CHANGE_PCT = 0.0
+LARGE_MOVE_BUY_MIN_NON_MOMENTUM_FACTORS = 2
 TRIGGER_EXECUTION_PRIORITY = {
     "BUY": {
         "急漲": 60,
@@ -123,7 +125,8 @@ def default_strategy_config():
             "same_session_score_delta": SESSION_MOMENTUM_SCORE_DELTA,
             "bollinger_buy_min_change_pct": BOLLINGER_BREAKOUT_BUY_MIN_CHANGE_PCT,
             "bollinger_buy_min_score": BOLLINGER_BREAKOUT_BUY_MIN_SCORE,
-            "bollinger_buy_min_supporting_factors": BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS
+            "bollinger_buy_min_supporting_factors": BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS,
+            "large_move_buy_min_non_momentum_factors": LARGE_MOVE_BUY_MIN_NON_MOMENTUM_FACTORS
         },
         "risk_model": {
             "atr_stop_multiple": 2.0,
@@ -136,6 +139,7 @@ def default_strategy_config():
         "market_breadth_model": {
             "enabled": True,
             "block_new_buy_in_risk_off": True,
+            "block_new_buy_when_context_missing": MARKET_BREADTH_BLOCK_NEW_BUY_WHEN_CONTEXT_MISSING,
             "min_sample_size": MARKET_BREADTH_MIN_SAMPLE,
             "risk_off_max_advancer_pct": MARKET_BREADTH_RISK_OFF_MAX_ADVANCER_PCT,
             "risk_off_min_decliner_pct": MARKET_BREADTH_RISK_OFF_MIN_DECLINER_PCT,
@@ -684,6 +688,17 @@ def normalize_strategy_config(config):
         warnings.append("invalid_bollinger_buy_min_supporting_factors_using_default")
         bollinger_buy_min_supporting_factors = BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS
     momentum_breakout["bollinger_buy_min_supporting_factors"] = bollinger_buy_min_supporting_factors
+    large_move_buy_min_non_momentum_factors = as_int(
+        momentum_breakout.get("large_move_buy_min_non_momentum_factors"),
+        LARGE_MOVE_BUY_MIN_NON_MOMENTUM_FACTORS,
+    )
+    if (
+        large_move_buy_min_non_momentum_factors is None
+        or large_move_buy_min_non_momentum_factors < LARGE_MOVE_BUY_MIN_NON_MOMENTUM_FACTORS
+    ):
+        warnings.append("invalid_large_move_buy_min_non_momentum_factors_using_default")
+        large_move_buy_min_non_momentum_factors = LARGE_MOVE_BUY_MIN_NON_MOMENTUM_FACTORS
+    momentum_breakout["large_move_buy_min_non_momentum_factors"] = large_move_buy_min_non_momentum_factors
 
     risk = config.setdefault("risk_model", {})
     risk["atr_stop_multiple"] = as_float(risk.get("atr_stop_multiple"), 2.0)
@@ -722,6 +737,10 @@ def normalize_strategy_config(config):
     breadth["block_new_buy_in_risk_off"] = as_bool(
         breadth.get("block_new_buy_in_risk_off"),
         True,
+    )
+    breadth["block_new_buy_when_context_missing"] = as_bool(
+        breadth.get("block_new_buy_when_context_missing"),
+        MARKET_BREADTH_BLOCK_NEW_BUY_WHEN_CONTEXT_MISSING,
     )
     breadth["min_sample_size"] = as_int(breadth.get("min_sample_size"), MARKET_BREADTH_MIN_SAMPLE)
     if breadth["min_sample_size"] is None or breadth["min_sample_size"] < 1:
@@ -1540,10 +1559,17 @@ def market_breadth_status(context, model):
 def market_breadth_blocks_new_buy(signal_type, context, model):
     if str(signal_type or "").upper() != "BUY":
         return False, market_breadth_status(context, model)
-    if not as_bool((model or {}).get("block_new_buy_in_risk_off"), True):
-        return False, market_breadth_status(context, model)
     status = market_breadth_status(context, model)
-    return status == "risk_off", status
+    if status == "disabled":
+        return False, status
+    if status == "risk_off" and as_bool((model or {}).get("block_new_buy_in_risk_off"), True):
+        return True, status
+    if (
+        status in ("missing", "insufficient_sample", "missing_metrics")
+        and as_bool((model or {}).get("block_new_buy_when_context_missing"), False)
+    ):
+        return True, status
+    return False, status
 
 def trigger_execution_priority(signal_type, trigger_name):
     priorities = TRIGGER_EXECUTION_PRIORITY.get(str(signal_type or "").upper()) or {}
@@ -1594,6 +1620,23 @@ def bollinger_buy_min_supporting_factors(quote_context):
             BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS,
         )
         or BOLLINGER_BREAKOUT_BUY_MIN_SUPPORTING_FACTORS
+    )
+
+def large_move_buy_min_non_momentum_factors(quote_context):
+    model = quote_momentum_breakout_model(quote_context)
+    return (
+        as_int(
+            model.get("large_move_buy_min_non_momentum_factors"),
+            LARGE_MOVE_BUY_MIN_NON_MOMENTUM_FACTORS,
+        )
+        or LARGE_MOVE_BUY_MIN_NON_MOMENTUM_FACTORS
+    )
+
+def non_momentum_factor_categories(categories):
+    return sorted(
+        category
+        for category in {canonical_factor_category(item) for item in (categories or [])}
+        if category and category != "momentum"
     )
 
 def strong_upper_band_buy_context(
@@ -2589,6 +2632,9 @@ class TriggerEngine:
                 factor_contributions,
                 reasons=full_reasons,
             )
+            non_momentum_buy_factor_categories = non_momentum_factor_categories(
+                factor_confluence_categories if signal_type == "BUY" else []
+            )
             min_factor_count = self.min_supporting_factor_count(signal_type)
             if signal_type in ("BUY", "SELL"):
                 factor_confluence_valid = (
@@ -2688,7 +2734,27 @@ class TriggerEngine:
                 and market_breadth_blocked
             ):
                 emitted_signal_type = "WATCH"
-                suppressed_directional_reason = "market_breadth_risk_off"
+                if market_breadth_signal_status == "risk_off":
+                    suppressed_directional_reason = "market_breadth_risk_off"
+                else:
+                    suppressed_directional_reason = "market_breadth_context_missing"
+            large_move_non_momentum_min_count = (
+                large_move_buy_min_non_momentum_factors(scoring_context)
+                if signal_type == "BUY" and trigger_name == "急漲"
+                else None
+            )
+            large_move_non_momentum_blocked = (
+                large_move_non_momentum_min_count is not None
+                and len(non_momentum_buy_factor_categories) < large_move_non_momentum_min_count
+            )
+            if (
+                signal_type == "BUY"
+                and trigger_name == "急漲"
+                and emitted_signal_type in ("BUY", "SELL")
+                and large_move_non_momentum_blocked
+            ):
+                emitted_signal_type = "WATCH"
+                suppressed_directional_reason = "large_move_non_momentum_factor_count_below_minimum"
             buy_realtime_alignment_min_change_pct = self.buy_realtime_alignment_min_change_pct()
             buy_realtime_alignment_blocked = (
                 signal_type == "BUY"
@@ -2708,6 +2774,7 @@ class TriggerEngine:
                 and risk_geometry_valid
                 and factor_confluence_valid
                 and not market_breadth_blocked
+                and not large_move_non_momentum_blocked
                 and not buy_realtime_alignment_blocked
             )
             execution_blocked_reasons = []
@@ -2725,7 +2792,19 @@ class TriggerEngine:
                 if confirmed and not factor_confluence_valid:
                     execution_blocked_reasons.append(f"factor_confluence_invalid:{factor_confluence_reason}")
                 if signal_type == "BUY" and market_breadth_blocked:
-                    execution_blocked_reasons.append("market_breadth_risk_off")
+                    if market_breadth_signal_status == "risk_off":
+                        execution_blocked_reasons.append("market_breadth_risk_off")
+                    else:
+                        execution_blocked_reasons.append(f"market_breadth_context_missing:{market_breadth_signal_status}")
+                if (
+                    signal_type == "BUY"
+                    and trigger_name == "急漲"
+                    and confirmed
+                    and large_move_non_momentum_blocked
+                ):
+                    execution_blocked_reasons.append(
+                        "large_move_non_momentum_factor_count_below_minimum"
+                    )
                 if signal_type == "BUY" and buy_realtime_alignment_blocked:
                     execution_blocked_reasons.append("buy_realtime_direction_misaligned")
 
@@ -2769,9 +2848,12 @@ class TriggerEngine:
                     "factor_confluence_valid": factor_confluence_valid,
                     "factor_confluence_reason": factor_confluence_reason,
                     "factor_confluence_categories": factor_confluence_categories,
+                    "non_momentum_buy_factor_categories": non_momentum_buy_factor_categories,
                     "min_factor_count": min_factor_count,
                     "market_breadth_blocked": market_breadth_blocked,
                     "market_breadth_signal_status": market_breadth_signal_status,
+                    "large_move_non_momentum_min_count": large_move_non_momentum_min_count,
+                    "large_move_non_momentum_blocked": large_move_non_momentum_blocked,
                     "buy_realtime_alignment_min_change_pct": buy_realtime_alignment_min_change_pct,
                     "buy_realtime_alignment_blocked": buy_realtime_alignment_blocked,
                     "emitted_signal_type": emitted_signal_type,
@@ -2821,8 +2903,11 @@ class TriggerEngine:
             factor_confluence_valid = row["factor_confluence_valid"]
             factor_confluence_reason = row["factor_confluence_reason"]
             factor_confluence_categories = row["factor_confluence_categories"]
+            non_momentum_buy_factor_categories = row["non_momentum_buy_factor_categories"]
             min_factor_count = row["min_factor_count"]
             market_breadth_signal_status = row["market_breadth_signal_status"]
+            large_move_non_momentum_min_count = row["large_move_non_momentum_min_count"]
+            large_move_non_momentum_blocked = row["large_move_non_momentum_blocked"]
             buy_realtime_alignment_min_change_pct = row["buy_realtime_alignment_min_change_pct"]
             buy_realtime_alignment_blocked = row["buy_realtime_alignment_blocked"]
             emitted_signal_type = row["emitted_signal_type"]
@@ -2923,6 +3008,10 @@ class TriggerEngine:
                 "factor_confluence_categories": factor_confluence_categories,
                 "factor_confluence_supporting_count": len(factor_confluence_categories),
                 "factor_confluence_min_count": min_factor_count,
+                "non_momentum_buy_factor_categories": non_momentum_buy_factor_categories,
+                "non_momentum_buy_factor_count": len(non_momentum_buy_factor_categories),
+                "large_move_non_momentum_min_count": large_move_non_momentum_min_count,
+                "large_move_non_momentum_blocked": large_move_non_momentum_blocked,
                 "market_breadth_status": market_breadth_signal_status,
                 "market_breadth": quote.get("market_breadth"),
                 "buy_realtime_alignment_min_change_pct": buy_realtime_alignment_min_change_pct,

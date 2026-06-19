@@ -1,7 +1,7 @@
 {
   "schema": "rt_signal_strategy_config_v1",
-  "version": "v5.6-diagnostic-summary-only-20260619",
-  "description": "Realtime v5.6 quality-ranked same-scan candidates with BUY realtime direction alignment and downgraded SELL diagnostic summary-only routing. Noisy or underperforming BUY triggers remain diagnostic, downgraded RSI-overbought and upper-band SELL diagnostics move to watch summary instead of the operator alert queue, new BUY execution candidates are suppressed to WATCH when same-market realtime breadth is risk-off or the symbol's same-session change_pct is below the configured BUY alignment floor, and when one symbol emits multiple executable candidates in one scan the highest-priority/factor/RR candidate is kept while lower-ranked same-direction rows become diagnostics; Hermes, readiness, liquidity, RR, and intake gates remain unchanged.",
+  "version": "v5.7-intraday-breadth-and-momentum-discipline-20260619",
+  "description": "Realtime v5.7 keeps completed daily OHLCV as the stable technical base while using current-session quote evidence only as a provisional overlay. BUY execution candidates now fail closed to WATCH when same-market realtime breadth context is missing/insufficient or risk-off, and large positive same-session moves require at least two non-momentum supporting factor families before they can remain executable. Noisy or underperforming BUY triggers remain diagnostic, downgraded SELL diagnostics stay summary-only, same-scan execution candidate ranking is unchanged, and Hermes/readiness/liquidity/RR/intake gates remain unchanged.",
   "signal_cooldown_seconds": 1800,
   "volume_anomaly_ratio": 3.0,
   "confirmation_thresholds": {
@@ -28,7 +28,8 @@
     "same_session_score_delta": 0.4,
     "bollinger_buy_min_change_pct": 2.0,
     "bollinger_buy_min_score": 0.8,
-    "bollinger_buy_min_supporting_factors": 3
+    "bollinger_buy_min_supporting_factors": 3,
+    "large_move_buy_min_non_momentum_factors": 2
   },
   "risk_model": {
     "atr_stop_multiple": 2.0,
@@ -38,6 +39,7 @@
   "market_breadth_model": {
     "enabled": true,
     "block_new_buy_in_risk_off": true,
+    "block_new_buy_when_context_missing": true,
     "min_sample_size": 10,
     "risk_off_max_advancer_pct": 35.0,
     "risk_off_min_decliner_pct": 50.0,
