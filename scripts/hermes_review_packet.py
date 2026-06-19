@@ -3994,6 +3994,8 @@ def trigger_evidence_convergence_brief(trigger_evidence_convergence_payload):
             "converged_risk_count": summary.get("converged_risk_count"),
             "replay_challenges_forward_count": summary.get("replay_challenges_forward_count"),
             "insufficient_forward_sample_count": summary.get("insufficient_forward_sample_count"),
+            "forward_scope_empty_count": summary.get("forward_scope_empty_count"),
+            "forward_scope_status": summary.get("forward_scope_status"),
         },
         "top_trigger_evidence": [
             {

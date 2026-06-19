@@ -54,6 +54,32 @@ def strategy_review():
     }
 
 
+def current_scope_empty_strategy_review():
+    return {
+        "schema": "strategy_review_report_v1",
+        "forward_evidence_scope": {
+            "status": "CURRENT_SCOPE_EMPTY",
+            "blocks_strategy_promotion": True,
+            "runtime_strategy_config_id": "cfg-v56",
+            "runtime_strategy_config_version": "v5.6-test",
+            "runtime_watchlist_id": "wl-current",
+            "outcome_sample_scope": {
+                "mode": "runtime_strategy_config_and_watchlist",
+                "raw_alert_count_before_filter": 20,
+                "raw_alert_count": 0,
+                "excluded_alert_count": 20,
+            },
+            "quality_sample_scope": {
+                "mode": "runtime_strategy_config_and_watchlist",
+                "raw_alert_count_before_filter": 20,
+                "raw_alert_count": 0,
+                "excluded_alert_count": 20,
+            },
+        },
+        "trigger_policies": [],
+    }
+
+
 def replay_review():
     return {
         "schema": "v5_replay_strategy_review_report_v1",
@@ -132,6 +158,23 @@ class TriggerEvidenceConvergenceReportTests(unittest.TestCase):
         self.assertEqual(payload["summary"]["status"], "MISSING")
         self.assertEqual(payload["checks"][0]["status"], "FAIL")
         self.assertFalse(payload["operator_contract"]["promotion_eligible"])
+
+    def test_current_scope_empty_forward_review_is_not_treated_as_trigger_failure(self):
+        payload = report.build_report(current_scope_empty_strategy_review(), replay_review())
+
+        self.assertEqual(payload["summary"]["status"], "INSUFFICIENT")
+        self.assertEqual(payload["summary"]["forward_scope_status"], "CURRENT_SCOPE_EMPTY")
+        self.assertEqual(payload["summary"]["forward_scope_empty_count"], 3)
+        self.assertIn("forward_scope_has_no_current_strategy_alerts", payload["checks"][1]["code"])
+
+        by_key = {row["key"]: row for row in payload["trigger_evidence"]}
+        self.assertEqual(by_key["BUY:站上MA5"]["status"], "FORWARD_SCOPE_EMPTY")
+        self.assertIn("current_strategy_scope_has_no_forward_alerts", by_key["BUY:站上MA5"]["reasons"])
+        self.assertNotIn(
+            "prioritize_trigger_rework_or_threshold_review:BUY:站上MA5",
+            payload["recommendations"],
+        )
+        self.assertIn("wait_for_current_strategy_forward_outcomes", payload["recommendations"])
 
 
 if __name__ == "__main__":

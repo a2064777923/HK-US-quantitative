@@ -73,6 +73,56 @@ def quality_by_trigger(quality_report):
     return result
 
 
+def forward_scope_context(outcome_report, quality_report):
+    outcome_scope = (outcome_report or {}).get("sample_scope")
+    if not isinstance(outcome_scope, dict):
+        outcome_scope = {}
+    quality_scope = (quality_report or {}).get("sample_scope")
+    if not isinstance(quality_scope, dict):
+        quality_scope = {}
+    outcome_counts = (outcome_report or {}).get("counts")
+    if not isinstance(outcome_counts, dict):
+        outcome_counts = {}
+    quality_counts = (quality_report or {}).get("counts")
+    if not isinstance(quality_counts, dict):
+        quality_counts = {}
+
+    outcome_before = as_int(outcome_scope.get("raw_alert_count_before_filter"))
+    quality_before = as_int(quality_scope.get("raw_alert_count_before_filter"))
+    outcome_current = as_int(outcome_scope.get("raw_alert_count"), as_int(outcome_counts.get("raw_alert_count")))
+    quality_current = as_int(quality_scope.get("raw_alert_count"), as_int(quality_counts.get("total_alerts")))
+    evaluated = as_int((outcome_report or {}).get("evaluated_signal_count"), as_int(outcome_counts.get("evaluated_signal_count")))
+    trigger_quality_count = len((quality_report or {}).get("trigger_quality") or [])
+    runtime_scope = outcome_scope.get("mode") == "runtime_strategy_config_and_watchlist" or quality_scope.get("mode") == "runtime_strategy_config_and_watchlist"
+    current_scope_empty = runtime_scope and outcome_before > 0 and quality_before > 0 and outcome_current == 0 and quality_current == 0
+    if current_scope_empty:
+        status = "CURRENT_SCOPE_EMPTY"
+        reason = "current_strategy_scope_has_no_forward_alerts"
+    elif evaluated <= 0 and trigger_quality_count <= 0:
+        status = "NO_FORWARD_EVIDENCE"
+        reason = "forward_reports_have_no_evaluable_alerts"
+    else:
+        status = "AVAILABLE"
+        reason = "forward_evidence_available"
+    return {
+        "schema": "strategy_review_forward_evidence_scope_v1",
+        "status": status,
+        "reason": reason,
+        "blocks_strategy_promotion": status != "AVAILABLE",
+        "runtime_strategy_config_id": outcome_scope.get("strategy_config_id") or quality_scope.get("strategy_config_id"),
+        "runtime_strategy_config_version": outcome_scope.get("strategy_config_version") or quality_scope.get("strategy_config_version"),
+        "runtime_watchlist_id": outcome_scope.get("watchlist_id") or quality_scope.get("watchlist_id"),
+        "outcome_sample_scope": outcome_scope,
+        "quality_sample_scope": quality_scope,
+        "outcome_raw_alert_count_before_filter": outcome_before,
+        "quality_raw_alert_count_before_filter": quality_before,
+        "outcome_current_scope_alert_count": outcome_current,
+        "quality_current_scope_alert_count": quality_current,
+        "evaluated_signal_count": evaluated,
+        "trigger_quality_count": trigger_quality_count,
+    }
+
+
 def outcome_by_trigger(outcome_report):
     return {
         row.get("key"): row
@@ -228,6 +278,14 @@ def overall_policy(outcome_report, quality_report, trigger_policies, horizon=DEF
 
 def build_recommendations(payload):
     recs = []
+    scope = payload.get("forward_evidence_scope") if isinstance(payload.get("forward_evidence_scope"), dict) else {}
+    if scope.get("status") == "CURRENT_SCOPE_EMPTY":
+        recs.append("wait_for_current_strategy_forward_alerts")
+        recs.append("do_not_mix_previous_strategy_forward_outcomes_into_current_scope")
+        return recs
+    if scope.get("status") == "NO_FORWARD_EVIDENCE":
+        recs.append("collect_forward_outcomes_before_strategy_promotion")
+        return recs
     overall = payload["overall_policy"]
     if overall["policy"] == "keep_shadow_or_dry_run":
         recs.append("keep_alert_sim_disabled_until_strategy_review_passes")
@@ -253,6 +311,11 @@ def build_report(outcome_report=None, quality_report=None, horizon=DEFAULT_HORIZ
         warnings.append("outcome_report_missing_or_invalid")
     if not isinstance(quality_report, dict) or "trigger_quality" not in quality_report:
         warnings.append("alert_quality_report_missing_or_invalid")
+    scope = forward_scope_context(outcome_report or {}, quality_report or {})
+    if scope["status"] == "CURRENT_SCOPE_EMPTY":
+        warnings.append("current_strategy_scope_has_no_forward_alerts")
+    elif scope["status"] == "NO_FORWARD_EVIDENCE":
+        warnings.append("forward_evidence_missing_or_empty")
 
     trigger_policies = build_trigger_policies(outcome_report or {}, quality_report or {}, horizon=horizon)
     payload = {
@@ -280,6 +343,7 @@ def build_report(outcome_report=None, quality_report=None, horizon=DEFAULT_HORIZ
             "requires_simulation_readiness_learning_and_convergence_gates": True,
             "insufficient_trigger_samples_remain_shadow_only": True,
         },
+        "forward_evidence_scope": scope,
         "overall_policy": overall_policy(outcome_report or {}, quality_report or {}, trigger_policies, horizon=horizon),
         "trigger_policies": trigger_policies,
         "warnings": warnings,

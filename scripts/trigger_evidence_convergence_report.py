@@ -185,7 +185,26 @@ def convergence_for(forward, replay):
     return {"status": status, "confidence": confidence, "reasons": reasons}
 
 
+def forward_scope_status(strategy_review):
+    scope = strategy_review.get("forward_evidence_scope") if isinstance(strategy_review.get("forward_evidence_scope"), dict) else {}
+    return str(scope.get("status") or "UNKNOWN")
+
+
+def convergence_for_scoped_forward(forward, replay, scope_status):
+    if not forward and scope_status == "CURRENT_SCOPE_EMPTY":
+        return {
+            "status": "FORWARD_SCOPE_EMPTY",
+            "confidence": "LOW",
+            "reasons": [
+                "current_strategy_scope_has_no_forward_alerts",
+                "previous_strategy_forward_outcomes_not_mixed_into_current_scope",
+            ],
+        }
+    return convergence_for(forward, replay)
+
+
 def build_rows(strategy_review, replay_review):
+    scope_status = forward_scope_status(strategy_review)
     forward_rows = {
         forward_key(row): row
         for row in (strategy_review.get("trigger_policies") or [])
@@ -201,7 +220,7 @@ def build_rows(strategy_review, replay_review):
     for key in keys:
         forward = forward_rows.get(key)
         replay = replay_rows.get(key)
-        convergence = convergence_for(forward, replay)
+        convergence = convergence_for_scoped_forward(forward, replay, scope_status)
         side, trigger = key.split(":", 1) if ":" in key else ("UNKNOWN", key)
         rows.append(
             {
@@ -213,6 +232,7 @@ def build_rows(strategy_review, replay_review):
                 "reasons": convergence["reasons"],
                 "forward": compact_forward(forward or {}),
                 "replay": compact_replay(replay or {}),
+                "forward_scope_status": scope_status,
                 "promotion_eligible": False,
                 "hermes_use": "challenge_or_support_context_only",
             }
@@ -225,6 +245,7 @@ def build_rows(strategy_review, replay_review):
                 "REPLAY_CHALLENGES_FORWARD": 1,
                 "FORWARD_CHALLENGES_REPLAY": 2,
                 "INSUFFICIENT_FORWARD_SAMPLE": 3,
+                "FORWARD_SCOPE_EMPTY": 4,
                 "REPLAY_MISSING": 4,
                 "FORWARD_MISSING": 5,
                 "MIXED": 6,
@@ -262,6 +283,8 @@ def build_summary(rows, checks):
         "converged_risk_count": status_counts.get("CONVERGED_RISK", 0),
         "replay_challenges_forward_count": status_counts.get("REPLAY_CHALLENGES_FORWARD", 0),
         "insufficient_forward_sample_count": status_counts.get("INSUFFICIENT_FORWARD_SAMPLE", 0),
+        "forward_scope_empty_count": status_counts.get("FORWARD_SCOPE_EMPTY", 0),
+        "forward_scope_status": next((row.get("forward_scope_status") for row in rows if row.get("forward_scope_status")), None),
     }
 
 
@@ -284,6 +307,22 @@ def build_report(strategy_review=None, replay_strategy_review=None):
         )
     else:
         checks.append(check("OK", "strategy_review_report_loaded", "Forward strategy review report loaded."))
+        scope = strategy_review.get("forward_evidence_scope") if isinstance(strategy_review.get("forward_evidence_scope"), dict) else {}
+        if scope.get("status") == "CURRENT_SCOPE_EMPTY":
+            checks.append(
+                check(
+                    "WARN",
+                    "forward_scope_has_no_current_strategy_alerts",
+                    "Current runtime strategy/watchlist scope has not accumulated forward alert evidence yet.",
+                    {
+                        "runtime_strategy_config_id": scope.get("runtime_strategy_config_id"),
+                        "runtime_strategy_config_version": scope.get("runtime_strategy_config_version"),
+                        "runtime_watchlist_id": scope.get("runtime_watchlist_id"),
+                        "outcome_raw_alert_count_before_filter": scope.get("outcome_raw_alert_count_before_filter"),
+                        "quality_raw_alert_count_before_filter": scope.get("quality_raw_alert_count_before_filter"),
+                    },
+                )
+            )
     if replay_strategy_review.get("schema") != "v5_replay_strategy_review_report_v1":
         checks.append(
             check(
@@ -335,6 +374,10 @@ def recommendations(rows):
     converged = [row["key"] for row in rows if row.get("status") == "CONVERGED_RISK"]
     replay_challenges = [row["key"] for row in rows if row.get("status") == "REPLAY_CHALLENGES_FORWARD"]
     insufficient = [row["key"] for row in rows if row.get("status") == "INSUFFICIENT_FORWARD_SAMPLE"]
+    forward_scope_empty = [row["key"] for row in rows if row.get("status") == "FORWARD_SCOPE_EMPTY"]
+    if forward_scope_empty:
+        recs.append("wait_for_current_strategy_forward_outcomes")
+        recs.append("do_not_mix_previous_strategy_forward_outcomes_into_current_scope")
     for key in converged[:8]:
         recs.append(f"prioritize_trigger_rework_or_threshold_review:{key}")
     for key in replay_challenges[:8]:

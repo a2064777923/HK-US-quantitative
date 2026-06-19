@@ -1074,6 +1074,50 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertIn("--source db --db-lookback-days 365", item["recommended_next_step"])
         self.assertIn("--strategy-config-file /root/rt_signal_strategy_config.json", item["recommended_next_step"])
 
+    def test_forward_scope_empty_convergence_requests_current_strategy_samples(self):
+        payloads = base_payloads()
+        payloads["trigger_evidence_convergence"] = {
+            "schema": "trigger_evidence_convergence_report_v1",
+            "operator_contract": {
+                "read_only": True,
+                "submits_orders": False,
+                "changes_strategy_config": False,
+                "promotion_eligible": False,
+            },
+            "summary": {
+                "status": "INSUFFICIENT",
+                "promotion_ready": False,
+                "promotion_eligible": False,
+                "forward_scope_status": "CURRENT_SCOPE_EMPTY",
+                "forward_scope_empty_count": 2,
+                "converged_risk_count": 0,
+                "replay_challenges_forward_count": 0,
+                "insufficient_forward_sample_count": 0,
+            },
+            "trigger_evidence": [
+                {
+                    "key": "BUY:站上MA5",
+                    "status": "FORWARD_SCOPE_EMPTY",
+                    "confidence": "LOW",
+                    "reasons": ["current_strategy_scope_has_no_forward_alerts"],
+                    "forward": {"policy": None},
+                    "replay": {"policy": "shadow_only"},
+                }
+            ],
+            "recommendations": ["wait_for_current_strategy_forward_outcomes"],
+        }
+
+        payload = report.build_report(payloads)
+        item = {row["id"]: row for row in payload["actions"]}["collect_current_strategy_forward_evidence"]
+
+        self.assertEqual(item["priority"], "P2")
+        self.assertEqual(item["evidence"]["summary"]["forward_scope_status"], "CURRENT_SCOPE_EMPTY")
+        self.assertEqual(item["evidence"]["top_trigger_evidence"][0]["status"], "FORWARD_SCOPE_EMPTY")
+        self.assertFalse(item["operator_effect"]["submits_orders"])
+        self.assertFalse(item["operator_effect"]["changes_strategy"])
+        self.assertIn("current strategy/watchlist scope", item["recommended_next_step"])
+        self.assertNotIn("CONVERGED_RISK", item["recommended_next_step"])
+
     def test_no_actions_is_ok(self):
         payload = report.build_report(
             {

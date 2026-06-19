@@ -447,6 +447,8 @@ def trigger_evidence_convergence():
             "converged_risk_count": 1,
             "replay_challenges_forward_count": 1,
             "insufficient_forward_sample_count": 0,
+            "forward_scope_empty_count": 0,
+            "forward_scope_status": "AVAILABLE",
         },
         "operator_contract": {
             "read_only": True,
@@ -3278,6 +3280,7 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertFalse(convergence["changes_strategy_config"])
         self.assertEqual(convergence["status"], "REVIEW_REQUIRED")
         self.assertEqual(convergence["counts"]["converged_risk_count"], 1)
+        self.assertEqual(convergence["counts"]["forward_scope_status"], "AVAILABLE")
         self.assertEqual(convergence["top_trigger_evidence"][0]["key"], "BUY:站上MA5")
 
         missing = packet.strategy_learning_brief({})["local_backtest_reliability"]

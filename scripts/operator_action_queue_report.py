@@ -1288,6 +1288,53 @@ def replay_convergence_actions(strategy_review, v5_local_replay, v5_replay_strat
     risk_count = int(summary.get("converged_risk_count") or 0)
     replay_challenges = int(summary.get("replay_challenges_forward_count") or 0)
     insufficient = int(summary.get("insufficient_forward_sample_count") or 0)
+    forward_scope_empty = int(summary.get("forward_scope_empty_count") or 0)
+    if has_convergence and forward_scope_empty and not (risk_count or replay_challenges or insufficient):
+        top_rows = []
+        for row in safe_list(convergence.get("trigger_evidence")):
+            if not isinstance(row, dict) or row.get("status") != "FORWARD_SCOPE_EMPTY":
+                continue
+            top_rows.append(
+                {
+                    "key": row.get("key"),
+                    "status": row.get("status"),
+                    "confidence": row.get("confidence"),
+                    "reasons": safe_list(row.get("reasons")),
+                    "forward_policy": safe_dict(row.get("forward")).get("policy"),
+                    "replay_policy": safe_dict(row.get("replay")).get("policy"),
+                }
+            )
+        actions.append(
+            action(
+                "collect_current_strategy_forward_evidence",
+                "P2",
+                "evidence_collection",
+                "Wait for current strategy forward evidence before promotion",
+                (
+                    "The current strategy/watchlist scope has no matching forward alerts yet, so replay evidence cannot be "
+                    "converged with live outcomes without mixing older strategy versions."
+                ),
+                evidence={
+                    "summary": summary,
+                    "top_trigger_evidence": top_rows[:8],
+                    "recommendations": safe_list(convergence.get("recommendations")),
+                    "operator_contract": safe_dict(convergence.get("operator_contract")),
+                },
+                next_step=(
+                    "Keep the current strategy/watchlist scope separate from older alert history. Wait for current-scope "
+                    "alerts to mature into forward outcomes, then refresh rt_signal_outcome_report.py, "
+                    "rt_alert_quality_report.py, strategy_review_report.py, and trigger_evidence_convergence_report.py "
+                    "before considering any strategy promotion."
+                ),
+                operator_effect={
+                    "refreshes_reports": False,
+                    "submits_orders": False,
+                    "changes_strategy": False,
+                    "changes_portfolio": False,
+                    "changes_crontab": False,
+                },
+            )
+        )
     if has_convergence and (risk_count or replay_challenges or insufficient):
         top_rows = []
         for row in safe_list(convergence.get("trigger_evidence")):

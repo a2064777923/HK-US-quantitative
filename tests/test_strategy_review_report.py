@@ -49,6 +49,28 @@ def outcome_report(rows, overall_resolved=40, overall_avg=0.2, overall_win=55):
     }
 
 
+def current_scope_empty_outcome_report():
+    payload = outcome_report([], overall_resolved=0, overall_avg=None, overall_win=None)
+    payload["sample_scope"] = {
+        "mode": "runtime_strategy_config_and_watchlist",
+        "strategy_config_id": "cfg-v56",
+        "strategy_config_version": "v5.6-test",
+        "watchlist_id": "wl-current",
+        "raw_alert_count_before_filter": 25,
+        "raw_alert_count": 0,
+        "excluded_alert_count": 25,
+        "directional_alert_count_before_filter": 18,
+        "directional_alert_count": 0,
+        "excluded_directional_alert_count": 18,
+    }
+    payload["counts"] = {
+        "raw_alert_count": 0,
+        "evaluated_signal_count": 0,
+        "directional_alert_count": 0,
+    }
+    return payload
+
+
 def quality_report(rows):
     return {
         "generated_at": "2026-06-12T10:05:00",
@@ -57,6 +79,24 @@ def quality_report(rows):
         "trigger_quality": rows,
         "symbol_conflicts": [],
     }
+
+
+def current_scope_empty_quality_report():
+    payload = quality_report([])
+    payload["sample_scope"] = {
+        "mode": "runtime_strategy_config_and_watchlist",
+        "strategy_config_id": "cfg-v56",
+        "strategy_config_version": "v5.6-test",
+        "watchlist_id": "wl-current",
+        "raw_alert_count_before_filter": 25,
+        "raw_alert_count": 0,
+        "excluded_alert_count": 25,
+        "directional_candidate_count_before_filter": 18,
+        "directional_candidate_count": 0,
+        "excluded_directional_candidate_count": 18,
+    }
+    payload["counts"] = {"total_alerts": 0, "directional_alerts": 0}
+    return payload
 
 
 class StrategyReviewReportTests(unittest.TestCase):
@@ -128,6 +168,22 @@ class StrategyReviewReportTests(unittest.TestCase):
         self.assertIn("negative_intraday_queue_mark", row["reasons"])
         self.assertNotIn("tighten_trigger_thresholds:BUY:noisy", payload["recommendations"])
         self.assertIn("collect_more_forward_outcomes_before_execution_review", payload["recommendations"])
+
+    def test_current_runtime_scope_empty_is_reported_as_forward_evidence_gap(self):
+        payload = report.build_report(
+            current_scope_empty_outcome_report(),
+            current_scope_empty_quality_report(),
+        )
+
+        scope = payload["forward_evidence_scope"]
+        self.assertEqual(scope["status"], "CURRENT_SCOPE_EMPTY")
+        self.assertTrue(scope["blocks_strategy_promotion"])
+        self.assertEqual(scope["runtime_strategy_config_id"], "cfg-v56")
+        self.assertEqual(scope["runtime_watchlist_id"], "wl-current")
+        self.assertEqual(scope["outcome_sample_scope"]["excluded_alert_count"], 25)
+        self.assertEqual(payload["trigger_policies"], [])
+        self.assertIn("current_strategy_scope_has_no_forward_alerts", payload["warnings"])
+        self.assertIn("wait_for_current_strategy_forward_alerts", payload["recommendations"])
 
 
 if __name__ == "__main__":
