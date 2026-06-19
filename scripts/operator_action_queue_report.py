@@ -447,6 +447,11 @@ def position_actions(position_audit, packet):
         task_index_usable = task_index_schema == "hermes_position_judgment_task_index_v1" and bool(task_rows)
         worklist = safe_dict(packet.get("position_judgment_worklist"))
         worklist_rows = safe_list(worklist.get("items"))
+        preferred_work_items = [
+            safe_dict(row)
+            for row in worklist_rows[: min(high_unjudged, 20)]
+            if isinstance(row, dict)
+        ]
         items_by_id = {str(item.get("review_id") or "").strip(): item for item in packet_items if isinstance(item, dict)}
         items_by_thread = {
             review_thread_key_for_item(item): item
@@ -550,6 +555,7 @@ def position_actions(position_audit, packet):
                         "first_review_id": safe_dict(worklist_rows[0]).get("review_id") if worklist_rows else None,
                     } if worklist else {},
                     "unjudged_examples": examples,
+                    "position_judgment_work_items": preferred_work_items,
                     "position_judgment_write_plan": write_plan,
                     "safety": {
                         "template_only": bool(template_summary.get("template_only")),

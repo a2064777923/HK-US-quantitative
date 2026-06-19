@@ -171,6 +171,23 @@ def base_payloads():
                         "symbol": "00816",
                         "urgency": "high",
                         "recommended_action": "exit_review",
+                        "context_summary": {
+                            "position": {
+                                "current_price": 8.16,
+                                "unrealized_pnl_pct": -7.5,
+                            },
+                            "intraday_live_context": {
+                                "status": "OK",
+                                "latest_price": 8.16,
+                                "session": {"change_pct": -2.4, "momentum": "strong_down"},
+                                "latest_60m": {"change_pct": -2.2, "momentum": "strong_down"},
+                                "policy": "current_session_or_last_session_context_only_not_completed_daily_ohlcv",
+                            },
+                        },
+                        "required_attention_codes": [
+                            "position_dynamic_management_requires_review",
+                            "position_exit_or_reduce_review_requires_contextual_rationale",
+                        ],
                         "required_output_fields": {
                             "schema": "hermes_position_judgment_v1",
                             "advisory_only": True,
@@ -751,6 +768,18 @@ class OperatorActionQueueReportTests(unittest.TestCase):
             actions["write_high_urgency_position_judgments"]["evidence"]["template_source"],
             f"{report.PACKET_FILE} position_review.items[].position_judgment_template",
         )
+        work_items = actions["write_high_urgency_position_judgments"]["evidence"]["position_judgment_work_items"]
+        self.assertEqual(work_items[0]["review_id"], "simulation:8:00816:2026-06-12:exit_review")
+        self.assertEqual(work_items[0]["context_summary"]["intraday_live_context"]["latest_price"], 8.16)
+        self.assertEqual(
+            work_items[0]["context_summary"]["intraday_live_context"]["policy"],
+            "current_session_or_last_session_context_only_not_completed_daily_ohlcv",
+        )
+        self.assertEqual(work_items[0]["required_output_fields"]["schema"], "hermes_position_judgment_v1")
+        self.assertTrue(work_items[0]["required_output_fields"]["advisory_only"])
+        self.assertFalse(work_items[0]["required_output_fields"]["submits_orders"])
+        self.assertNotIn("position_judgment_template", work_items[0])
+        self.assertNotIn("draft_jsonl_object", work_items[0])
         write_plan = actions["write_high_urgency_position_judgments"]["evidence"]["position_judgment_write_plan"]
         self.assertEqual(write_plan[0]["review_id"], "simulation:8:00816:2026-06-12:exit_review")
         self.assertEqual(write_plan[0]["review_thread_key"], "simulation:8:00816")
