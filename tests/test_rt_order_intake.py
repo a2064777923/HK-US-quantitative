@@ -27,6 +27,20 @@ def fresh_alert(signal_id="sig-1", symbol="00700"):
     }
 
 
+def fresh_sell_alert(signal_id="sig-sell", symbol="00700"):
+    alert = fresh_alert(signal_id, symbol)
+    alert.update(
+        {
+            "signal_type": "SELL",
+            "full_score": -0.7,
+            "entry_price": 300,
+            "stop_loss": 330,
+            "take_profit": 270,
+        }
+    )
+    return alert
+
+
 def judgment(signal_id, decision="approve", **extra):
     item = {
         "schema": "hermes_trade_judgment_v1",
@@ -309,6 +323,242 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertEqual(result["status"], "rejected")
             self.assertIn("execution_readiness_gate_failed", result["reasons"])
             self.assertEqual(result["execution_readiness"]["readiness_status"], "BLOCKED")
+            submit.assert_not_called()
+
+    def test_blocked_readiness_still_blocks_new_buy_exposure_after_hermes(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-buy-readiness-still-blocks")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            result, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "should-not-submit"},
+                readiness_gate=(
+                    False,
+                    {
+                        "status": "REJECTED",
+                        "readiness_status": "BLOCKED",
+                        "ready_for_execute": False,
+                        "blocking_gates": [
+                            {"gate": "simulation_portfolio_performance", "status": "BLOCK"}
+                        ],
+                        "reasons": ["execution_readiness_status_blocked"],
+                    },
+                ),
+            )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("execution_readiness_gate_failed", result["reasons"])
+            self.assertEqual(result["risk_reduction_override"]["status"], "REJECTED")
+            self.assertIn("not_sell_alert", result["risk_reduction_override"]["reasons"])
+            submit.assert_not_called()
+
+    def test_blocked_readiness_can_allow_reviewed_existing_position_sell(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_sell_alert("sig-risk-reduction-sell")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+            context = dict(self.context)
+            context["positions"] = {"00700": {"quantity": 300, "last_price": 300, "status": "holding"}}
+
+            result, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "risk-reduction"},
+                context_result=("token", context, []),
+                readiness_gate=(
+                    False,
+                    {
+                        "status": "REJECTED",
+                        "readiness_status": "BLOCKED",
+                        "ready_for_execute": False,
+                        "blocking_gates": [
+                            {"gate": "simulation_portfolio_performance", "status": "BLOCK"},
+                            {"gate": "simulation_trade_review", "status": "BLOCK"},
+                        ],
+                        "reasons": ["execution_readiness_status_blocked"],
+                    },
+                ),
+                strategy_gate=(
+                    False,
+                    {
+                        "status": "REJECTED",
+                        "reasons": [
+                            "strategy_evidence_includes_diagnostic_candidates_without_executable_cohort",
+                            "overall_outcome_sample_below_30",
+                            "execution_candidate_trigger_outcome_missing",
+                        ],
+                    },
+                ),
+                pilot_notional_cap=1_000,
+                pilot_risk_cap=1,
+            )
+
+            self.assertEqual(result["status"], "submitted")
+            self.assertEqual(result["plan"]["side"], "sell")
+            self.assertEqual(result["risk_reduction_override"]["status"], "PASS")
+            self.assertTrue(result["pilot_execution"]["risk_reduction_sell"])
+            submit.assert_called_once()
+
+    def test_risk_reduction_sell_still_requires_hermes_judgment(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "missing.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_sell_alert("sig-sell-missing-hermes")
+            context = dict(self.context)
+            context["positions"] = {"00700": {"quantity": 300, "last_price": 300, "status": "holding"}}
+
+            result, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "should-not-submit"},
+                context_result=("token", context, []),
+                readiness_gate=(
+                    False,
+                    {
+                        "status": "REJECTED",
+                        "readiness_status": "BLOCKED",
+                        "ready_for_execute": False,
+                        "blocking_gates": [{"gate": "simulation_trade_review", "status": "BLOCK"}],
+                        "reasons": ["execution_readiness_status_blocked"],
+                    },
+                ),
+            )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("hermes_judgment_gate_failed", result["reasons"])
+            self.assertNotIn("risk_reduction_override", result)
+            submit.assert_not_called()
+
+    def test_risk_reduction_sell_does_not_override_data_health_blockers(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_sell_alert("sig-sell-data-block")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+            context = dict(self.context)
+            context["positions"] = {"00700": {"quantity": 300, "last_price": 300, "status": "holding"}}
+
+            result, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "should-not-submit"},
+                context_result=("token", context, []),
+                readiness_gate=(
+                    False,
+                    {
+                        "status": "REJECTED",
+                        "readiness_status": "BLOCKED",
+                        "ready_for_execute": False,
+                        "blocking_gates": [{"gate": "data_health", "status": "BLOCK"}],
+                        "reasons": ["execution_readiness_status_blocked"],
+                    },
+                ),
+            )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("execution_readiness_gate_failed", result["reasons"])
+            self.assertIn(
+                "readiness_has_non_risk_reduction_blockers:data_health",
+                result["risk_reduction_override"]["reasons"],
+            )
+            submit.assert_not_called()
+
+    def test_risk_reduction_sell_does_not_override_stale_readiness_report(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_sell_alert("sig-sell-stale-readiness")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+            context = dict(self.context)
+            context["positions"] = {"00700": {"quantity": 300, "last_price": 300, "status": "holding"}}
+
+            result, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "should-not-submit"},
+                context_result=("token", context, []),
+                readiness_gate=(
+                    False,
+                    {
+                        "status": "REJECTED",
+                        "readiness_status": "BLOCKED",
+                        "ready_for_execute": False,
+                        "blocking_gates": [{"gate": "simulation_trade_review", "status": "BLOCK"}],
+                        "reasons": [
+                            "execution_readiness_status_blocked",
+                            "execution_readiness_ready_for_execute_false",
+                            "execution_readiness_stale",
+                        ],
+                    },
+                ),
+            )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("execution_readiness_gate_failed", result["reasons"])
+            self.assertIn(
+                "readiness_has_non_risk_reduction_reasons:execution_readiness_stale",
+                result["risk_reduction_override"]["reasons"],
+            )
+            submit.assert_not_called()
+
+    def test_risk_reduction_sell_does_not_override_negative_strategy_evidence(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_sell_alert("sig-sell-bad-outcome")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+            context = dict(self.context)
+            context["positions"] = {"00700": {"quantity": 300, "last_price": 300, "status": "holding"}}
+
+            result, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "should-not-submit"},
+                context_result=("token", context, []),
+                strategy_gate=(
+                    False,
+                    {
+                        "status": "REJECTED",
+                        "reasons": ["overall_avg_return_not_positive"],
+                    },
+                ),
+            )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("strategy_evidence_gate_failed", result["reasons"])
+            self.assertIn(
+                "strategy_evidence_block_not_sample_only",
+                result["risk_reduction_override"]["reasons"],
+            )
             submit.assert_not_called()
 
     def test_execution_readiness_gate_blocks_execute_when_report_is_blocked(self):

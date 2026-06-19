@@ -50,7 +50,7 @@ RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=500
 RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=1
 ```
 
-The bridge also forces order-intake execute gates on when invoking `alert-dry-run` or `alert-sim`: `RT_ORDER_REQUIRE_EXECUTION_READINESS=1`, `RT_ORDER_REQUIRE_STRATEGY_EVIDENCE=1`, `RT_ORDER_REQUIRE_HERMES_JUDGMENT=1`, `RT_ORDER_REQUIRE_MARKET_CONTEXT=1`, and `RT_ORDER_REQUIRE_NO_SYMBOL_CONFLICT=1`. Do not pass `RT_ORDER_REQUIRE_*=0` through bridge jobs; a raw technical trigger without a matching Hermes review item must remain blocked.
+The bridge also forces order-intake execute gates on when invoking `alert-dry-run` or `alert-sim`: `RT_ORDER_REQUIRE_EXECUTION_READINESS=1`, `RT_ORDER_REQUIRE_STRATEGY_EVIDENCE=1`, `RT_ORDER_REQUIRE_HERMES_JUDGMENT=1`, `RT_ORDER_REQUIRE_MARKET_CONTEXT=1`, and `RT_ORDER_REQUIRE_NO_SYMBOL_CONFLICT=1`. Do not pass `RT_ORDER_REQUIRE_*=0` through bridge jobs; a raw technical trigger without a matching Hermes review item must remain blocked. Order intake has one narrower exception for simulation/paper risk reduction: an existing-position `SELL` plan may continue past aggregate readiness or strategy-sample blockers only after broker context, symbol-conflict, plan construction, and a fresh Hermes `approve`/`reduce` judgment all pass. The exception does not apply to new `BUY` exposure, data-health/system/source blockers, or negative forward strategy evidence; it is recorded as `risk_reduction_override`.
 
 For US Alpaca paper:
 
@@ -226,7 +226,7 @@ python3 scripts/execution_readiness_report.py --output /tmp/execution_readiness_
 
 `execution_readiness_report.py` treats sparse 1-day target/stop hit-rate imbalance as material only when the stop-minus-target gap reaches `EXECUTION_READINESS_MIN_STOP_TARGET_IMBALANCE_BLOCK_PCT` (default `5`). Average return, win rate, maximum stop-hit rate, and favorable/adverse ratio remain hard forward-evidence gates.
 
-`execution_readiness_report.py` also emits `pilot_readiness` (`schema=execution_readiness_pilot_gate_v1`). This is report-only context for Hermes/operator review: it separates hard safety blockers from bootstrap evidence blockers such as missing forward outcomes, missing Hermes judgment-effect samples, or missing v5/Hermes-traceable paper/simulation lineage. It does not change `ready_for_execute`, submit orders, enable `alert-sim`, or bypass `rt_order_intake.py`; any evidence pilot still requires explicit manual enablement plus capped paper/simulation controls.
+`execution_readiness_report.py` also emits `pilot_readiness` (`schema=execution_readiness_pilot_gate_v1`). This is report-only context for Hermes/operator review: it separates hard safety blockers from bootstrap evidence blockers such as missing forward outcomes, missing Hermes judgment-effect samples, or missing v5/Hermes-traceable paper/simulation lineage. It does not change `ready_for_execute`, submit orders, enable `alert-sim`, or bypass `rt_order_intake.py`; any evidence pilot still requires explicit manual enablement plus capped paper/simulation controls. The separate order-intake risk-reduction path is not a pilot-readiness bypass: it is limited to reviewed `SELL` exits/reductions for already-held simulation/paper positions, and it remains closed for new `BUY` exposure.
 
 ## Data Policy
 

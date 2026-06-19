@@ -90,6 +90,28 @@ PILOT_ALLOWED_MARKETS = {
     for item in os.environ.get("RT_ORDER_PILOT_ALLOWED_MARKETS", "HK,US").split(",")
     if item.strip()
 }
+RISK_REDUCTION_READINESS_BLOCKING_GATES = {
+    "forward_outcome_evidence",
+    "directional_intake_coverage",
+    "hermes_judgment_effect",
+    "simulation_portfolio_performance",
+    "simulation_trade_review",
+    "simulation_performance_attribution",
+}
+RISK_REDUCTION_READINESS_REASONS = {
+    "execution_readiness_status_blocked",
+    "execution_readiness_ready_for_execute_false",
+}
+RISK_REDUCTION_STRATEGY_REASON_PREFIXES = (
+    "overall_outcome_sample_below_",
+    "trigger_outcome_sample_below_",
+    "strategy_evidence_horizon_missing_",
+)
+RISK_REDUCTION_STRATEGY_REASONS = {
+    "strategy_evidence_includes_diagnostic_candidates_without_executable_cohort",
+    "execution_candidate_trigger_outcome_missing",
+    "trigger_outcome_missing",
+}
 
 LOT_SIZES_HK = {
     "00700": 100,
@@ -819,6 +841,86 @@ def execution_readiness_gate(mode, report_file=EXECUTION_READINESS_FILE):
     return not reasons, payload
 
 
+def blocking_gate_names(readiness_payload):
+    gates = (readiness_payload or {}).get("blocking_gates")
+    if not isinstance(gates, list):
+        return set()
+    return {
+        str(gate.get("gate") or "").strip()
+        for gate in gates
+        if isinstance(gate, dict) and str(gate.get("gate") or "").strip()
+    }
+
+
+def strategy_reasons_are_sample_only(strategy_payload):
+    reasons = (strategy_payload or {}).get("reasons") or []
+    if not isinstance(reasons, list):
+        return False
+    if not reasons:
+        return True
+    for reason in reasons:
+        text = str(reason or "")
+        if text in RISK_REDUCTION_STRATEGY_REASONS:
+            continue
+        if any(text.startswith(prefix) for prefix in RISK_REDUCTION_STRATEGY_REASON_PREFIXES):
+            continue
+        return False
+    return True
+
+
+def risk_reduction_execute_override(alert, plan, context, execution_readiness, strategy_gate, hermes_gate, mode):
+    """Allow only reviewed SELL exits to reduce existing paper/simulation risk."""
+    reasons = []
+    if mode != "execute":
+        reasons.append("not_execute_mode")
+    if str((alert or {}).get("signal_type") or "").strip().upper() != "SELL":
+        reasons.append("not_sell_alert")
+    if not isinstance(plan, dict) or str(plan.get("side") or "").lower() != "sell":
+        reasons.append("not_sell_plan")
+    if float((plan or {}).get("risk_hkd") or 0) != 0:
+        reasons.append("sell_plan_risk_not_zero")
+
+    positions = (context or {}).get("positions") if isinstance(context, dict) else {}
+    symbol = str((alert or {}).get("symbol") or "").strip().upper()
+    if not symbol or not isinstance(positions, dict) or symbol not in positions:
+        reasons.append("no_existing_position_for_sell")
+
+    hermes_status = str((hermes_gate or {}).get("status") or "").upper()
+    hermes_decision = str((hermes_gate or {}).get("decision") or "").lower()
+    if hermes_status != "APPROVED" or hermes_decision not in ("approve", "reduce"):
+        reasons.append("hermes_not_approved_for_risk_reduction")
+
+    readiness_reasons = (execution_readiness or {}).get("reasons") or []
+    readiness_blockers = blocking_gate_names(execution_readiness)
+    if readiness_reasons and not readiness_blockers:
+        reasons.append("readiness_without_blocking_gate_detail")
+    disallowed_readiness_reasons = sorted(
+        str(reason or "")
+        for reason in readiness_reasons
+        if str(reason or "") not in RISK_REDUCTION_READINESS_REASONS
+    )
+    if disallowed_readiness_reasons:
+        reasons.append("readiness_has_non_risk_reduction_reasons:" + ",".join(disallowed_readiness_reasons[:8]))
+    disallowed_readiness = sorted(readiness_blockers - RISK_REDUCTION_READINESS_BLOCKING_GATES)
+    if disallowed_readiness:
+        reasons.append("readiness_has_non_risk_reduction_blockers:" + ",".join(disallowed_readiness[:8]))
+
+    if not strategy_reasons_are_sample_only(strategy_gate):
+        reasons.append("strategy_evidence_block_not_sample_only")
+
+    payload = {
+        "status": "PASS" if not reasons else "REJECTED",
+        "scope": "reviewed_existing_position_sell_only",
+        "applies_to": ["execution_readiness", "strategy_evidence"],
+        "readiness_blocking_gates": sorted(readiness_blockers),
+        "strategy_reasons": list((strategy_gate or {}).get("reasons") or []),
+        "hermes_status": hermes_status,
+        "hermes_decision": hermes_decision,
+        "reasons": reasons,
+    }
+    return not reasons, payload
+
+
 def order_intake_broker_reconciliation_gate(backend, mode, report_file=ORDER_INTAKE_EVENT_STORE_REPORT_FILE):
     """Require Alpaca paper broker/state reconciliation before execute-mode submits."""
     if backend != "alpaca-paper":
@@ -1451,11 +1553,14 @@ def pilot_execution_gate(alert, plan, state, mode, now=None):
     """Last-mile cap for small alert-sim pilots before submitting to the simulation API."""
     market = alert_market(alert)
     submitted_today = daily_submitted_order_count(state, now)
+    side = str((plan or {}).get("side") or "").lower()
+    is_risk_reduction_sell = side == "sell" and float((plan or {}).get("risk_hkd") or 0) == 0.0
     payload = {
         "status": "PASS",
         "enabled": PILOT_EXECUTION_ENABLED,
         "market": market,
         "allowed_markets": sorted(PILOT_ALLOWED_MARKETS),
+        "risk_reduction_sell": is_risk_reduction_sell,
         "submitted_today": submitted_today,
         "max_daily_submitted_orders": PILOT_MAX_DAILY_SUBMITTED_ORDERS,
         "max_order_notional_hkd": PILOT_MAX_ORDER_NOTIONAL_HKD,
@@ -1470,16 +1575,17 @@ def pilot_execution_gate(alert, plan, state, mode, now=None):
         reasons.append("pilot_execution_not_enabled")
     if market not in PILOT_ALLOWED_MARKETS:
         reasons.append("pilot_market_not_allowed")
-    try:
-        if float(plan.get("notional_hkd", 0) or 0) > PILOT_MAX_ORDER_NOTIONAL_HKD:
-            reasons.append("pilot_order_notional_above_cap")
-    except (AttributeError, TypeError, ValueError):
-        reasons.append("pilot_order_notional_invalid")
-    try:
-        if float(plan.get("risk_hkd", 0) or 0) > PILOT_MAX_ORDER_RISK_HKD:
-            reasons.append("pilot_order_risk_above_cap")
-    except (AttributeError, TypeError, ValueError):
-        reasons.append("pilot_order_risk_invalid")
+    if not is_risk_reduction_sell:
+        try:
+            if float(plan.get("notional_hkd", 0) or 0) > PILOT_MAX_ORDER_NOTIONAL_HKD:
+                reasons.append("pilot_order_notional_above_cap")
+        except (AttributeError, TypeError, ValueError):
+            reasons.append("pilot_order_notional_invalid")
+        try:
+            if float(plan.get("risk_hkd", 0) or 0) > PILOT_MAX_ORDER_RISK_HKD:
+                reasons.append("pilot_order_risk_above_cap")
+        except (AttributeError, TypeError, ValueError):
+            reasons.append("pilot_order_risk_invalid")
     if submitted_today >= PILOT_MAX_DAILY_SUBMITTED_ORDERS:
         reasons.append("pilot_daily_submitted_order_cap_reached")
 
@@ -1579,40 +1685,12 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
         record_decision(state, sid, decision, state_file, mode)
         return decision
 
-    readiness_ok, execution_readiness = execution_readiness_gate(mode)
-    if not readiness_ok:
-        decision = {
-            "signal_id": sid,
-            "status": "rejected",
-            "reasons": ["execution_readiness_gate_failed"],
-            "health": health,
-            "execution_readiness": execution_readiness,
-            "checked_at": now_iso(),
-        }
-        record_decision(state, sid, decision, state_file, mode)
-        return decision
-
-    strategy_ok, strategy_gate = strategy_evidence_gate(alert, mode)
-    if not strategy_ok:
-        decision = {
-            "signal_id": sid,
-            "status": "rejected",
-            "reasons": ["strategy_evidence_gate_failed"],
-            "execution_readiness": execution_readiness,
-            "strategy_evidence": strategy_gate,
-            "checked_at": now_iso(),
-        }
-        record_decision(state, sid, decision, state_file, mode)
-        return decision
-
     conflict_ok, conflict_gate = symbol_conflict_gate(alert, mode)
     if not conflict_ok:
         decision = {
             "signal_id": sid,
             "status": "rejected",
             "reasons": ["symbol_conflict_gate_failed"],
-            "execution_readiness": execution_readiness,
-            "strategy_evidence": strategy_gate,
             "symbol_conflict": conflict_gate,
             "checked_at": now_iso(),
         }
@@ -1629,8 +1707,6 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
             "reasons": ["broker_context_gate_failed"],
             "order_backend": backend,
             "broker_context": broker_context,
-            "execution_readiness": execution_readiness,
-            "strategy_evidence": strategy_gate,
             "symbol_conflict": conflict_gate,
             "checked_at": now_iso(),
         }
@@ -1645,8 +1721,6 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
             "order_backend": backend,
             "broker_context": broker_context,
             "broker_reconciliation": broker_reconciliation,
-            "execution_readiness": execution_readiness,
-            "strategy_evidence": strategy_gate,
             "symbol_conflict": conflict_gate,
             "checked_at": now_iso(),
         }
@@ -1661,8 +1735,6 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
             "order_backend": backend,
             "broker_context": broker_context,
             "warnings": context_warnings,
-            "execution_readiness": execution_readiness,
-            "strategy_evidence": strategy_gate,
             "symbol_conflict": conflict_gate,
             "context": {
                 "cash_hkd": context["cash_hkd"],
@@ -1684,8 +1756,6 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
             "status": "rejected",
             "reasons": ["hermes_judgment_gate_failed"],
             "hermes": hermes_gate,
-            "execution_readiness": execution_readiness,
-            "strategy_evidence": strategy_gate,
             "symbol_conflict": conflict_gate,
             "context": {
                 "cash_hkd": context["cash_hkd"],
@@ -1696,6 +1766,45 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
         }
         record_decision(state, sid, decision, state_file, mode)
         return decision
+
+    readiness_ok, execution_readiness = execution_readiness_gate(mode)
+    strategy_ok, strategy_gate = strategy_evidence_gate(alert, mode)
+    risk_reduction_override = None
+    if not readiness_ok or not strategy_ok:
+        override_ok, override_payload = risk_reduction_execute_override(
+            alert,
+            plan,
+            context,
+            execution_readiness,
+            strategy_gate,
+            hermes_gate,
+            mode,
+        )
+        risk_reduction_override = override_payload
+        if not override_ok:
+            failed = []
+            if not readiness_ok:
+                failed.append("execution_readiness_gate_failed")
+            if not strategy_ok:
+                failed.append("strategy_evidence_gate_failed")
+            decision = {
+                "signal_id": sid,
+                "status": "rejected",
+                "reasons": failed,
+                "execution_readiness": execution_readiness,
+                "strategy_evidence": strategy_gate,
+                "risk_reduction_override": risk_reduction_override,
+                "symbol_conflict": conflict_gate,
+                "hermes": hermes_gate,
+                "context": {
+                    "cash_hkd": context["cash_hkd"],
+                    "equity_hkd": context["equity_hkd"],
+                    "positions": sorted(context["positions"].keys()),
+                },
+                "checked_at": now_iso(),
+            }
+            record_decision(state, sid, decision, state_file, mode)
+            return decision
 
     market_ok, market_gate = market_context_gate(alert, plan, mode, hermes_gate)
     if not market_ok:
@@ -1750,6 +1859,7 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
         "market_context": market_gate,
         "pilot_execution": pilot_gate,
         "pilot_cap": pilot_cap,
+        "risk_reduction_override": risk_reduction_override,
         "hermes": hermes_gate,
         "alert": {
             "symbol": alert.get("symbol"),
