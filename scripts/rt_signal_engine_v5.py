@@ -8,7 +8,7 @@
 """
 import hashlib, subprocess, json, time, os, sys, math, re, urllib.request
 from datetime import datetime, timedelta, timezone
-from collections import defaultdict
+from collections import Counter, defaultdict
 from threading import Thread, Lock
 
 try:
@@ -30,6 +30,7 @@ SIGNAL_COOLDOWN = 1800  # 同一信號30分鐘內唔重複觸發
 USER_HOLDINGS_REFRESH_SECONDS = env_int("RT_SIGNAL_USER_HOLDINGS_REFRESH_SECONDS", 300)
 ALERT_FILE = "/tmp/rt_signal_alert.json"
 ALERT_QUEUE_FILE = "/tmp/rt_signal_alerts.jsonl"
+WATCH_SUMMARY_FILE = os.environ.get("RT_SIGNAL_WATCH_SUMMARY_FILE", "/tmp/rt_signal_watch_summary.json")
 STATE_FILE = "/tmp/rt_signal_state.json"
 SESSION_KEY_RETENTION_DAYS = 7
 STATE_BACKFILL_ALERT_QUEUE_LIMIT = env_int("RT_SIGNAL_STATE_BACKFILL_ALERT_QUEUE_LIMIT", 5000)
@@ -778,6 +779,8 @@ def normalize_strategy_config(config):
         normalize_override_score_threshold(override, key, "max_full_score", warnings)
         if "enabled" in override:
             override["enabled"] = as_bool(override.get("enabled"), True)
+        if "summary_only" in override:
+            override["summary_only"] = as_bool(override.get("summary_only"), False)
         if "cooldown_seconds" in override:
             override["cooldown_seconds"] = as_int(override.get("cooldown_seconds"))
             if override["cooldown_seconds"] is None or override["cooldown_seconds"] <= 0:
@@ -2170,6 +2173,7 @@ class TriggerEngine:
         self.alerts = []
         self.cooldowns = {}  # key -> last_trigger_time
         self.emitted_session_keys = {}  # date:symbol:side:trigger -> first_emit_time
+        self.suppressed_watch_summaries = []
         self.watchlist_context = watchlist_context or {}
         self.strategy_config, default_context = load_strategy_config(env={}, file_path="")
         if strategy_config is not None:
@@ -2209,6 +2213,10 @@ class TriggerEngine:
             override.get("enabled", True) is False
             and self.trigger_review_mode(signal_type, trigger_name).startswith("disabled_pending_rework")
         )
+
+    def trigger_summary_only(self, signal_type, trigger_name):
+        override = self.trigger_override(signal_type, trigger_name)
+        return override.get("summary_only") is True
 
     def trigger_cooldown_seconds(self, signal_type, trigger_name):
         override = self.trigger_override(signal_type, trigger_name)
@@ -2488,6 +2496,22 @@ class TriggerEngine:
             trigger_review_mode = self.trigger_review_mode(signal_type, trigger_name)
             trigger_disabled_observation = self.trigger_disabled_observation(signal_type, trigger_name)
             if not self.trigger_enabled(signal_type, trigger_name) and not trigger_disabled_observation:
+                continue
+            if signal_type == "WATCH" and self.trigger_summary_only(signal_type, trigger_name):
+                self.suppressed_watch_summaries.append(
+                    {
+                        "schema": "rt_signal_suppressed_watch_summary_v1",
+                        "symbol": symbol,
+                        "market": quote.get("market", ""),
+                        "trigger": trigger_name,
+                        "detail": detail,
+                        "candidate_signal_type": signal_type,
+                        "suppressed_reason": "summary_only_watch_trigger",
+                        "price": c,
+                        "change_pct": quote.get("change_pct", 0),
+                        "quote_time": quote.get("time", ""),
+                    }
+                )
                 continue
             cooldown_seconds = self.trigger_cooldown_seconds(signal_type, trigger_name)
             
@@ -3006,6 +3030,36 @@ def send_alert(alerts):
             pass
         raise
 
+
+def save_watch_summary(summaries, generated_at=None, path=None, strategy_context=None, watchlist_context=None):
+    path = path or WATCH_SUMMARY_FILE
+    generated_at = generated_at or datetime.now().isoformat(timespec="seconds")
+    counts_by_trigger = Counter(str(item.get("trigger") or "UNKNOWN") for item in summaries or [])
+    payload = {
+        "schema": "rt_signal_watch_summary_v1",
+        "generated_at": generated_at,
+        "summary_only": True,
+        "submits_orders": False,
+        "suppressed_watch_count": len(summaries or []),
+        "counts_by_trigger": dict(counts_by_trigger),
+        "sample": list(summaries or [])[:20],
+        "strategy_config_id": (strategy_context or {}).get("strategy_config_id"),
+        "strategy_config_version": (strategy_context or {}).get("version"),
+        "watchlist_id": (watchlist_context or {}).get("watchlist_id"),
+    }
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2, allow_nan=False)
+        os.replace(tmp, path)
+    finally:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+    return payload
+
 def main():
     hk_watchlist, us_watchlist, watchlist_context = load_watchlists()
     strategy_config, strategy_context = load_strategy_config()
@@ -3114,6 +3168,7 @@ def main():
         # 全量條件檢查（每30秒一次）
         if now - last_full_scan >= FULL_SCAN_INTERVAL:
             trigger.alerts = []
+            trigger.suppressed_watch_summaries = []
             market_breadth_by_market = market_breadth_context_from_quotes(all_quotes, now=dt)
             for sym, quote in all_quotes.items():
                 if sym in indicators:
@@ -3131,6 +3186,16 @@ def main():
                         quote["price"], quote["high"], quote["low"], quote["volume"]
                     )
                     trigger.check(sym, indicators[sym], quote)
+
+            if trigger.suppressed_watch_summaries:
+                save_watch_summary(
+                    trigger.suppressed_watch_summaries,
+                    generated_at=dt.isoformat(timespec="seconds"),
+                    strategy_context=strategy_context,
+                    watchlist_context=watchlist_context,
+                )
+                if cycle % 20 == 0:
+                    log(f"summary-only WATCH: {len(trigger.suppressed_watch_summaries)}")
 
             if trigger.alerts:
                 log(f"🚨 觸發 {len(trigger.alerts)} 個信號!")

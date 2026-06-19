@@ -172,6 +172,23 @@ class AlertQualityReportTests(unittest.TestCase):
             payload["recommendations"],
         )
 
+    def test_watch_quality_includes_summary_only_suppressed_watch_count(self):
+        payload = report.build_report(
+            [watch("w1", "AAPL", 100)],
+            {},
+            watch_summary={
+                "schema": "rt_signal_watch_summary_v1",
+                "generated_at": "2026-06-12T10:05:00",
+                "suppressed_watch_count": 32,
+                "counts_by_trigger": {"成交量異動": 32},
+            },
+        )
+        text = report.build_text_report(payload)
+
+        self.assertEqual(payload["watch_quality"]["summary_only_suppressed_count"], 32)
+        self.assertEqual(payload["watch_quality"]["summary_only_counts_by_trigger"], {"成交量異動": 32})
+        self.assertIn("summary_only=32", text)
+
     def test_watch_packet_review_items_still_trigger_filter_recommendation(self):
         packet = {
             "generated_at": "2026-06-12T10:05:00",

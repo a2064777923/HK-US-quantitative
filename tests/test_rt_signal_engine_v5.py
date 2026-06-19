@@ -1191,6 +1191,29 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             self.assertEqual(latest_payload, [{"signal_id": "old"}])
             self.assertFalse(queue_path.exists())
 
+    def test_save_watch_summary_writes_summary_only_payload(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = str(Path(td) / "watch_summary.json")
+            payload = rt.save_watch_summary(
+                [
+                    {"trigger": "成交量異動", "symbol": "AAPL", "suppressed_reason": "summary_only_watch_trigger"},
+                    {"trigger": "成交量異動", "symbol": "MSFT", "suppressed_reason": "summary_only_watch_trigger"},
+                ],
+                generated_at="2026-06-11T14:00:00",
+                path=path,
+                strategy_context={"strategy_config_id": "cfg", "version": "v-test"},
+                watchlist_context={"watchlist_id": "watch"},
+            )
+
+            loaded = json.loads(Path(path).read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["schema"], "rt_signal_watch_summary_v1")
+        self.assertEqual(loaded["suppressed_watch_count"], 2)
+        self.assertTrue(loaded["summary_only"])
+        self.assertFalse(loaded["submits_orders"])
+        self.assertEqual(loaded["counts_by_trigger"], {"成交量異動": 2})
+        self.assertEqual(loaded["strategy_config_id"], "cfg")
+
     def test_cumulative_volume_ratio_uses_elapsed_session_fraction(self):
         ratio = rt.cumulative_volume_ratio(
             quote_volume=700,
@@ -2133,6 +2156,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             {
                 "trigger_overrides": {
                     "BUY:RSI超賣": {"enabled": "false", "cooldown_seconds": -5},
+                    "WATCH:成交量異動": {"summary_only": "true"},
                 }
             }
         )
@@ -2140,6 +2164,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         override = config["trigger_overrides"]["BUY:RSI超賣"]
         self.assertIs(override["enabled"], False)
         self.assertNotIn("cooldown_seconds", override)
+        self.assertIs(config["trigger_overrides"]["WATCH:成交量異動"]["summary_only"], True)
         self.assertIn("invalid_trigger_cooldown_seconds:BUY:RSI超賣", warnings)
 
     def test_strategy_config_can_disable_trigger(self):
@@ -2165,6 +2190,34 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         )
 
         self.assertEqual(engine.alerts, [])
+
+    def test_watch_trigger_summary_only_suppresses_alert_but_records_summary(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "trigger_overrides": {
+                    "WATCH:成交量異動": {"summary_only": True},
+                }
+            }
+        )
+        indicators = FakeIndicators(avg_volume=1000)
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 4000,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertEqual(engine.alerts, [])
+        self.assertEqual(len(engine.suppressed_watch_summaries), 1)
+        self.assertEqual(engine.suppressed_watch_summaries[0]["schema"], "rt_signal_suppressed_watch_summary_v1")
+        self.assertEqual(engine.suppressed_watch_summaries[0]["trigger"], "成交量異動")
+        self.assertEqual(engine.suppressed_watch_summaries[0]["suppressed_reason"], "summary_only_watch_trigger")
 
     def test_disabled_pending_rework_trigger_emits_diagnostic_watch(self):
         engine = rt.TriggerEngine(

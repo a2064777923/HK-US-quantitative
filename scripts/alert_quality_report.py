@@ -20,6 +20,7 @@ except ImportError:
 ALERT_QUEUE_FILE = os.environ.get("RT_ALERT_QUEUE_FILE", "/tmp/rt_signal_alerts.jsonl")
 PACKET_FILE = os.environ.get("HERMES_REVIEW_PACKET_FILE", "/tmp/hermes_signal_review_packet.json")
 REPORT_FILE = os.environ.get("ALERT_QUALITY_REPORT_FILE", "/tmp/rt_alert_quality_report.json")
+WATCH_SUMMARY_FILE = os.environ.get("RT_SIGNAL_WATCH_SUMMARY_FILE", "/tmp/rt_signal_watch_summary.json")
 QUALITY_IGNORED_VALIDATION_REASONS = {"alert_too_old"}
 
 
@@ -56,6 +57,15 @@ def load_jsonl_tail(path, limit):
 
 
 def load_packet(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            loaded = json.load(f)
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def load_watch_summary(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
             loaded = json.load(f)
@@ -295,7 +305,8 @@ def symbol_conflicts(directional):
     return sorted(conflicts, key=lambda item: (-(item["buy_count"] + item["sell_count"]), item["symbol"]))
 
 
-def summarize_watch_quality(alerts):
+def summarize_watch_quality(alerts, watch_summary=None):
+    watch_summary = watch_summary if isinstance(watch_summary, dict) else {}
     watch_alerts = [alert for alert in alerts if str(alert.get("signal_type", "")).upper() == "WATCH"]
     downgraded = [alert for alert in watch_alerts if str(alert.get("candidate_signal_type", "")).upper() in ("BUY", "SELL")]
     pure_watch = [alert for alert in watch_alerts if str(alert.get("candidate_signal_type", "")).upper() not in ("BUY", "SELL")]
@@ -317,6 +328,9 @@ def summarize_watch_quality(alerts):
             {"trigger": trigger, "count": count}
             for trigger, count in trigger_counts.most_common(8)
         ],
+        "summary_only_suppressed_count": int(as_float(watch_summary.get("suppressed_watch_count"), 0) or 0),
+        "summary_only_counts_by_trigger": watch_summary.get("counts_by_trigger") if isinstance(watch_summary.get("counts_by_trigger"), dict) else {},
+        "summary_only_generated_at": watch_summary.get("generated_at"),
         "diagnostic_only": True,
         "submits_orders": False,
     }
@@ -394,7 +408,7 @@ def report_status(summary):
     return "WARN"
 
 
-def build_report(alerts, packet=None, sample_scope_mode="current"):
+def build_report(alerts, packet=None, sample_scope_mode="current", watch_summary=None):
     packet = packet or {}
     scoped_alerts, sample_scope = apply_sample_scope(alerts, sample_scope_mode=sample_scope_mode)
     marked_alerts = attach_queue_marks(scoped_alerts)
@@ -503,7 +517,7 @@ def build_report(alerts, packet=None, sample_scope_mode="current"):
             "status_counts": dict(packet_maps["status_counts"]),
             "blocking_reasons": dict(packet_maps["reason_counts"]),
         },
-        "watch_quality": summarize_watch_quality(marked_alerts),
+        "watch_quality": summarize_watch_quality(marked_alerts, watch_summary=watch_summary),
         "trigger_quality": summarize_triggers(directional, validations, packet_maps),
         "symbol_conflicts": symbol_conflict_rows,
     }
@@ -543,10 +557,11 @@ def build_text_report(payload):
     if wq:
         lines.append(
             "watch_quality watch={watch} downgraded_directional={downgraded} "
-            "pure_watch={pure} downgrade_reasons={reasons}".format(
+            "pure_watch={pure} summary_only={summary_only} downgrade_reasons={reasons}".format(
                 watch=wq.get("watch_count", 0),
                 downgraded=wq.get("downgraded_directional_watch_count", 0),
                 pure=wq.get("pure_watch_count", 0),
+                summary_only=wq.get("summary_only_suppressed_count", 0),
                 reasons=wq.get("downgrade_reasons", {}),
             )
         )
@@ -572,6 +587,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--queue-file", default=ALERT_QUEUE_FILE)
     parser.add_argument("--packet-file", default=PACKET_FILE)
+    parser.add_argument("--watch-summary-file", default=WATCH_SUMMARY_FILE)
     parser.add_argument("--scan-limit", type=int, default=2000)
     parser.add_argument("--sample-scope", choices=("current", "all"), default="current")
     parser.add_argument("--output", default=REPORT_FILE)
@@ -585,7 +601,8 @@ def main():
     args = parse_args()
     alerts, warnings = load_jsonl_tail(args.queue_file, args.scan_limit)
     packet = load_packet(args.packet_file)
-    payload = build_report(alerts, packet, sample_scope_mode=args.sample_scope)
+    watch_summary = load_watch_summary(args.watch_summary_file)
+    payload = build_report(alerts, packet, sample_scope_mode=args.sample_scope, watch_summary=watch_summary)
     payload["warnings"] = warnings
     if args.output:
         save_json_atomic(args.output, payload)

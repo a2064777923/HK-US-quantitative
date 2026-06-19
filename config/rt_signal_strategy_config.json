@@ -50,6 +50,15 @@
     "emit_unconfirmed_directional_as_watch": true
   },
   "trigger_overrides": {
+    "WATCH:成交量異動": {
+      "enabled": true,
+      "summary_only": true,
+      "review_mode": "summary_only_volume_observation",
+      "strategy_review_reasons": [
+        "pure_watch_volume_observation_dominated_live_alert_queue",
+        "retain_research_summary_without_operator_alert_noise"
+      ]
+    },
     "BUY:布林下軌突破": {
       "enabled": false,
       "review_mode": "disabled_pending_rework",
