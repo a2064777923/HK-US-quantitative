@@ -479,6 +479,44 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         ][0]
         self.assertEqual(gate["data"]["status"], "FAIL")
 
+    def test_unjudged_high_urgency_position_judgment_blocks(self):
+        inputs = healthy_inputs()
+        inputs["position_judgment_audit"]["status"] = "WARN"
+        inputs["position_judgment_audit"]["coverage"] = {
+            "schema": "hermes_position_judgment_coverage_v1",
+            "position_review_item_count": 4,
+            "judged_review_count": 3,
+            "unjudged_review_count": 1,
+            "high_urgency_review_count": 1,
+            "unjudged_high_urgency_review_count": 1,
+            "unjudged_high_urgency_examples": [
+                {
+                    "review_id": "pos-AMD-20260612",
+                    "portfolio_id": 3,
+                    "role": "personal",
+                    "symbol": "AMD",
+                    "recommended_action": "reduce_or_tighten_stop",
+                    "urgency": "high",
+                }
+            ],
+        }
+        inputs["position_judgment_audit"]["recommendations"] = [
+            "write_position_judgments_for_high_urgency_reviews:1"
+        ]
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "BLOCKED")
+        gate = [
+            gate for gate in payload["blocking_gates"]
+            if gate["gate"] == "hermes_position_judgment_audit"
+        ][0]
+        self.assertEqual(gate["data"]["status"], "WARN")
+        self.assertEqual(
+            gate["data"]["coverage"]["unjudged_high_urgency_review_count"],
+            1,
+        )
+
     def test_failed_simulation_performance_attribution_blocks(self):
         inputs = healthy_inputs()
         inputs["simulation_performance"]["status"] = "FAIL"

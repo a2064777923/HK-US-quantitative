@@ -1194,20 +1194,35 @@ def build_report(
     )
 
     position_audit_status = position_judgment_audit.get("status") or "MISSING"
-    if position_audit_status in ("OK", "PASS"):
+    position_audit_coverage = (
+        position_judgment_audit.get("coverage")
+        if isinstance(position_judgment_audit.get("coverage"), dict)
+        else {}
+    )
+    unjudged_high_urgency_count = as_int(
+        position_audit_coverage.get("unjudged_high_urgency_review_count"),
+        0,
+    )
+    if position_audit_status in ("OK", "PASS") and not unjudged_high_urgency_count:
         position_audit_gate_status = "PASS"
-    elif position_audit_status == "FAIL":
+    elif position_audit_status == "FAIL" or unjudged_high_urgency_count:
         position_audit_gate_status = "BLOCK"
     else:
         position_audit_gate_status = "WARN"
+    position_audit_detail = f"Hermes position judgment audit status is {position_audit_status}"
+    if unjudged_high_urgency_count:
+        position_audit_detail += (
+            f"; unjudged high-urgency position reviews={unjudged_high_urgency_count}"
+        )
     add_gate(
         gates,
         "hermes_position_judgment_audit",
         position_audit_gate_status,
-        f"Hermes position judgment audit status is {position_audit_status}",
+        position_audit_detail,
         {
             "status": position_audit_status,
             "counts": position_judgment_audit.get("counts") or {},
+            "coverage": position_audit_coverage,
             "recommendations": position_judgment_audit.get("recommendations") or [],
         },
     )
