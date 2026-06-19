@@ -69,6 +69,18 @@ def packet(items=None, packet_id="packet-1"):
     }
 
 
+def packet_with_worklist(items=None, packet_id="packet-1", worklist_items=None):
+    payload = packet(items=items, packet_id=packet_id)
+    payload["position_judgment_worklist"] = {
+        "schema": "hermes_position_judgment_worklist_v1",
+        "advisory_only": True,
+        "submits_orders": False,
+        "judgment_file": "/tmp/hermes_position_judgments.jsonl",
+        "items": worklist_items or [],
+    }
+    return payload
+
+
 def judgment(review_id="simulation:8:00929:2026-06-12:reduce_or_exit_review", decision="watch", **extra):
     item = {
         "schema": "hermes_position_judgment_v1",
@@ -141,6 +153,50 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
             "simulation:8:00929:2026-06-12:reduce_or_exit_review",
         )
         self.assertIn("write_position_judgments_for_high_urgency_reviews:1", payload["recommendations"])
+
+    def test_unjudged_high_urgency_coverage_includes_matching_worklist_item(self):
+        review_id = "simulation:8:00929:2026-06-12:reduce_or_exit_review"
+        high = position_item(
+            review_id,
+            urgency="high",
+            recommended_action="reduce_or_exit_review",
+        )
+        work_item = {
+            "review_id": review_id,
+            "review_thread_key": "simulation:8:00929",
+            "portfolio_id": 8,
+            "role": "simulation",
+            "symbol": "00929",
+            "urgency": "high",
+            "recommended_action": "reduce_or_exit_review",
+            "context_summary": {
+                "intraday_live_context": {
+                    "status": "OK",
+                    "latest_price": 3.2,
+                    "session": {"change_pct": -2.1, "momentum": "strong_down"},
+                    "policy": "current_session_or_last_session_context_only_not_completed_daily_ohlcv",
+                }
+            },
+            "required_output_fields": {
+                "schema": "hermes_position_judgment_v1",
+                "advisory_only": True,
+                "submits_orders": False,
+            },
+        }
+
+        payload = audit.build_report([], packet_with_worklist([high], worklist_items=[work_item]))
+
+        work_items = payload["coverage"]["unjudged_high_urgency_work_items"]
+        self.assertEqual(len(work_items), 1)
+        self.assertEqual(work_items[0]["review_id"], review_id)
+        self.assertEqual(work_items[0]["context_summary"]["intraday_live_context"]["latest_price"], 3.2)
+        self.assertEqual(
+            work_items[0]["context_summary"]["intraday_live_context"]["policy"],
+            "current_session_or_last_session_context_only_not_completed_daily_ohlcv",
+        )
+        self.assertEqual(work_items[0]["required_output_fields"]["schema"], "hermes_position_judgment_v1")
+        self.assertTrue(work_items[0]["required_output_fields"]["advisory_only"])
+        self.assertFalse(work_items[0]["required_output_fields"]["submits_orders"])
 
     def test_judged_high_urgency_position_review_clears_coverage_gap(self):
         high = position_item(

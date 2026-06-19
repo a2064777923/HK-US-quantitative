@@ -535,7 +535,13 @@ def build_recommendations(rows, reason_counts, empty_recommendation="no_position
     return recs
 
 
-def coverage_summary(review_by_id, rows):
+def packet_position_judgment_worklist_items(packet):
+    worklist = (packet or {}).get("position_judgment_worklist")
+    items = worklist.get("items") if isinstance(worklist, dict) else []
+    return [item for item in items or [] if isinstance(item, dict) and item.get("review_id")]
+
+
+def coverage_summary(review_by_id, rows, worklist_items=None):
     current_pass_judged_ids = {
         str(row.get("covered_review_id") or row.get("review_id") or "").strip()
         for row in rows
@@ -560,6 +566,16 @@ def coverage_summary(review_by_id, rows):
         for item in high_priority
         if str(item.get("review_id") or "").strip() not in current_pass_judged_ids
     ]
+    unjudged_high_ids = {
+        str(item.get("review_id") or "").strip()
+        for item in unjudged_high
+        if str(item.get("review_id") or "").strip()
+    }
+    work_items = [
+        item
+        for item in (worklist_items or [])
+        if str(item.get("review_id") or "").strip() in unjudged_high_ids
+    ]
     return {
         "schema": "hermes_position_judgment_coverage_v1",
         "position_review_item_count": len(review_by_id or {}),
@@ -579,6 +595,7 @@ def coverage_summary(review_by_id, rows):
             }
             for item in unjudged_high[:20]
         ],
+        "unjudged_high_urgency_work_items": work_items[:20],
     }
 
 
@@ -681,7 +698,11 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
                 for reason in row["reasons"]:
                     historical_reason_counts[reason] += 1
 
-    coverage = coverage_summary(latest_review_by_id, rows)
+    coverage = coverage_summary(
+        latest_review_by_id,
+        rows,
+        worklist_items=packet_position_judgment_worklist_items(latest_packet),
+    )
     status = "FAIL" if current_status_counts.get("FAIL") or duplicates else "OK"
     if status == "OK" and coverage.get("unjudged_high_urgency_review_count"):
         status = "WARN"
