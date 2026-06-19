@@ -295,16 +295,49 @@ def symbol_conflicts(directional):
     return sorted(conflicts, key=lambda item: (-(item["buy_count"] + item["sell_count"]), item["symbol"]))
 
 
+def summarize_watch_quality(alerts):
+    watch_alerts = [alert for alert in alerts if str(alert.get("signal_type", "")).upper() == "WATCH"]
+    downgraded = [alert for alert in watch_alerts if str(alert.get("candidate_signal_type", "")).upper() in ("BUY", "SELL")]
+    pure_watch = [alert for alert in watch_alerts if str(alert.get("candidate_signal_type", "")).upper() not in ("BUY", "SELL")]
+    downgrade_reasons = Counter(
+        str(alert.get("suppressed_directional_reason") or "missing_suppressed_reason")
+        for alert in downgraded
+    )
+    candidate_sides = Counter(str(alert.get("candidate_signal_type", "UNKNOWN")).upper() for alert in downgraded)
+    trigger_counts = Counter(str(alert.get("trigger") or "UNKNOWN") for alert in watch_alerts)
+    return {
+        "watch_count": len(watch_alerts),
+        "downgraded_directional_watch_count": len(downgraded),
+        "pure_watch_count": len(pure_watch),
+        "downgraded_directional_watch_rate_pct": rate(len(downgraded), len(watch_alerts)),
+        "pure_watch_rate_pct": rate(len(pure_watch), len(watch_alerts)),
+        "downgraded_candidate_sides": dict(candidate_sides),
+        "downgrade_reasons": dict(downgrade_reasons),
+        "top_watch_triggers": [
+            {"trigger": trigger, "count": count}
+            for trigger, count in trigger_counts.most_common(8)
+        ],
+        "diagnostic_only": True,
+        "submits_orders": False,
+    }
+
+
 def build_recommendations(summary):
     recs = []
     total = summary["counts"]["total_alerts"]
     watch = summary["counts"]["by_signal_type"].get("WATCH", 0)
+    watch_quality = summary.get("watch_quality") or {}
     missing_watchlist = summary["directional_quality"].get("missing_watchlist_metadata_count", 0)
     missing_strategy = summary["directional_quality"].get("missing_strategy_config_metadata_count", 0)
     packet_review_count = summary["packet_review"].get("review_item_count", 0)
     packet_watch_count = summary["packet_review"].get("watch_review_item_count", 0)
     if total and watch / total > 0.5 and packet_watch_count > 0:
         recs.append("watch_alerts_dominate_queue_review_packet_should_filter_directional_alerts")
+    if (
+        watch >= 10
+        and watch_quality.get("downgraded_directional_watch_rate_pct", 0) >= 60
+    ):
+        recs.append("downgraded_directional_watch_alerts_dominate_review_v5_emission_policy")
     if missing_watchlist:
         recs.append("directional_alerts_missing_watchlist_metadata_restart_v5_with_configured_watchlist")
     if missing_strategy:
@@ -339,6 +372,9 @@ def build_diagnostic_notes(summary):
     watch = summary["counts"]["by_signal_type"].get("WATCH", 0)
     if total and watch / total > 0.5:
         packet_review = summary["packet_review"]
+        watch_quality = summary.get("watch_quality") or {}
+        if watch_quality.get("downgraded_directional_watch_count", 0):
+            notes.append("watch_alerts_include_downgraded_directional_candidates")
         if packet_review.get("review_item_count", 0) == 0:
             notes.append("watch_alerts_dominate_diagnostic_queue_no_fresh_packet_review_items")
         elif packet_review.get("watch_review_item_count", 0) == 0:
@@ -467,6 +503,7 @@ def build_report(alerts, packet=None, sample_scope_mode="current"):
             "status_counts": dict(packet_maps["status_counts"]),
             "blocking_reasons": dict(packet_maps["reason_counts"]),
         },
+        "watch_quality": summarize_watch_quality(marked_alerts),
         "trigger_quality": summarize_triggers(directional, validations, packet_maps),
         "symbol_conflicts": symbol_conflict_rows,
     }
@@ -502,6 +539,17 @@ def build_text_report(payload):
             f"({pr['eligible_rate_pct']:.1f}%)"
         ),
     ]
+    wq = payload.get("watch_quality") or {}
+    if wq:
+        lines.append(
+            "watch_quality watch={watch} downgraded_directional={downgraded} "
+            "pure_watch={pure} downgrade_reasons={reasons}".format(
+                watch=wq.get("watch_count", 0),
+                downgraded=wq.get("downgraded_directional_watch_count", 0),
+                pure=wq.get("pure_watch_count", 0),
+                reasons=wq.get("downgrade_reasons", {}),
+            )
+        )
     top = payload["trigger_quality"][:8]
     if top:
         lines.append("Top triggers:")

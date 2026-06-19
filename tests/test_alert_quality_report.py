@@ -149,6 +149,29 @@ class AlertQualityReportTests(unittest.TestCase):
         self.assertIn("watch_alerts_dominate_diagnostic_queue_but_packet_filters_watch", payload["diagnostic_notes"])
         self.assertEqual(payload["packet_review"]["watch_review_item_count"], 0)
 
+    def test_watch_quality_splits_pure_watch_from_downgraded_directional_candidates(self):
+        downgraded = []
+        for idx in range(10):
+            item = watch(f"dw{idx}", f"SYM{idx}", 100 + idx)
+            item["candidate_signal_type"] = "BUY"
+            item["suppressed_directional_reason"] = "unconfirmed_directional"
+            downgraded.append(item)
+        pure = watch("pure", "VOL", 50)
+        pure["candidate_signal_type"] = "WATCH"
+
+        payload = report.build_report(downgraded + [pure], {})
+
+        self.assertEqual(payload["watch_quality"]["watch_count"], 11)
+        self.assertEqual(payload["watch_quality"]["downgraded_directional_watch_count"], 10)
+        self.assertEqual(payload["watch_quality"]["pure_watch_count"], 1)
+        self.assertEqual(payload["watch_quality"]["downgraded_directional_watch_rate_pct"], 90.91)
+        self.assertEqual(payload["watch_quality"]["downgrade_reasons"], {"unconfirmed_directional": 10})
+        self.assertIn("watch_alerts_include_downgraded_directional_candidates", payload["diagnostic_notes"])
+        self.assertIn(
+            "downgraded_directional_watch_alerts_dominate_review_v5_emission_policy",
+            payload["recommendations"],
+        )
+
     def test_watch_packet_review_items_still_trigger_filter_recommendation(self):
         packet = {
             "generated_at": "2026-06-12T10:05:00",
