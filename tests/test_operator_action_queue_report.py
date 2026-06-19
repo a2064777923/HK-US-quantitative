@@ -401,6 +401,39 @@ def base_payloads():
                     "draft_only": True,
                     "symbol": "LI",
                     "target_type": "closed_trade",
+                    "failure_category": "<replace one: entry_timing|signal_quality|other>",
+                    "lesson": "<replace: concrete lesson from evidence and context>",
+                    "proposed_change": "none",
+                    "promotion_gate": "manual_and_hash_confirmed_before_strategy_or_watchlist_change",
+                    "draft_context": {
+                        "target_id": "closed_trade:LI",
+                        "context_statuses": {
+                            "market_context_status": "RISK",
+                            "intraday_context_status": "CLOSED",
+                            "source_reliability_status": "DEGRADED",
+                        },
+                        "target_evidence": {
+                            "pnl_hkd_est": -265.33,
+                            "signal_lineage_status": "LEGACY_OR_EXTERNAL",
+                        },
+                        "matched_context_ids": [{"source": "external_market_context", "id": "news-li-1"}],
+                    },
+                },
+                {
+                    "schema": "simulation_trade_postmortem_note_v1",
+                    "draft_only": True,
+                    "symbol": "00929",
+                    "target_type": "open_position",
+                    "failure_category": "<replace one: portfolio_risk_management|stop_exit_policy|other>",
+                    "lesson": "<replace: concrete lesson from evidence and context>",
+                    "proposed_change": "none",
+                    "promotion_gate": "manual_and_hash_confirmed_before_strategy_or_watchlist_change",
+                    "draft_context": {
+                        "target_id": "open_position:00929",
+                        "context_statuses": {"market_context_status": "RISK"},
+                        "target_evidence": {"unrealized_pnl_pct": -36.4},
+                        "matched_context_ids": [],
+                    },
                 }
             ],
         },
@@ -803,6 +836,15 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertEqual(item["evidence"]["draft_report"]["schema"], "simulation_postmortem_note_draft_report_v1")
         self.assertEqual(item["evidence"]["draft_report"]["summary"]["draft_count"], 2)
         self.assertTrue(item["evidence"]["draft_report"]["sample_drafts"][0]["draft_only"])
+        write_plan = item["evidence"]["postmortem_note_write_plan"]
+        self.assertEqual(len(write_plan), 2)
+        self.assertEqual(write_plan[0]["target_id"], "closed_trade:LI")
+        self.assertTrue(write_plan[0]["draft_found"])
+        self.assertTrue(write_plan[0]["draft_only"])
+        self.assertEqual(write_plan[0]["context_statuses"]["source_reliability_status"], "DEGRADED")
+        self.assertEqual(write_plan[0]["target_evidence"]["pnl_hkd_est"], -265.33)
+        self.assertEqual(write_plan[0]["matched_context_ids"][0]["id"], "news-li-1")
+        self.assertEqual(write_plan[1]["target_id"], "open_position:00929")
         self.assertTrue(item["operator_effect"]["writes_postmortem_notes"])
         self.assertTrue(item["operator_effect"]["draft_helper_read_only"])
         self.assertFalse(item["operator_effect"]["writes_judgments"])
@@ -810,6 +852,7 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertFalse(item["operator_effect"]["changes_strategy"])
         self.assertFalse(item["operator_effect"]["changes_portfolio"])
         self.assertIn("simulation_trade_postmortem_note_v1", item["recommended_next_step"])
+        self.assertIn("postmortem_note_write_plan", item["recommended_next_step"])
         self.assertIn("remove draft_only", item["recommended_next_step"])
 
     def test_simulation_failure_action_includes_postmortem_context(self):

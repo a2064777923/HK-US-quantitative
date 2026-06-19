@@ -1005,6 +1005,61 @@ def simulation_actions(simulation_performance):
     ]
 
 
+def postmortem_draft_target_key(draft):
+    draft = safe_dict(draft)
+    context = safe_dict(draft.get("draft_context"))
+    target_id = str(context.get("target_id") or "").strip()
+    if target_id:
+        return target_id
+    symbol = str(draft.get("symbol") or "").strip().upper()
+    target_type = str(draft.get("target_type") or "").strip()
+    return f"{target_type}:{symbol}" if target_type and symbol else ""
+
+
+def postmortem_target_key(target):
+    target = safe_dict(target)
+    target_id = str(target.get("target_id") or "").strip()
+    if target_id:
+        return target_id
+    symbol = str(target.get("symbol") or "").strip().upper()
+    target_type = str(target.get("target_type") or "").strip()
+    return f"{target_type}:{symbol}" if target_type and symbol else ""
+
+
+def postmortem_note_write_plan(simulation_postmortem_audit, note_draft_report, limit=20):
+    drafts = safe_list(safe_dict(note_draft_report).get("drafts"))
+    drafts_by_target = {
+        postmortem_draft_target_key(draft): draft
+        for draft in drafts
+        if postmortem_draft_target_key(draft)
+    }
+    rows = []
+    targets = safe_list(simulation_postmortem_audit.get("missing_required_targets"))
+    for target in targets[:limit]:
+        if not isinstance(target, dict):
+            continue
+        key = postmortem_target_key(target)
+        draft = safe_dict(drafts_by_target.get(key))
+        context = safe_dict(draft.get("draft_context"))
+        rows.append(
+            {
+                "target_id": key,
+                "symbol": target.get("symbol") or draft.get("symbol"),
+                "target_type": target.get("target_type") or draft.get("target_type"),
+                "draft_found": bool(draft),
+                "draft_only": draft.get("draft_only"),
+                "failure_category_placeholder": draft.get("failure_category"),
+                "lesson_placeholder": draft.get("lesson"),
+                "proposed_change_default": draft.get("proposed_change"),
+                "promotion_gate": draft.get("promotion_gate"),
+                "context_statuses": safe_dict(context.get("context_statuses")),
+                "target_evidence": safe_dict(context.get("target_evidence")),
+                "matched_context_ids": safe_list(context.get("matched_context_ids"))[:5],
+            }
+        )
+    return rows
+
+
 def simulation_postmortem_actions(simulation_postmortem_audit, note_draft_report=None):
     status = simulation_postmortem_audit.get("status")
     if status not in ("WARN", "FAIL"):
@@ -1016,6 +1071,7 @@ def simulation_postmortem_actions(simulation_postmortem_audit, note_draft_report
     if not missing_count and not failed_count:
         return []
     priority = "P0" if status == "FAIL" else "P1"
+    write_plan = postmortem_note_write_plan(simulation_postmortem_audit, note_draft_report)
     return [
         action(
             "write_or_repair_simulation_postmortem_notes",
@@ -1038,9 +1094,11 @@ def simulation_postmortem_actions(simulation_postmortem_audit, note_draft_report
                     "append_instructions": safe_dict(note_draft_report.get("append_instructions")),
                     "sample_drafts": safe_list(note_draft_report.get("drafts"))[:3],
                 },
+                "postmortem_note_write_plan": write_plan,
             },
             next_step=(
-                "Use simulation_postmortem_note_draft_report.py as a read-only draft helper, replace every placeholder, "
+                "Use postmortem_note_write_plan to cover each required target, then use simulation_postmortem_note_draft_report.py "
+                "as a read-only draft helper, replace every placeholder, "
                 f"remove draft_only, append completed simulation_trade_postmortem_note_v1 JSONL objects to {SIMULATION_POSTMORTEM_NOTE_FILE}, "
                 "then rerun simulation_postmortem_audit_report.py. Do not promote strategy/watchlist/config changes from failing or missing notes."
             ),
