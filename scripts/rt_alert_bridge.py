@@ -13,6 +13,7 @@ ALERT_FILE = os.environ.get("RT_ALERT_FILE", "/tmp/rt_signal_alert.json")
 ALERT_QUEUE_FILE = os.environ.get("RT_ALERT_QUEUE_FILE", "/tmp/rt_signal_alerts.jsonl")
 SENT_FILE = os.environ.get("RT_ALERT_SENT_FILE", "/tmp/rt_signal_sent.json")
 POSITION_REVIEW_SENT_FILE = os.environ.get("RT_POSITION_REVIEW_SENT_FILE", "/tmp/rt_position_review_sent.json")
+OPERATOR_ACTION_SENT_FILE = os.environ.get("RT_OPERATOR_ACTION_SENT_FILE", "/tmp/rt_operator_action_sent.json")
 HERMES_REVIEW_PACKET_FILE = os.environ.get("HERMES_REVIEW_PACKET_FILE", "/tmp/hermes_signal_review_packet.json")
 EXECUTION_MODE = os.environ.get("RT_ALERT_EXECUTION_MODE", "notify").lower()
 REQUIRE_CONFIRMED = os.environ.get("RT_ALERT_REQUIRE_CONFIRMED", "1") != "0"
@@ -34,6 +35,21 @@ POSITION_REVIEW_ROLES = {
 }
 POSITION_REVIEW_LIMIT = int(os.environ.get("RT_POSITION_REVIEW_LIMIT", "20"))
 POSITION_REVIEW_REMINDER_HOURS = float(os.environ.get("RT_POSITION_REVIEW_REMINDER_HOURS", "24"))
+OPERATOR_ACTION_PRIORITIES = {
+    item.strip().upper()
+    for item in os.environ.get("RT_OPERATOR_ACTION_PRIORITIES", "P0").split(",")
+    if item.strip()
+}
+OPERATOR_ACTION_LIMIT = int(os.environ.get("RT_OPERATOR_ACTION_LIMIT", "3"))
+OPERATOR_ACTION_REMINDER_HOURS = float(os.environ.get("RT_OPERATOR_ACTION_REMINDER_HOURS", "24"))
+OPERATOR_ACTION_SUPPRESSED_IDS = {
+    item.strip()
+    for item in os.environ.get(
+        "RT_OPERATOR_ACTION_SUPPRESSED_IDS",
+        "write_high_urgency_position_judgments",
+    ).split(",")
+    if item.strip()
+}
 
 PASSTHROUGH_ENV_KEYS = (
     "RT_ORDER_EXECUTE_PILOT_ENABLED",
@@ -169,6 +185,11 @@ def write_sent(alerts):
 def write_position_review_sent(rows):
     payload = json.dumps(rows[-1000:], ensure_ascii=False)
     write_text_file(POSITION_REVIEW_SENT_FILE, payload)
+
+
+def write_operator_action_sent(rows):
+    payload = json.dumps(rows[-1000:], ensure_ascii=False)
+    write_text_file(OPERATOR_ACTION_SENT_FILE, payload)
 
 
 def sent_record_time(record):
@@ -639,6 +660,184 @@ def pending_position_reviews(packet, sent_rows, now_epoch=None):
     return pending
 
 
+def operator_action_key(item):
+    if not isinstance(item, dict):
+        return None
+    action_id = str(item.get("id") or "").strip()
+    return action_id or None
+
+
+def compact_postmortem_targets(action, limit=6):
+    evidence = action.get("evidence") if isinstance(action, dict) else {}
+    if not isinstance(evidence, dict):
+        return []
+    rows = []
+    for target in evidence.get("postmortem_note_write_plan") or []:
+        if not isinstance(target, dict):
+            continue
+        target_id = str(target.get("target_id") or "").strip()
+        if not target_id:
+            symbol = str(target.get("symbol") or "").strip().upper()
+            target_type = str(target.get("target_type") or "").strip()
+            target_id = f"{target_type}:{symbol}" if target_type and symbol else symbol
+        if target_id:
+            rows.append(target_id)
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def operator_action_fingerprint(item):
+    if not isinstance(item, dict):
+        return ""
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    stable = {
+        "id": item.get("id"),
+        "priority": item.get("priority"),
+        "category": item.get("category"),
+        "title": item.get("title"),
+        "summary": item.get("summary"),
+        "recommended_next_step": item.get("recommended_next_step"),
+        "blockers": item.get("blockers") if isinstance(item.get("blockers"), list) else [],
+        "operator_effect": item.get("operator_effect") if isinstance(item.get("operator_effect"), dict) else {},
+        "postmortem_targets": compact_postmortem_targets(item, limit=20),
+        "evidence_status": evidence.get("status") or evidence.get("audit_status"),
+        "reason_codes": evidence.get("reason_codes") if isinstance(evidence.get("reason_codes"), list) else [],
+        "remediation_proposal_hash": evidence.get("remediation_proposal_hash"),
+    }
+    return json.dumps(stable, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
+def operator_action_items(packet):
+    queue = packet.get("operator_action_queue") if isinstance(packet, dict) else {}
+    if not isinstance(queue, dict) or queue.get("status") not in ("ACTION_REQUIRED", "WARN", "FAIL"):
+        return []
+    rows = []
+    for item in queue.get("actions") or []:
+        if not isinstance(item, dict):
+            continue
+        action_id = operator_action_key(item)
+        if not action_id or action_id in OPERATOR_ACTION_SUPPRESSED_IDS:
+            continue
+        priority = str(item.get("priority") or "").upper()
+        if OPERATOR_ACTION_PRIORITIES and not ({"*", "ALL"} & OPERATOR_ACTION_PRIORITIES) and priority not in OPERATOR_ACTION_PRIORITIES:
+            continue
+        rows.append(item)
+    priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+    rows.sort(key=lambda row: (priority_order.get(str(row.get("priority") or "").upper(), 9), str(row.get("id") or "")))
+    return rows[: max(OPERATOR_ACTION_LIMIT, 0)]
+
+
+def pending_operator_actions(packet, sent_rows, now_epoch=None):
+    now_epoch = time.time() if now_epoch is None else now_epoch
+    sent_by_action = {}
+    for row in sent_rows:
+        action_id = str(row.get("action_id") or row.get("id") or "").strip() if isinstance(row, dict) else ""
+        if not action_id:
+            continue
+        if action_id not in sent_by_action or sent_record_time(row) >= sent_record_time(sent_by_action[action_id]):
+            sent_by_action[action_id] = row
+    reminder_seconds = OPERATOR_ACTION_REMINDER_HOURS * 3600
+    pending = []
+    for item in operator_action_items(packet):
+        action_id = operator_action_key(item)
+        last_sent = sent_by_action.get(action_id)
+        last_sent_at = sent_record_time(last_sent)
+        fingerprint = operator_action_fingerprint(item)
+        last_fingerprint = str((last_sent or {}).get("fingerprint") or "")
+        if (
+            last_sent is None
+            or (fingerprint and fingerprint != last_fingerprint)
+            or (reminder_seconds > 0 and now_epoch - last_sent_at >= reminder_seconds)
+        ):
+            pending.append(item)
+    return pending
+
+
+def compact_operator_effect(effect):
+    if not isinstance(effect, dict) or not effect:
+        return ""
+    keys = (
+        "submits_orders",
+        "changes_portfolio",
+        "changes_strategy",
+        "changes_strategy_config",
+        "changes_execution_mode",
+        "writes_judgments",
+        "writes_postmortem_notes",
+    )
+    parts = [f"{key}={str(effect.get(key)).lower()}" for key in keys if key in effect]
+    return " ".join(parts)
+
+
+def build_operator_action_output(items, packet):
+    queue = packet.get("operator_action_queue") if isinstance(packet.get("operator_action_queue"), dict) else {}
+    summary = queue.get("summary") if isinstance(queue.get("summary"), dict) else {}
+    counts = summary.get("priority_counts") if isinstance(summary.get("priority_counts"), dict) else {}
+    count_text = ",".join(f"{key}={value}" for key, value in sorted(counts.items())) if counts else "?"
+    lines = [
+        "🧯 **Hermes系統待辦（不下單）**",
+        "此區只提示系統阻塞、模擬復盤、資料/流程待辦；不代表交易信號通過，也不會提交模擬或券商訂單。",
+        f"本次提醒待辦：{len(items)}（queue_actions={summary.get('action_count', '?')}, priorities={count_text}）",
+    ]
+    for item in items:
+        lines.append("")
+        lines.append(
+            "⚙️ **{action_id}** priority={priority}".format(
+                action_id=item.get("id", "?"),
+                priority=item.get("priority", "?"),
+            )
+        )
+        if item.get("title"):
+            lines.append(f"├─ 標題：{item.get('title')}")
+        if item.get("summary"):
+            lines.append(f"├─ 摘要：{item.get('summary')}")
+        blockers = item.get("blockers") if isinstance(item.get("blockers"), list) else []
+        if blockers:
+            lines.append(f"├─ 阻塞：{short_list(blockers, limit=4)}")
+        targets = compact_postmortem_targets(item)
+        if targets:
+            lines.append(f"├─ 復盤目標：postmortem_targets={','.join(targets)}")
+        effect = compact_operator_effect(item.get("operator_effect"))
+        if effect:
+            lines.append(f"├─ 操作影響：{effect}")
+        if item.get("recommended_next_step"):
+            lines.append(f"├─ 下一步：{item.get('recommended_next_step')}")
+        if item.get("operator_command"):
+            lines.append(f"├─ 建議命令：{item.get('operator_command')}")
+        lines.append("└─ 安全要求：operator_review=true；order_submission=false；execution_mode_change=false")
+    return "\n".join(lines)
+
+
+def mark_operator_actions_sent(sent, items):
+    now_epoch = time.time()
+    latest_by_action = {}
+    passthrough = []
+    for row in sent:
+        if not isinstance(row, dict):
+            continue
+        action_id = str(row.get("action_id") or row.get("id") or "").strip()
+        if not action_id:
+            passthrough.append(row)
+            continue
+        current = latest_by_action.get(action_id)
+        if current is None or sent_record_time(row) >= sent_record_time(current):
+            latest_by_action[action_id] = row
+    for item in items:
+        action_id = operator_action_key(item)
+        if not action_id:
+            continue
+        latest_by_action[action_id] = {
+            "action_id": action_id,
+            "priority": item.get("priority"),
+            "sent_at_epoch": now_epoch,
+            "fingerprint": operator_action_fingerprint(item),
+        }
+    rows = passthrough + list(latest_by_action.values())
+    rows.sort(key=sent_record_time)
+    write_operator_action_sent(rows[-1000:])
+
+
 def fmt_pct(value):
     try:
         return f"{float(value):+.1f}%"
@@ -989,7 +1188,16 @@ def main():
     position_sent = compacted_position_sent
     pending_reviews = pending_position_reviews(packet, position_sent)
 
-    if not new_alerts and not pending_reviews:
+    operator_sent_raw = read_text_file(OPERATOR_ACTION_SENT_FILE)
+    try:
+        operator_sent = json.loads(operator_sent_raw) if operator_sent_raw else []
+    except Exception:
+        operator_sent = []
+    if not isinstance(operator_sent, list):
+        operator_sent = []
+    pending_operator = pending_operator_actions(packet, operator_sent)
+
+    if not new_alerts and not pending_reviews and not pending_operator:
         return 0
 
     outputs = []
@@ -1007,6 +1215,8 @@ def main():
         )
     if pending_reviews:
         outputs.append(build_position_review_output(pending_reviews, packet))
+    if pending_operator:
+        outputs.append(build_operator_action_output(pending_operator, packet))
 
     text = "\n\n".join(outputs)
     if text:
@@ -1019,6 +1229,8 @@ def main():
         mark_alerts_sent(sent, alerts_to_mark_sent)
     if pending_reviews:
         mark_position_reviews_sent(position_sent, pending_reviews)
+    if pending_operator:
+        mark_operator_actions_sent(operator_sent, pending_operator)
     return 0
 
 

@@ -25,6 +25,11 @@ class RtAlertBridgeTests(unittest.TestCase):
             "RT_POSITION_REVIEW_URGENCY",
             "RT_POSITION_REVIEW_LIMIT",
             "RT_POSITION_REVIEW_REMINDER_HOURS",
+            "RT_OPERATOR_ACTION_SENT_FILE",
+            "RT_OPERATOR_ACTION_PRIORITIES",
+            "RT_OPERATOR_ACTION_LIMIT",
+            "RT_OPERATOR_ACTION_REMINDER_HOURS",
+            "RT_OPERATOR_ACTION_SUPPRESSED_IDS",
             "HERMES_REVIEW_PACKET_FILE",
             "RT_ORDER_EXECUTE_PILOT_ENABLED",
             "RT_ORDER_US_BROKER",
@@ -210,6 +215,49 @@ class RtAlertBridgeTests(unittest.TestCase):
                     }
                 ],
             },
+        }
+
+    def packet_with_operator_actions(self):
+        return {
+            "schema": "hermes_signal_review_packet_v1",
+            "packet_id": "packet-operator-actions",
+            "operator_action_queue": {
+                "schema": "operator_action_queue_report_v1",
+                "status": "ACTION_REQUIRED",
+                "summary": {"action_count": 2, "priority_counts": {"P0": 2}},
+                "actions": [
+                    {
+                        "id": "write_high_urgency_position_judgments",
+                        "priority": "P0",
+                        "title": "Write advisory Hermes judgments for high-urgency position reviews",
+                        "summary": "Position reviews have a dedicated bridge section.",
+                        "operator_effect": {
+                            "submits_orders": False,
+                            "changes_portfolio": False,
+                            "changes_strategy": False,
+                        },
+                    },
+                    {
+                        "id": "review_simulation_performance_failure",
+                        "priority": "P0",
+                        "title": "Review failed simulation performance before new exposure",
+                        "summary": "Simulation performance attribution is FAIL.",
+                        "evidence": {
+                            "postmortem_note_write_plan": [
+                                {"target_id": "closed_trade:LI", "symbol": "LI", "draft_available": True},
+                                {"target_id": "closed_trade:TSLA", "symbol": "TSLA", "draft_available": True},
+                            ]
+                        },
+                        "operator_effect": {
+                            "submits_orders": False,
+                            "changes_portfolio": False,
+                            "changes_strategy": False,
+                            "writes_postmortem_notes": False,
+                        },
+                    },
+                ],
+            },
+            "position_review": {"schema": "portfolio_position_review_v1", "items": []},
         }
 
     def packet_with_signal_review(self):
@@ -563,6 +611,42 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("support=session_down_supports_reduce_exit", text)
             self.assertIn("Worklist必回應：high_urgency_position_requires_contextual_rationale", text)
             self.assertIn("position_intraday_evidence_requires_discussion", text)
+            self.assertIn("order_submission=false", text)
+
+    def test_operator_action_queue_notifies_without_alerts_or_position_reviews(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            alert_sent = Path(td) / "alert_sent.json"
+            review_sent = Path(td) / "position_sent.json"
+            operator_sent = Path(td) / "operator_sent.json"
+            packet_file = Path(td) / "packet.json"
+            queue.write_text("", encoding="utf-8")
+            packet_file.write_text(json.dumps(self.packet_with_operator_actions()), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(alert_sent),
+                RT_POSITION_REVIEW_SENT_FILE=str(review_sent),
+                RT_OPERATOR_ACTION_SENT_FILE=str(operator_sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="notify",
+            )
+
+            with patch("builtins.print") as printed:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            self.assertFalse(alert_sent.exists())
+            self.assertFalse(review_sent.exists())
+            self.assertTrue(operator_sent.exists())
+            sent_rows = json.loads(operator_sent.read_text(encoding="utf-8"))
+            self.assertEqual(sent_rows[0]["action_id"], "review_simulation_performance_failure")
+            text = printed.call_args.args[0]
+            self.assertIn("Hermes系統待辦（不下單）", text)
+            self.assertIn("review_simulation_performance_failure", text)
+            self.assertIn("Simulation performance attribution is FAIL", text)
+            self.assertIn("postmortem_targets=closed_trade:LI,closed_trade:TSLA", text)
+            self.assertNotIn("write_high_urgency_position_judgments", text)
             self.assertIn("order_submission=false", text)
 
     def test_position_review_uses_stable_thread_key_for_action_churn(self):
