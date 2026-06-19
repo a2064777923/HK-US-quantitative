@@ -86,6 +86,12 @@ marks `partial_daily_bar_used_as_completed_daily=false` and
 separate read-only Hermes evidence layer and must not be promoted into completed
 daily history.
 
+When the temporary realtime quote contributes to full-score factors, v5 marks
+those factor rows as `factor_evidence_basis.current_session_quote` and sets
+`current_session_quote_evidence.used_in_full_score=true`. Hermes must treat that
+evidence as provisional: useful for live management and momentum checks, but not
+equivalent to a completed daily bar.
+
 Executable alerts must be confirmed directional BUY/SELL candidates with valid entry, stop, take-profit, risk/reward, liquidity, and execution-candidate fields. Diagnostic `WATCH` rows may still carry candidate geometry for review, but order intake rejects them as non-executable.
 
 v5 treats same-day repeated states as one event. For the same market `signal_date`, symbol, emitted side, and trigger, the engine writes one alert and persists a session key in `/tmp/rt_signal_state.json`; cooldown remains a short-term guard, not permission to re-send the same stale condition every 30 minutes. On startup, v5 also backfills these session keys from recent `/tmp/rt_signal_alerts.jsonl` rows, so a service restart or deploy does not re-announce already observed same-day conditions. A later alert is allowed on the next market signal date, or when the emitted side changes, for example a diagnostic `WATCH` later becoming a confirmed `BUY`.

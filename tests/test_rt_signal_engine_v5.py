@@ -620,6 +620,30 @@ class RtSignalEngineV5Tests(unittest.TestCase):
             ],
         )
 
+    def test_realtime_score_evidence_marks_overlay_factors_as_current_session_quote(self):
+        ind = rt.IncrementalIndicators("AAPL")
+        for _ in range(30):
+            ind._update(100, 101, 99, 1000)
+
+        ind.update_realtime(103, 104, 102, 2500)
+        evidence = ind.get_score_evidence(
+            {
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 3.0,
+                "momentum_breakout_model": rt.default_strategy_config()["momentum_breakout_model"],
+            }
+        )
+
+        self.assertTrue(evidence["factor_contributions"])
+        self.assertTrue(
+            all(
+                item["evidence_basis"] == "current_session_quote"
+                for item in evidence["factor_contributions"]
+                if item["raw_category"] != "momentum"
+            )
+        )
+
     def test_full_score_reasons_cover_moderate_negative_contributions(self):
         ind = rt.IncrementalIndicators("AAPL")
         ind.closes = [100] * 29 + [97]

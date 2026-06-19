@@ -1930,12 +1930,19 @@ class IncrementalIndicators:
         score = 0
         reasons = []
         contributions = []
+        overlay_evidence_basis = "current_session_quote" if self.rt_close is not None else None
 
         def add(delta, category, direction, reason):
             nonlocal score
             score += delta
             reasons.append(reason)
-            contribution = score_contribution(category, direction, delta, reason)
+            contribution = score_contribution(
+                category,
+                direction,
+                delta,
+                reason,
+                evidence_basis=overlay_evidence_basis,
+            )
             if contribution:
                 contributions.append(contribution)
 
