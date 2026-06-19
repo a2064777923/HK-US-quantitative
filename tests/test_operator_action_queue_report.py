@@ -1064,6 +1064,7 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertIn("v5_local_replay_report", item["evidence"]["missing_reports"])
         self.assertIn("v5_local_replay_report.py", item["operator_command"])
         self.assertIn("--source db --db-lookback-days 365", item["operator_command"])
+        self.assertIn("--strategy-config-file /root/rt_signal_strategy_config.json", item["operator_command"])
         self.assertIn("v5_replay_strategy_review_report.py", item["operator_command"])
         self.assertIn("trigger_evidence_convergence_report.py", item["operator_command"])
         self.assertEqual(item["blockers"], [])
@@ -1071,6 +1072,7 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertFalse(item["operator_effect"]["uses_local_replay_summary_only"])
         self.assertFalse(item["operator_effect"]["copies_raw_data"])
         self.assertIn("--source db --db-lookback-days 365", item["recommended_next_step"])
+        self.assertIn("--strategy-config-file /root/rt_signal_strategy_config.json", item["recommended_next_step"])
 
     def test_no_actions_is_ok(self):
         payload = report.build_report(

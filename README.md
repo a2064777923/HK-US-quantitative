@@ -263,6 +263,7 @@ python3 scripts/local_backtest_reliability_report.py \
 python3 scripts/v5_local_replay_report.py \
   --hk-csv /tmp/hk_klines_v2.csv \
   --us-csv /tmp/us_klines.csv \
+  --strategy-config-file config/rt_signal_strategy_config.json \
   --output /tmp/v5_local_replay_report.json --text
 ```
 
@@ -272,10 +273,11 @@ On the production server, replay can also use the existing DB daily K-line snaps
 python3 /root/v5_local_replay_report.py \
   --source db \
   --db-lookback-days 365 \
+  --strategy-config-file /root/rt_signal_strategy_config.json \
   --output /tmp/v5_local_replay_report.json --text
 ```
 
-DB replay is read-only, uses the live v5 watchlist plus DB user-holdings overlay, and by default ends at yesterday so a same-day temporary daily row is not treated as completed daily evidence. It writes only the compact replay JSON report and must still be treated as research context, not execution readiness.
+DB replay is read-only, uses the live v5 watchlist plus DB user-holdings overlay, and by default ends at yesterday so a same-day temporary daily row is not treated as completed daily evidence. Local replay defaults to the tracked `config/rt_signal_strategy_config.json` when no strategy file is provided; server replay should use `/root/rt_signal_strategy_config.json`. It writes only the compact replay JSON report and must still be treated as research context, not execution readiness.
 
 Use raw minute/hour data for research, replay, and feature engineering, but promote only compact metadata, coverage, freshness, gap, source-quality, and replay reports into Hermes/server workflows.
 

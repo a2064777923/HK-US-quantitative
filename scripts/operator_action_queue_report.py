@@ -1210,6 +1210,7 @@ def replay_convergence_actions(strategy_review, v5_local_replay, v5_replay_strat
             commands.append(
                 "/usr/bin/python3 /root/v5_local_replay_report.py "
                 "--source db --db-lookback-days 365 "
+                "--strategy-config-file /root/rt_signal_strategy_config.json "
                 "--output /tmp/v5_local_replay_report.json --text"
             )
             refresh_replay_strategy = not has_replay_strategy or "v5_replay_strategy_review_report" in stale
@@ -1264,9 +1265,9 @@ def replay_convergence_actions(strategy_review, v5_local_replay, v5_replay_strat
                 },
                 next_step=(
                     "Regenerate the missing or stale read-only reports. If v5_local_replay_report is missing on the server, "
-                    "prefer running /root/v5_local_replay_report.py --source db --db-lookback-days 365 against the existing "
-                    "server DB daily K-line snapshot, or copy only a compact local JSON report; do not sync raw CSV/minute data "
-                    "to production by default."
+                    "prefer running /root/v5_local_replay_report.py --source db --db-lookback-days 365 "
+                    "--strategy-config-file /root/rt_signal_strategy_config.json against the existing server DB daily K-line "
+                    "snapshot, or copy only a compact local JSON report; do not sync raw CSV/minute data to production by default."
                 ),
                 command=" && ".join(commands) if commands else None,
                 operator_effect={

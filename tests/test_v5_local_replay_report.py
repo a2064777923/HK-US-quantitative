@@ -40,6 +40,26 @@ def trend_rows(symbol, start=100.0, count=45):
     return rows
 
 
+def falling_rows(symbol, start=200.0, count=45):
+    rows = []
+    price = start
+    for index in range(count):
+        price -= 1.0
+        date = f"2026-01-{index + 1:02d}" if index < 31 else f"2026-02-{index - 30:02d}"
+        rows.append(
+            {
+                "symbol": symbol,
+                "dt": date,
+                "open_price": round(price + 0.5, 2),
+                "high_price": round(price + 1.0, 2),
+                "low_price": round(price - 1.0, 2),
+                "close_price": round(price, 2),
+                "volume": 1000000 + index * 1000,
+            }
+        )
+    return rows
+
+
 def replay_args(tmp, **overrides):
     values = {
         "hk_csv": os.path.join(tmp, "hk_klines_v2.csv"),
@@ -66,8 +86,8 @@ def replay_args(tmp, **overrides):
 class V5LocalReplayReportTests(unittest.TestCase):
     def test_build_report_is_local_read_only_and_replays_v5(self):
         with tempfile.TemporaryDirectory() as tmp:
-            write_rows(os.path.join(tmp, "hk_klines_v2.csv"), trend_rows("00700"))
-            write_rows(os.path.join(tmp, "us_klines.csv"), trend_rows("AAPL", start=200.0))
+            write_rows(os.path.join(tmp, "hk_klines_v2.csv"), falling_rows("00700"))
+            write_rows(os.path.join(tmp, "us_klines.csv"), falling_rows("AAPL", start=300.0))
 
             payload = report.build_report(replay_args(tmp))
 
@@ -93,6 +113,27 @@ class V5LocalReplayReportTests(unittest.TestCase):
                 "daily_close_synthetic_quote_not_intraday_path",
                 [item["code"] for item in payload["checks"]],
             )
+
+    def test_default_strategy_config_uses_repo_config_not_runtime_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_rows(os.path.join(tmp, "hk_klines_v2.csv"), [])
+            write_rows(os.path.join(tmp, "us_klines.csv"), [])
+
+            payload = report.build_report(replay_args(tmp))
+
+        self.assertEqual(
+            payload["replay_contract"]["strategy_config_version"],
+            "v5.6-diagnostic-summary-only-20260619",
+        )
+        self.assertEqual(payload["replay_contract"]["strategy_config_source"], "file")
+        self.assertIn(
+            os.path.join("config", "rt_signal_strategy_config.json"),
+            payload["source"]["source_files"]["strategy_config_file"],
+        )
+        self.assertNotIn(
+            "strategy_config_file_missing:/root/rt_signal_strategy_config.json",
+            payload["replay_contract"]["strategy_config_warnings"],
+        )
 
     def test_missing_csv_makes_evidence_insufficient_without_crashing(self):
         with tempfile.TemporaryDirectory() as tmp:

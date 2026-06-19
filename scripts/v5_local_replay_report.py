@@ -28,6 +28,9 @@ DEFAULT_SOURCE = os.environ.get("V5_LOCAL_REPLAY_SOURCE", "csv")
 DEFAULT_DB_LOOKBACK_DAYS = int(os.environ.get("V5_LOCAL_REPLAY_DB_LOOKBACK_DAYS", "365"))
 DEFAULT_MIN_HISTORY_BARS = v5.MIN_SIGNAL_HISTORY_BARS
 DEFAULT_ALERT_SAMPLE_LIMIT = 50
+REPO_STRATEGY_CONFIG_FILE = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "config", "rt_signal_strategy_config.json")
+)
 ALERT_DENSITY_WARN_PER_100_BARS = 50.0
 EXECUTION_DENSITY_WARN_PER_100_BARS = 10.0
 DIRECTIONAL_CONFIRMATION_MIN_WARN_PCT = 35.0
@@ -971,6 +974,15 @@ def source_quote_time_description(source_mode):
     return "market close timestamp generated from each CSV date"
 
 
+def resolve_strategy_config_file(value):
+    explicit = str(value or "").strip()
+    if explicit:
+        return explicit
+    if os.path.exists(REPO_STRATEGY_CONFIG_FILE):
+        return REPO_STRATEGY_CONFIG_FILE
+    return None
+
+
 def build_report(args):
     hk_rows, us_rows, hk_source, us_source, replay_source = load_replay_inputs(args)
     source_mode = replay_source_mode(args)
@@ -986,7 +998,7 @@ def build_report(args):
     if max_symbols > 0:
         ordered_items = ordered_items[:max_symbols]
 
-    strategy_config_file = args.strategy_config_file or None
+    strategy_config_file = resolve_strategy_config_file(args.strategy_config_file)
     strategy_config, strategy_context = v5.load_strategy_config(env={}, file_path=strategy_config_file)
     symbol_reports = []
     for (_market, symbol), rows in ordered_items:
@@ -1018,8 +1030,8 @@ def build_report(args):
             "source_files": {
                 "hk_csv": os.path.abspath(args.hk_csv),
                 "us_csv": os.path.abspath(args.us_csv),
-                "strategy_config_file": os.path.abspath(args.strategy_config_file)
-                if args.strategy_config_file
+                "strategy_config_file": os.path.abspath(strategy_config_file)
+                if strategy_config_file
                 else None,
             },
             "source_mode": replay_source.get("source_mode"),
