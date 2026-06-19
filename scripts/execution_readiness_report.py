@@ -486,6 +486,146 @@ def order_intake_broker_reconciliation_payload(order_intake_event_store):
     }
 
 
+BOOTSTRAP_SIMULATION_REASON_CODES = {
+    "simulation_closed_trade_sample_missing",
+    "simulation_closed_trade_lineage_legacy_or_external",
+    "closed_trade_signal_traceability_missing",
+}
+
+HARD_SIMULATION_REASON_CODES = {
+    "simulation_total_return_not_positive",
+    "simulation_closed_pnl_not_positive",
+    "simulation_closed_win_rate_too_low",
+    "simulation_trade_review_blocking_notes",
+    "simulation_portfolio_risk_high",
+    "worst_closed_symbols_negative",
+}
+
+
+def compact_pilot_gate(gate, reason):
+    return {
+        "gate": gate.get("gate"),
+        "status": gate.get("status"),
+        "reason": reason,
+        "detail": gate.get("detail"),
+    }
+
+
+def bootstrap_blocker_reason(gate):
+    if gate.get("status") != "BLOCK":
+        return None
+    name = gate.get("gate")
+    detail = str(gate.get("detail") or "")
+    data = gate.get("data") if isinstance(gate.get("data"), dict) else {}
+
+    if name == "forward_outcome_evidence":
+        if "resolved outcomes" in detail:
+            return "needs_forward_outcome_sample"
+        if "executable-only cohort is missing" in detail:
+            return "needs_executable_only_forward_outcome_cohort"
+        return None
+
+    if name == "directional_intake_coverage":
+        return "needs_directional_intake_coverage_sample"
+
+    if name == "hermes_judgment_effect":
+        if "resolved sample" in detail or "comparison sample" in detail:
+            return "needs_hermes_judgment_effect_sample"
+        if "executable-only audit-pass" in detail:
+            return "needs_executable_only_hermes_effect_cohort"
+        return None
+
+    if name == "simulation_trade_review" and "closed trade sample" in detail:
+        return "needs_closed_trade_sample"
+
+    if name == "simulation_performance_attribution":
+        reason_codes = set(data.get("reason_codes") or [])
+        evidence = data.get("v5_hermes_evidence") if isinstance(data.get("v5_hermes_evidence"), dict) else {}
+        promotion_blockers = set(evidence.get("promotion_blockers") or [])
+        if reason_codes & HARD_SIMULATION_REASON_CODES:
+            return None
+        if reason_codes and reason_codes <= BOOTSTRAP_SIMULATION_REASON_CODES:
+            return "needs_v5_hermes_traceable_simulation_lineage"
+        if promotion_blockers & {
+            "no_v5_hermes_traceable_closed_trade_sample",
+            "closed_trade_lineage_not_full_scope",
+        }:
+            return "needs_v5_hermes_traceable_simulation_sample"
+    return None
+
+
+def hard_pilot_blocker_reason(gate):
+    status = gate.get("status")
+    name = gate.get("gate")
+    data = gate.get("data") if isinstance(gate.get("data"), dict) else {}
+    if status == "BLOCK" and bootstrap_blocker_reason(gate):
+        return None
+    if status == "BLOCK":
+        return f"{name}_blocks_evidence_pilot"
+    if name == "market_context" and status == "WARN":
+        if data.get("risk_off_markets") or data.get("high_risk_markets"):
+            return "market_risk_off_or_high_risk_blocks_evidence_pilot"
+    if name == "simulation_portfolio_risk" and status == "WARN":
+        if as_int(data.get("high_count"), 0) > 0:
+            return "simulation_portfolio_high_risk_blocks_evidence_pilot"
+    return None
+
+
+def build_pilot_readiness(gates, full_ready):
+    bootstrap_blockers = []
+    hard_blockers = []
+    warnings = []
+    for gate in gates:
+        bootstrap_reason = bootstrap_blocker_reason(gate)
+        if bootstrap_reason:
+            bootstrap_blockers.append(compact_pilot_gate(gate, bootstrap_reason))
+            continue
+        hard_reason = hard_pilot_blocker_reason(gate)
+        if hard_reason:
+            hard_blockers.append(compact_pilot_gate(gate, hard_reason))
+        elif gate.get("status") == "WARN":
+            warnings.append(compact_pilot_gate(gate, "operator_review_required"))
+
+    if full_ready:
+        status = "FULL_EXECUTION_READY"
+        reviewable = True
+        detail = "full execution readiness is already READY; evidence pilot is not required"
+    elif hard_blockers:
+        status = "HARD_BLOCKED"
+        reviewable = False
+        detail = "hard safety blockers must be resolved before any paper/sim evidence pilot is reviewed"
+    elif bootstrap_blockers:
+        status = "EVIDENCE_PILOT_REVIEWABLE"
+        reviewable = True
+        detail = "only bootstrap evidence blockers remain; a separately approved capped paper/sim pilot can be reviewed"
+    else:
+        status = "OPERATOR_REVIEW_REQUIRED"
+        reviewable = False
+        detail = "no hard blockers were found, but readiness is not READY and there is no pure bootstrap-evidence path"
+
+    return {
+        "schema": "execution_readiness_pilot_gate_v1",
+        "status": status,
+        "paper_pilot_reviewable": reviewable,
+        "detail": detail,
+        "does_not_change_ready_for_execute": True,
+        "submits_orders": False,
+        "changes_execution_mode": False,
+        "requires_manual_enable": True,
+        "full_execution_ready": full_ready,
+        "hard_blockers": hard_blockers,
+        "bootstrap_blockers": bootstrap_blockers,
+        "warning_gates": warnings,
+        "required_controls": [
+            "pilot must remain paper/simulation only",
+            "pilot must use explicit RT_ORDER_EXECUTE_PILOT_ENABLED=1 and capped notional/risk/daily order limits",
+            "pilot must still require packet eligibility, Hermes judgment, readiness visibility, market context, and broker reconciliation",
+            "pilot evidence must be traceable through rt_order_intake state before promotion",
+            "this report field is advisory and rt_order_intake.py does not consume it as an execution bypass",
+        ],
+    }
+
+
 def build_report(
     system_health=None,
     data_health=None,
@@ -1086,11 +1226,13 @@ def build_report(
     )
 
     status = worst_status(gates)
+    ready_for_execute = status == "READY"
+    pilot_readiness = build_pilot_readiness(gates, ready_for_execute)
     return {
         "schema": "execution_readiness_report_v1",
         "generated_at": now_iso(),
         "status": status,
-        "ready_for_execute": status == "READY",
+        "ready_for_execute": ready_for_execute,
         "source": {
             "read_only": True,
             "submits_orders": False,
@@ -1111,9 +1253,11 @@ def build_report(
         "gates": gates,
         "blocking_gates": [gate for gate in gates if gate["status"] == "BLOCK"],
         "warning_gates": [gate for gate in gates if gate["status"] == "WARN"],
+        "pilot_readiness": pilot_readiness,
         "operator_summary": [
             "Do not enable execute mode unless status is READY and the operator has separately approved the mode change.",
             "READY here is necessary context only; rt_order_intake.py execute gates and Hermes matching judgments remain authoritative.",
+            "pilot_readiness is report-only: it classifies evidence-collection blockers but does not relax ready_for_execute.",
             "WARN watchlist proposal gates require manual review and service restart planning before new watchlist-scoped evidence is trusted.",
         ],
     }

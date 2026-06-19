@@ -226,6 +226,8 @@ python3 scripts/execution_readiness_report.py --output /tmp/execution_readiness_
 
 `execution_readiness_report.py` treats sparse 1-day target/stop hit-rate imbalance as material only when the stop-minus-target gap reaches `EXECUTION_READINESS_MIN_STOP_TARGET_IMBALANCE_BLOCK_PCT` (default `5`). Average return, win rate, maximum stop-hit rate, and favorable/adverse ratio remain hard forward-evidence gates.
 
+`execution_readiness_report.py` also emits `pilot_readiness` (`schema=execution_readiness_pilot_gate_v1`). This is report-only context for Hermes/operator review: it separates hard safety blockers from bootstrap evidence blockers such as missing forward outcomes, missing Hermes judgment-effect samples, or missing v5/Hermes-traceable paper/simulation lineage. It does not change `ready_for_execute`, submit orders, enable `alert-sim`, or bypass `rt_order_intake.py`; any evidence pilot still requires explicit manual enablement plus capped paper/simulation controls.
+
 ## Data Policy
 
 Raw market data should stay local by default. Do not commit raw CSV/parquet/DB files or secret-bearing runtime state.

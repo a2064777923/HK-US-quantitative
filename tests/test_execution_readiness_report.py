@@ -275,6 +275,13 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         self.assertTrue(payload["source"]["read_only"])
         self.assertFalse(payload["source"]["submits_orders"])
         self.assertIn("forward_outcome_evidence", [gate["gate"] for gate in payload["blocking_gates"]])
+        self.assertTrue(payload["pilot_readiness"]["paper_pilot_reviewable"])
+        self.assertTrue(payload["pilot_readiness"]["does_not_change_ready_for_execute"])
+        self.assertEqual(payload["pilot_readiness"]["hard_blockers"], [])
+        self.assertIn(
+            "needs_forward_outcome_sample",
+            [gate["reason"] for gate in payload["pilot_readiness"]["bootstrap_blockers"]],
+        )
 
     def test_ready_when_hard_gates_pass_and_no_manual_watchlist_action_is_pending(self):
         payload = report.build_report(**healthy_inputs(), now=NOW)
@@ -283,6 +290,10 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         self.assertTrue(payload["ready_for_execute"])
         self.assertEqual(payload["blocking_gates"], [])
         self.assertEqual(payload["warning_gates"], [])
+        self.assertEqual(payload["pilot_readiness"]["status"], "FULL_EXECUTION_READY")
+        self.assertTrue(payload["pilot_readiness"]["paper_pilot_reviewable"])
+        self.assertEqual(payload["pilot_readiness"]["bootstrap_blockers"], [])
+        self.assertEqual(payload["pilot_readiness"]["hard_blockers"], [])
 
     def test_diagnostic_candidate_outcomes_block_readiness_without_executable_cohort(self):
         inputs = healthy_inputs()
@@ -398,6 +409,12 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         self.assertFalse(payload["ready_for_execute"])
         gate = [gate for gate in payload["warning_gates"] if gate["gate"] == "market_context"][0]
         self.assertIn("risk_off=HK", gate["detail"])
+        self.assertEqual(payload["pilot_readiness"]["status"], "HARD_BLOCKED")
+        self.assertFalse(payload["pilot_readiness"]["paper_pilot_reviewable"])
+        self.assertIn(
+            "market_risk_off_or_high_risk_blocks_evidence_pilot",
+            [gate["reason"] for gate in payload["pilot_readiness"]["hard_blockers"]],
+        )
 
     def test_warn_data_health_is_warning_not_block(self):
         inputs = healthy_inputs()
@@ -525,6 +542,38 @@ class ExecutionReadinessReportTests(unittest.TestCase):
             "failure_category",
             gate["data"]["failure_postmortem"]["required_learning_record_fields"],
         )
+        self.assertFalse(payload["pilot_readiness"]["paper_pilot_reviewable"])
+        self.assertIn(
+            "simulation_performance_attribution_blocks_evidence_pilot",
+            [gate["reason"] for gate in payload["pilot_readiness"]["hard_blockers"]],
+        )
+
+    def test_lineage_only_simulation_performance_blocker_is_bootstrap_reviewable(self):
+        inputs = healthy_inputs()
+        inputs["simulation_performance"]["status"] = "FAIL"
+        inputs["simulation_performance"]["reason_codes"] = [
+            "simulation_closed_trade_lineage_legacy_or_external",
+        ]
+        inputs["simulation_performance"]["v5_hermes_evidence"] = {
+            "schema": "simulation_v5_hermes_performance_evidence_v1",
+            "status": "INSUFFICIENT",
+            "sample_count": 0,
+            "promotion_eligible": False,
+            "promotion_blockers": ["no_v5_hermes_traceable_closed_trade_sample"],
+        }
+
+        payload = report.build_report(**inputs, now=NOW)
+
+        self.assertEqual(payload["status"], "BLOCKED")
+        self.assertFalse(payload["ready_for_execute"])
+        self.assertEqual(payload["pilot_readiness"]["status"], "EVIDENCE_PILOT_REVIEWABLE")
+        self.assertTrue(payload["pilot_readiness"]["paper_pilot_reviewable"])
+        self.assertEqual(payload["pilot_readiness"]["hard_blockers"], [])
+        self.assertIn(
+            "needs_v5_hermes_traceable_simulation_lineage",
+            [gate["reason"] for gate in payload["pilot_readiness"]["bootstrap_blockers"]],
+        )
+        self.assertTrue(payload["pilot_readiness"]["does_not_change_ready_for_execute"])
 
     def test_missing_market_context_schema_blocks(self):
         inputs = healthy_inputs()
@@ -685,6 +734,11 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "BLOCKED")
         gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "hermes_judgment_effect"][0]
         self.assertIn("approved/reduced resolved sample", gate["detail"])
+        self.assertTrue(payload["pilot_readiness"]["paper_pilot_reviewable"])
+        self.assertIn(
+            "needs_hermes_judgment_effect_sample",
+            [gate["reason"] for gate in payload["pilot_readiness"]["bootstrap_blockers"]],
+        )
 
     def test_insufficient_hermes_rejection_comparison_sample_blocks(self):
         inputs = healthy_inputs()
@@ -780,6 +834,11 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "BLOCKED")
         gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "simulation_trade_review"][0]
         self.assertIn("closed trade sample", gate["detail"])
+        self.assertTrue(payload["pilot_readiness"]["paper_pilot_reviewable"])
+        self.assertIn(
+            "needs_closed_trade_sample",
+            [gate["reason"] for gate in payload["pilot_readiness"]["bootstrap_blockers"]],
+        )
 
     def test_non_positive_simulation_total_return_blocks(self):
         inputs = healthy_inputs()
@@ -816,6 +875,11 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "BLOCKED")
         gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "simulation_trade_review"][0]
         self.assertIn("closed trade PnL", gate["detail"])
+        self.assertFalse(payload["pilot_readiness"]["paper_pilot_reviewable"])
+        self.assertIn(
+            "simulation_trade_review_blocks_evidence_pilot",
+            [gate["reason"] for gate in payload["pilot_readiness"]["hard_blockers"]],
+        )
 
     def test_low_simulation_closed_win_rate_blocks(self):
         inputs = healthy_inputs()
@@ -942,6 +1006,12 @@ class ExecutionReadinessReportTests(unittest.TestCase):
         gate = [gate for gate in payload["blocking_gates"] if gate["gate"] == "order_intake_broker_reconciliation"][0]
         self.assertIn("missing from intake state", gate["detail"])
         self.assertEqual(gate["data"]["unmatched_broker_order_count"], 5)
+        self.assertEqual(payload["pilot_readiness"]["status"], "HARD_BLOCKED")
+        self.assertFalse(payload["pilot_readiness"]["paper_pilot_reviewable"])
+        self.assertIn(
+            "order_intake_broker_reconciliation_blocks_evidence_pilot",
+            [gate["reason"] for gate in payload["pilot_readiness"]["hard_blockers"]],
+        )
 
     def test_broker_reconciliation_ok_does_not_block(self):
         inputs = healthy_inputs()
