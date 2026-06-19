@@ -210,7 +210,7 @@ Hermes portfolio context and user-portfolio price refreshes intentionally read/u
 
 The same DB source also feeds the v5 realtime monitoring overlay. This closes the old operational gap where a held symbol could exist in `positions` and `portfolio_report.py` but still be absent from `rt_signal_engine_v5.py` because it was missing from `/root/rt_signal_watchlist.json`. Static watchlist membership remains useful for broader opportunity discovery; DB holdings are added as a monitoring overlay for live position attention.
 
-Do not treat server-only legacy files such as `/root/portfolio_config.py` as a holdings source. The reviewed path is DB `positions` plus the tracked helper scripts above; stale server constants are audit residue unless a future job explicitly imports them.
+Do not treat server-only legacy files such as `/root/portfolio_config.py` as a holdings source. The reviewed path is DB `positions` plus the tracked helper scripts above; stale server constants are audit residue unless a future job explicitly imports them. `scripts/sim_trade.py` is intentionally a fail-closed compatibility guard now; it exists only to stop the old one-off DB mutator from being run accidentally.
 
 Readiness refresh, useful after deploy or missing cron:
 

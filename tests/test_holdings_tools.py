@@ -1,7 +1,10 @@
 import argparse
 import contextlib
 import io
+import subprocess
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from scripts import read_positions
@@ -422,6 +425,17 @@ class UsRealtimeTests(unittest.TestCase):
         code_map = {us_realtime.sina_code(symbol)[3:]: us_realtime.normalize_us_symbol(symbol)}
 
         self.assertEqual(code_map["brk_b"], "BRK.B")
+
+
+class LegacySimTradeGuardTests(unittest.TestCase):
+    def test_sim_trade_script_is_fail_closed(self):
+        path = Path(__file__).resolve().parents[1] / "scripts" / "sim_trade.py"
+
+        result = subprocess.run([sys.executable, str(path)], capture_output=True, text=True, timeout=10)
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[DISABLED]", result.stderr)
+        self.assertIn("performs no DB writes", result.stderr)
 
 
 if __name__ == "__main__":
