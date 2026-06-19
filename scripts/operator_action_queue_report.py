@@ -110,6 +110,19 @@ def safe_dict(value):
     return value if isinstance(value, dict) else {}
 
 
+def review_thread_key_for_item(item):
+    item = safe_dict(item)
+    explicit = str(item.get("review_thread_key") or "").strip()
+    if explicit:
+        return explicit
+    role = str(item.get("role") or "").strip()
+    portfolio_id = item.get("portfolio_id")
+    symbol = str(item.get("symbol") or "").strip().upper()
+    if not role or portfolio_id in (None, "") or not symbol:
+        return ""
+    return f"{role}:{portfolio_id}:{symbol}"
+
+
 def action(
     action_id,
     priority,
@@ -426,7 +439,49 @@ def position_actions(position_audit, packet):
     if high_unjudged:
         examples = safe_list(coverage.get("unjudged_high_urgency_examples"))
         packet_review = packet.get("position_review") if isinstance(packet.get("position_review"), dict) else {}
+        packet_items = safe_list(packet_review.get("items"))
         template_summary = packet_review.get("position_judgment_template_summary") or {}
+        items_by_id = {str(item.get("review_id") or "").strip(): item for item in packet_items if isinstance(item, dict)}
+        items_by_thread = {
+            review_thread_key_for_item(item): item
+            for item in packet_items
+            if isinstance(item, dict) and review_thread_key_for_item(item)
+        }
+        write_plan = []
+        for example in examples[: min(high_unjudged, 20)]:
+            if not isinstance(example, dict):
+                continue
+            review_id = str(example.get("review_id") or "").strip()
+            item = items_by_id.get(review_id)
+            if item is None:
+                item = items_by_thread.get(review_thread_key_for_item(example))
+            advisory_plan = safe_dict(item.get("advisory_plan")) if isinstance(item, dict) else {}
+            dynamic = safe_dict(advisory_plan.get("dynamic_management_context"))
+            template = safe_dict(item.get("position_judgment_template")) if isinstance(item, dict) else {}
+            digest = safe_dict(item.get("context_digest")) if isinstance(item, dict) else {}
+            write_plan.append(
+                {
+                    "review_id": review_id,
+                    "review_thread_key": review_thread_key_for_item(item or example),
+                    "portfolio_id": example.get("portfolio_id"),
+                    "role": example.get("role"),
+                    "symbol": example.get("symbol"),
+                    "urgency": example.get("urgency"),
+                    "recommended_action": example.get("recommended_action"),
+                    "packet_item_found": item is not None,
+                    "allowed_decisions": template.get("allowed_decisions"),
+                    "required_attention_codes": safe_list(template.get("required_position_attention_codes"))
+                    or safe_list(digest.get("position_attention")),
+                    "dynamic_management": {
+                        "target_status": dynamic.get("target_status"),
+                        "price_snapshot_age_hours": dynamic.get("price_snapshot_age_hours"),
+                        "price_snapshot_fresh": dynamic.get("price_snapshot_fresh"),
+                        "distance_to_signal_take_profit_pct": dynamic.get("distance_to_signal_take_profit_pct"),
+                        "distance_above_signal_stop_loss_pct": dynamic.get("distance_above_signal_stop_loss_pct"),
+                        "review_focus": safe_list(dynamic.get("review_focus"))[:4],
+                    },
+                }
+            )
         review_workflow_command = (
             f"/usr/bin/python3 /root/hermes_review_packet.py --ephemeral-state --output {PACKET_FILE} && "
             f"/usr/bin/python3 /root/hermes_position_judgment_audit_report.py "
@@ -449,6 +504,7 @@ def position_actions(position_audit, packet):
                     "template_source": f"{PACKET_FILE} position_review.items[].position_judgment_template",
                     "template_summary": template_summary,
                     "unjudged_examples": examples,
+                    "position_judgment_write_plan": write_plan,
                     "safety": {
                         "template_only": bool(template_summary.get("template_only")),
                         "ready_to_append_without_hermes_review": False,
@@ -457,7 +513,8 @@ def position_actions(position_audit, packet):
                 },
                 next_step=(
                     f"Refresh {PACKET_FILE}, inspect high-urgency position_review.items, use each "
-                    "position_judgment_template only as a draft scaffold, and append completed Hermes-reviewed "
+                    "position_judgment_write_plan row to find the exact item/template, use position_judgment_template "
+                    "only as a draft scaffold, and append completed Hermes-reviewed "
                     f"JSONL objects to {POSITION_JUDGMENT_FILE}. Do not copy template placeholders or set "
                     "order_submission=true; then rerun hermes_position_judgment_audit_report.py."
                 ),

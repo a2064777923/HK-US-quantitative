@@ -104,7 +104,44 @@ def base_payloads():
                     "schema": "portfolio_position_judgment_template_summary_v1",
                     "template_count": 2,
                     "template_only": True,
-                }
+                },
+                "items": [
+                    {
+                        "review_id": "simulation:8:00816:2026-06-12:exit_review",
+                        "review_thread_key": "simulation:8:00816",
+                        "portfolio_id": 8,
+                        "role": "simulation",
+                        "symbol": "00816",
+                        "urgency": "high",
+                        "recommended_action": "exit_review",
+                        "advisory_plan": {
+                            "dynamic_management_context": {
+                                "target_status": "below_signal_stop",
+                                "price_snapshot_age_hours": 0.25,
+                                "price_snapshot_fresh": True,
+                                "distance_to_signal_take_profit_pct": 8.5,
+                                "distance_above_signal_stop_loss_pct": -2.1,
+                                "review_focus": [
+                                    "confirm_exit_pressure_with_market_and_intraday_context",
+                                    "review_reduce_or_exit_before_adding_exposure",
+                                ],
+                            }
+                        },
+                        "context_digest": {
+                            "position_attention": [
+                                "position_dynamic_management_requires_review",
+                                "position_exit_or_reduce_review_requires_contextual_rationale",
+                            ]
+                        },
+                        "position_judgment_template": {
+                            "allowed_decisions": ["hold", "watch", "reduce", "exit", "trail_stop"],
+                            "required_position_attention_codes": [
+                                "position_dynamic_management_requires_review",
+                                "position_exit_or_reduce_review_requires_contextual_rationale",
+                            ],
+                        },
+                    }
+                ],
             },
         },
         "position_audit": {
@@ -549,10 +586,22 @@ class OperatorActionQueueReportTests(unittest.TestCase):
             actions["write_high_urgency_position_judgments"]["evidence"]["template_source"],
             f"{report.PACKET_FILE} position_review.items[].position_judgment_template",
         )
+        write_plan = actions["write_high_urgency_position_judgments"]["evidence"]["position_judgment_write_plan"]
+        self.assertEqual(write_plan[0]["review_id"], "simulation:8:00816:2026-06-12:exit_review")
+        self.assertEqual(write_plan[0]["review_thread_key"], "simulation:8:00816")
+        self.assertTrue(write_plan[0]["packet_item_found"])
+        self.assertEqual(write_plan[0]["allowed_decisions"], ["hold", "watch", "reduce", "exit", "trail_stop"])
+        self.assertIn("position_dynamic_management_requires_review", write_plan[0]["required_attention_codes"])
+        self.assertEqual(write_plan[0]["dynamic_management"]["target_status"], "below_signal_stop")
+        self.assertEqual(write_plan[0]["dynamic_management"]["price_snapshot_age_hours"], 0.25)
         self.assertIn("hermes_review_packet.py", actions["write_high_urgency_position_judgments"]["operator_command"])
         self.assertIn(
             "--output /tmp/hermes_position_judgment_audit_report.json --text",
             actions["write_high_urgency_position_judgments"]["operator_command"],
+        )
+        self.assertIn(
+            "position_judgment_write_plan",
+            actions["write_high_urgency_position_judgments"]["recommended_next_step"],
         )
         self.assertIn(
             "Do not copy template placeholders",
