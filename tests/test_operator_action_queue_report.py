@@ -799,6 +799,7 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertTrue(write_plan[0]["required_output"]["advisory_only"])
         self.assertFalse(write_plan[0]["required_output"]["submits_orders"])
         self.assertIn("hermes_review_packet.py", actions["write_high_urgency_position_judgments"]["operator_command"])
+        self.assertIn("hermes_position_judgment_write_packet.py", actions["write_high_urgency_position_judgments"]["operator_command"])
         self.assertIn(
             "--output /tmp/hermes_position_judgment_audit_report.json --text",
             actions["write_high_urgency_position_judgments"]["operator_command"],
@@ -814,6 +815,10 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertIn(
             "Do not copy template placeholders",
             actions["write_high_urgency_position_judgments"]["recommended_next_step"],
+        )
+        self.assertIn(
+            "/tmp/hermes_position_judgment_write_packet.json",
+            actions["write_high_urgency_position_judgments"]["evidence"]["write_packet_file"],
         )
 
     def test_stale_alert_packet_action_is_observation_only(self):

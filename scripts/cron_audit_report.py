@@ -274,6 +274,12 @@ REQUIRED_READ_ONLY_JOBS = [
         "recommended_cron": "*/10 * * * * /usr/bin/python3 /root/hermes_position_judgment_audit_report.py --output /tmp/hermes_position_judgment_audit_report.json --text >> /tmp/hermes_position_judgment_audit_report.log 2>&1",
     },
     {
+        "name": "hermes_position_judgment_write_packet",
+        "tokens": ["hermes_position_judgment_write_packet.py", "/tmp/hermes_position_judgment_write_packet.json"],
+        "why": "Hermes needs a compact read-only write packet for advisory position judgments",
+        "recommended_cron": "*/10 * * * * /usr/bin/python3 /root/hermes_position_judgment_write_packet.py --output /tmp/hermes_position_judgment_write_packet.json --text >> /tmp/hermes_position_judgment_write_packet.log 2>&1",
+    },
+    {
         "name": "hermes_review_packet",
         "tokens": ["hermes_review_packet.py", "/tmp/hermes_signal_review_packet.json"],
         "why": "Hermes needs a fresh combined review packet without mutating the order-intake ledger",

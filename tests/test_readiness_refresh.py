@@ -23,10 +23,12 @@ class ReadinessRefreshTests(unittest.TestCase):
         self.assertIn("hermes_review_packet_seed", names)
         self.assertIn("operator_action_queue", names)
         self.assertIn("hermes_review_packet", names)
+        self.assertIn("hermes_position_judgment_write_packet", names)
         self.assertLess(names.index("rt_signal_outcome"), names.index("source_reliability"))
         self.assertLess(names.index("source_reliability"), names.index("execution_readiness"))
         self.assertLess(names.index("execution_readiness"), names.index("hermes_review_packet_seed"))
-        self.assertLess(names.index("hermes_review_packet_seed"), names.index("operator_action_queue"))
+        self.assertLess(names.index("hermes_review_packet_seed"), names.index("hermes_position_judgment_write_packet"))
+        self.assertLess(names.index("hermes_position_judgment_write_packet"), names.index("operator_action_queue"))
         self.assertLess(names.index("operator_action_queue"), names.index("hermes_review_packet"))
 
     def test_default_steps_include_read_only_daily_gap_repair_plan(self):
@@ -91,7 +93,8 @@ class ReadinessRefreshTests(unittest.TestCase):
         self.assertLess(names.index("trusted_source_discovery"), names.index("trusted_source_preflight"))
         self.assertLess(source_idx, names.index("execution_readiness"))
         self.assertLess(names.index("execution_readiness"), names.index("hermes_review_packet_seed"))
-        self.assertLess(names.index("hermes_review_packet_seed"), names.index("operator_action_queue"))
+        self.assertLess(names.index("hermes_review_packet_seed"), names.index("hermes_position_judgment_write_packet"))
+        self.assertLess(names.index("hermes_position_judgment_write_packet"), names.index("operator_action_queue"))
         self.assertLess(names.index("operator_action_queue"), names.index("hermes_review_packet"))
         self.assertLess(source_idx, names.index("hermes_review_packet"))
 
@@ -109,6 +112,9 @@ class ReadinessRefreshTests(unittest.TestCase):
         self.assertLess(names.index("simulation_postmortem_note_draft"), names.index("operator_action_queue"))
         self.assertLess(names.index("simulation_postmortem_audit"), names.index("execution_readiness"))
         self.assertLess(names.index("simulation_postmortem_audit"), names.index("operator_action_queue"))
+        self.assertLess(names.index("hermes_review_packet_seed"), names.index("hermes_position_judgment_write_packet"))
+        self.assertLess(names.index("hermes_position_judgment_write_packet"), names.index("operator_action_queue"))
+        self.assertLess(names.index("operator_action_queue"), names.index("hermes_review_packet"))
 
     def test_full_refresh_external_context_uses_infohub_bridge(self):
         step = [step for step in refresh.selected_steps() if step["name"] == "external_market_context_producer"][0]

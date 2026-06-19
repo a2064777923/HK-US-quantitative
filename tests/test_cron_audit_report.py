@@ -40,6 +40,7 @@ FULL_CRON = "\n".join(
         ("hermes_judgment_event_store.py", "/tmp/hermes_judgment_event_store_report.json"),
         ("rt_order_intake_event_store.py", "/tmp/rt_order_intake_event_store_report.json"),
         ("hermes_position_judgment_audit_report.py", "/tmp/hermes_position_judgment_audit_report.json"),
+        ("hermes_position_judgment_write_packet.py", "/tmp/hermes_position_judgment_write_packet.json"),
         ("hermes_review_packet.py", "/tmp/hermes_signal_review_packet.json"),
     ]
 ) + """
@@ -112,6 +113,7 @@ class CronAuditReportTests(unittest.TestCase):
                 "hermes_judgment_event_store.py",
                 "rt_order_intake_event_store.py",
                 "hermes_position_judgment_audit_report.py",
+                "hermes_position_judgment_write_packet.py",
                 "hermes_review_packet.py",
                 "rt_alert_bridge.py",
                 "external_market_context_producer.py",

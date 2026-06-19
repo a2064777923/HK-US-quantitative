@@ -345,6 +345,16 @@ STEPS = [
         "network": False,
     },
     {
+        "name": "hermes_position_judgment_write_packet",
+        "cmd": [
+            "hermes_position_judgment_write_packet.py",
+            "--output",
+            "/tmp/hermes_position_judgment_write_packet.json",
+            "--text",
+        ],
+        "network": False,
+    },
+    {
         "name": "operator_action_queue",
         "cmd": ["operator_action_queue_report.py", "--output", "/tmp/operator_action_queue_report.json", "--text"],
         "network": False,

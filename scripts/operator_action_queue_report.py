@@ -19,6 +19,10 @@ POSITION_AUDIT_FILE = os.environ.get(
     "HERMES_POSITION_JUDGMENT_AUDIT_FILE",
     "/tmp/hermes_position_judgment_audit_report.json",
 )
+POSITION_JUDGMENT_WRITE_PACKET_FILE = os.environ.get(
+    "HERMES_POSITION_JUDGMENT_WRITE_PACKET_FILE",
+    "/tmp/hermes_position_judgment_write_packet.json",
+)
 SOURCE_RELIABILITY_FILE = os.environ.get("SOURCE_RELIABILITY_REPORT_FILE", "/tmp/source_reliability_report.json")
 TRUSTED_SOURCE_DISCOVERY_FILE = os.environ.get(
     "TRUSTED_SOURCE_DISCOVERY_REPORT_FILE",
@@ -518,6 +522,8 @@ def position_actions(position_audit, packet):
                 )
         review_workflow_command = (
             f"/usr/bin/python3 /root/hermes_review_packet.py --ephemeral-state --output {PACKET_FILE} && "
+            f"/usr/bin/python3 /root/hermes_position_judgment_write_packet.py "
+            f"--output {POSITION_JUDGMENT_WRITE_PACKET_FILE} --text && "
             f"/usr/bin/python3 /root/hermes_position_judgment_audit_report.py "
             f"--output {POSITION_AUDIT_FILE} --text"
         )
@@ -533,6 +539,7 @@ def position_actions(position_audit, packet):
                     "coverage": coverage,
                     "packet_id": packet.get("packet_id"),
                     "packet_file": PACKET_FILE,
+                    "write_packet_file": POSITION_JUDGMENT_WRITE_PACKET_FILE,
                     "judgment_file": POSITION_JUDGMENT_FILE,
                     "manual_append_target": POSITION_JUDGMENT_FILE,
                     "template_source": f"{PACKET_FILE} position_review.items[].position_judgment_template",
@@ -564,9 +571,10 @@ def position_actions(position_audit, packet):
                     },
                 },
                 next_step=(
-                    f"Refresh {PACKET_FILE}, use position_judgment_worklist.items as the compact preferred "
-                    "Hermes input, and use position_judgment_write_plan only as an index/fallback. Review the "
-                    "full position_review item when needed, replace every placeholder, and append completed Hermes-reviewed "
+                    f"Refresh {PACKET_FILE} and {POSITION_JUDGMENT_WRITE_PACKET_FILE}, use "
+                    "hermes_position_judgment_write_packet.items as the compact preferred Hermes input, and use "
+                    "position_judgment_worklist.items or position_judgment_write_plan only as index/fallback. Review "
+                    "the full position_review item when needed, replace every placeholder, and append completed Hermes-reviewed "
                     f"JSONL objects to {POSITION_JUDGMENT_FILE}. Do not copy template placeholders or set "
                     "order_submission=true; then rerun hermes_position_judgment_audit_report.py."
                 ),

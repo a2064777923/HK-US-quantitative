@@ -13,6 +13,7 @@ This repository is not configured for automatic real-money trading. Real broker 
 - Signal scoring uses completed daily OHLCV history plus one realtime quote bar.
 - v5.6 keeps the guarded momentum breakout model, downgrades noisy or underperforming BUY triggers to diagnostic `WATCH` unless later evidence supports re-enabling, moves configured downgraded SELL diagnostics to summary-only, ranks same-symbol same-scan executable candidates by quality, and blocks BUY execution candidates when the symbol's same-session `change_pct` is below the configured realtime-alignment floor.
 - Minute/hour data is read-only context for Hermes and quality reports; it is not the core v5 scoring authority.
+- Hermes position-review flow now has a compact write packet between the seeded review packet and the operator queue so advisory holdings judgments stay easier to draft without becoming executable trades.
 - `scripts/rt_alert_bridge.py` defaults to notify-only mode.
 - The alert bridge is fail-closed: a BUY/SELL raw trigger is not sent as an operator trade candidate unless v5 marks `execution_candidate=true`, Hermes review marks the matching item `eligible_for_approval=true`, and execution readiness is `READY` with `ready_for_execute=true`.
 - v5 enables same-market realtime breadth gating by default: a new BUY candidate is downgraded to WATCH when the scanned market is risk-off, even if the external strategy config file is missing.
