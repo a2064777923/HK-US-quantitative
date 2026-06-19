@@ -681,12 +681,43 @@ def compact_intraday_contract(contract):
     return " ".join(parts)
 
 
+def compact_intraday_position_evidence(evidence):
+    if not isinstance(evidence, dict) or not evidence:
+        return ""
+    parts = []
+    alignment = evidence.get("alignment")
+    action_intent = evidence.get("action_intent")
+    status = evidence.get("status")
+    if alignment:
+        parts.append(f"align={alignment}")
+    if action_intent:
+        parts.append(f"intent={action_intent}")
+    if status:
+        parts.append(f"status={status}")
+    session = evidence.get("session_momentum")
+    session_change = evidence.get("session_change_pct")
+    if session or session_change not in (None, ""):
+        parts.append(f"session={session or '?'} {fmt_pct(session_change)}")
+    timeframe = evidence.get("timeframe_alignment")
+    if timeframe:
+        parts.append(f"tf={timeframe}")
+    code_parts = []
+    for label, key in (("support", "support_codes"), ("challenge", "challenge_codes"), ("limit", "limit_codes")):
+        values = evidence.get(key)
+        if isinstance(values, list) and values:
+            code_parts.append(f"{label}={','.join(str(value) for value in values[:3])}")
+    if code_parts:
+        parts.append(" ".join(code_parts))
+    return " ".join(parts)
+
+
 def compact_worklist_summary(work_item):
     if not isinstance(work_item, dict) or not work_item:
         return []
     required = work_item.get("required_output_fields") if isinstance(work_item.get("required_output_fields"), dict) else {}
     context_summary = work_item.get("context_summary") if isinstance(work_item.get("context_summary"), dict) else {}
     dynamic = context_summary.get("dynamic_management") if isinstance(context_summary.get("dynamic_management"), dict) else {}
+    intraday_position = compact_intraday_position_evidence(context_summary.get("intraday_position_evidence"))
     attention = work_item.get("required_attention_codes") if isinstance(work_item.get("required_attention_codes"), list) else []
     lines = [
         "├─ Hermes優先入口：position_judgment_worklist.items[]（短上下文+必填欄位；仍需審核後填寫）",
@@ -709,6 +740,8 @@ def compact_worklist_summary(work_item):
                 age=fmt_hours(dynamic.get("price_snapshot_age_hours")),
             )
         )
+    if intraday_position:
+        lines.append(f"├─ Worklist盤中證據：{intraday_position}")
     if attention:
         lines.append(f"├─ Worklist必回應：{','.join(str(code) for code in attention[:6])}")
     return lines

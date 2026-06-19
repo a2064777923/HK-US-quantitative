@@ -116,11 +116,26 @@ class RtAlertBridgeTests(unittest.TestCase):
                                 "latest_daily_change_pct": -3.2,
                                 "distance_above_signal_stop_loss_pct": -1.2,
                                 "price_snapshot_age_hours": 36.0,
+                            },
+                            "intraday_position_evidence": {
+                                "action_intent": "risk_reduction",
+                                "alignment": "supports_recommended_action",
+                                "status": "OK",
+                                "session_momentum": "strong_down",
+                                "session_change_pct": -3.2,
+                                "timeframe_alignment": "bearish_aligned",
+                                "support_codes": [
+                                    "session_down_supports_reduce_exit",
+                                    "multi_timeframe_bearish_supports_reduce_exit",
+                                ],
+                                "challenge_codes": [],
+                                "limit_codes": [],
                             }
                         },
                         "required_attention_codes": [
                             "high_urgency_position_requires_contextual_rationale",
                             "position_market_sentiment_risk_requires_discussion",
+                            "position_intraday_evidence_requires_discussion",
                         ],
                         "required_output_fields": {
                             "schema": "hermes_position_judgment_v1",
@@ -543,7 +558,11 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("use=can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation", text)
             self.assertIn("Hermes優先入口：position_judgment_worklist.items[]", text)
             self.assertIn("Worklist輸出：schema=hermes_position_judgment_v1 advisory_only=True submits_orders=False", text)
+            self.assertIn("Worklist盤中證據：align=supports_recommended_action", text)
+            self.assertIn("intent=risk_reduction", text)
+            self.assertIn("support=session_down_supports_reduce_exit", text)
             self.assertIn("Worklist必回應：high_urgency_position_requires_contextual_rationale", text)
+            self.assertIn("position_intraday_evidence_requires_discussion", text)
             self.assertIn("order_submission=false", text)
 
     def test_position_review_uses_stable_thread_key_for_action_churn(self):
