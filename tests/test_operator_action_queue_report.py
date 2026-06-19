@@ -808,6 +808,7 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertIn(" && ", item["operator_command"])
         self.assertNotIn("local_backtest_dataset.py", item["operator_command"])
         self.assertTrue(item["operator_effect"]["refreshes_reports"])
+        self.assertFalse(item["operator_effect"]["uses_existing_db_snapshot"])
         self.assertTrue(item["operator_effect"]["uses_local_replay_summary_only"])
         self.assertFalse(item["operator_effect"]["copies_raw_data"])
         self.assertFalse(item["operator_effect"]["submits_orders"])
@@ -823,10 +824,15 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         item = {row["id"]: row for row in payload["actions"]}["refresh_v5_replay_convergence_context"]
 
         self.assertIn("v5_local_replay_report", item["evidence"]["missing_reports"])
-        self.assertIsNone(item["operator_command"])
-        self.assertIn("local_replay_report_required", item["blockers"])
+        self.assertIn("v5_local_replay_report.py", item["operator_command"])
+        self.assertIn("--source db --db-lookback-days 365", item["operator_command"])
+        self.assertIn("v5_replay_strategy_review_report.py", item["operator_command"])
+        self.assertIn("trigger_evidence_convergence_report.py", item["operator_command"])
+        self.assertEqual(item["blockers"], [])
+        self.assertTrue(item["operator_effect"]["uses_existing_db_snapshot"])
+        self.assertFalse(item["operator_effect"]["uses_local_replay_summary_only"])
         self.assertFalse(item["operator_effect"]["copies_raw_data"])
-        self.assertIn("copy only the compact local JSON report", item["recommended_next_step"])
+        self.assertIn("--source db --db-lookback-days 365", item["recommended_next_step"])
 
     def test_no_actions_is_ok(self):
         payload = report.build_report(

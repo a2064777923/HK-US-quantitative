@@ -1041,9 +1041,17 @@ def replay_convergence_actions(strategy_review, v5_local_replay, v5_replay_strat
 
     if missing or stale:
         commands = []
+        refresh_local_replay = not has_local_replay
         refresh_replay_strategy = has_local_replay and (
             not has_replay_strategy or "v5_replay_strategy_review_report" in stale
         )
+        if refresh_local_replay:
+            commands.append(
+                "/usr/bin/python3 /root/v5_local_replay_report.py "
+                "--source db --db-lookback-days 365 "
+                "--output /tmp/v5_local_replay_report.json --text"
+            )
+            refresh_replay_strategy = not has_replay_strategy or "v5_replay_strategy_review_report" in stale
         refresh_convergence = has_forward_context and (
             has_replay_strategy or refresh_replay_strategy
         ) and (
@@ -1088,24 +1096,29 @@ def replay_convergence_actions(strategy_review, v5_local_replay, v5_replay_strat
                         "v5_replay_strategy_review": v5_replay_strategy_review.get("schema"),
                         "trigger_evidence_convergence": convergence.get("schema"),
                     },
-                    "local_only_note": "Raw replay CSV data should stay local; only compact JSON reports belong in Hermes context.",
+                    "local_only_note": (
+                        "Raw replay CSV/minute data should stay local; server DB replay uses existing completed daily "
+                        "klines as a read-only snapshot and writes only compact JSON."
+                    ),
                 },
                 next_step=(
-                    "Regenerate the missing or stale read-only reports from existing local replay/forward review JSON. "
-                    "If v5_local_replay_report is missing on the server, copy only the compact local JSON report or rerun replay locally; "
-                    "do not sync raw CSV/minute data to production by default."
+                    "Regenerate the missing or stale read-only reports. If v5_local_replay_report is missing on the server, "
+                    "prefer running /root/v5_local_replay_report.py --source db --db-lookback-days 365 against the existing "
+                    "server DB daily K-line snapshot, or copy only a compact local JSON report; do not sync raw CSV/minute data "
+                    "to production by default."
                 ),
                 command=" && ".join(commands) if commands else None,
                 operator_effect={
                     "refreshes_reports": True,
-                    "uses_local_replay_summary_only": True,
+                    "uses_existing_db_snapshot": refresh_local_replay,
+                    "uses_local_replay_summary_only": not refresh_local_replay,
                     "copies_raw_data": False,
                     "submits_orders": False,
                     "changes_strategy": False,
                     "changes_portfolio": False,
                     "changes_crontab": False,
                 },
-                blockers=["local_replay_report_required"] if not has_local_replay else [],
+                blockers=[],
             )
         )
 

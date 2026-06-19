@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from scripts import v5_local_replay_report as report
 
@@ -48,6 +49,8 @@ def replay_args(tmp, **overrides):
         "market": [],
         "start_date": None,
         "end_date": None,
+        "source": "csv",
+        "db_lookback_days": 365,
         "min_history_bars": 30,
         "max_symbols": 0,
         "max_bars_per_symbol": 0,
@@ -214,8 +217,106 @@ class V5LocalReplayReportTests(unittest.TestCase):
             self.assertTrue(os.path.exists(output))
             with open(output, encoding="utf-8") as handle:
                 payload = json.load(handle)
-            self.assertEqual(payload["source"]["source_files"]["hk_csv"], os.path.abspath(hk))
-            self.assertEqual(payload["summary"]["overall_status"], "V5_REPLAY_RESEARCH_ONLY")
+        self.assertEqual(payload["source"]["source_files"]["hk_csv"], os.path.abspath(hk))
+        self.assertEqual(payload["summary"]["overall_status"], "V5_REPLAY_RESEARCH_ONLY")
+
+    def test_read_market_db_parses_completed_daily_klines_read_only(self):
+        raw = "\n".join(
+            [
+                "00700|2026-01-01|100|105|99|104|1000000",
+                "00700|2026-01-02|104|106|103|105|1000000",
+                "00700|2026-01-03|108|106|103|105|1000000",
+            ]
+        )
+
+        with patch.object(report.v5, "db", return_value=raw) as db:
+            rows, source = report.read_market_db(["00700"], "HK", "2026-01-01", "2026-01-31")
+
+        self.assertIn("00700", rows)
+        self.assertEqual(len(rows["00700"]), 2)
+        self.assertEqual(source["source_mode"], "db_klines")
+        self.assertEqual(source["row_count"], 3)
+        self.assertEqual(source["valid_row_count"], 2)
+        self.assertEqual(source["invalid_row_count"], 1)
+        sql = db.call_args[0][0]
+        self.assertIn("FROM klines", sql)
+        self.assertIn("interval = 'day'", sql)
+
+    def test_db_replay_default_end_date_uses_yesterday_to_avoid_intraday_daily_rows(self):
+        args = replay_args(tempfile.gettempdir(), source="db", end_date=None)
+        datetime_class = report.datetime
+
+        with patch.object(report, "datetime", wraps=report.datetime) as fake_datetime:
+            fake_datetime.now.return_value = datetime_class(2026, 6, 19, 12, 0, 0)
+            self.assertEqual(report.db_replay_end_date(args), "2026-06-18")
+
+        args.end_date = "2026-06-17"
+        self.assertEqual(report.db_replay_end_date(args), "2026-06-17")
+
+    def test_build_report_can_use_server_db_snapshot_without_mutation(self):
+        hk_rows = {
+            "00700": [
+                {
+                    "symbol": item["symbol"],
+                    "market": "HK",
+                    "date": item["dt"],
+                    "open": item["open_price"],
+                    "high": item["high_price"],
+                    "low": item["low_price"],
+                    "close": item["close_price"],
+                    "volume": item["volume"],
+                }
+                for item in trend_rows("00700")
+            ]
+        }
+        hk_source = {
+            "path": "db:klines",
+            "source_mode": "db_klines",
+            "market": "HK",
+            "exists": True,
+            "row_count": len(hk_rows["00700"]),
+            "valid_row_count": len(hk_rows["00700"]),
+            "invalid_row_count": 0,
+            "requested_symbol_count": 1,
+            "symbol_count": 1,
+            "first_date": hk_rows["00700"][0]["date"],
+            "last_date": hk_rows["00700"][-1]["date"],
+            "error": None,
+        }
+        args = replay_args(
+            tempfile.gettempdir(),
+            source="db",
+            market=["HK"],
+            db_lookback_days=365,
+            start_date="2026-01-01",
+            end_date="2026-02-14",
+        )
+        replay_source = {
+            "source_mode": "db",
+            "watchlist_context": {"watchlist_id": "wl-1"},
+            "db_date_range": {"start": "2026-01-01", "end": "2026-02-14"},
+        }
+
+        with patch.object(report, "load_replay_inputs", return_value=(hk_rows, {}, hk_source, {}, replay_source)):
+            payload = report.build_report(args)
+
+        self.assertEqual(payload["schema"], "v5_local_replay_report_v1")
+        self.assertEqual(payload["source"]["source_mode"], "db")
+        self.assertFalse(payload["source"]["local_only"])
+        self.assertTrue(payload["source"]["uses_existing_db_snapshot"])
+        self.assertTrue(payload["storage_policy"]["server_db_snapshot_read_only"])
+        self.assertEqual(
+            payload["source"]["db_completed_daily_policy"],
+            (
+                "DB daily replay excludes same-day incomplete daily rows by default; live analysis still uses "
+                "realtime quotes and intraday context separately"
+            ),
+        )
+        self.assertFalse(payload["source"]["writes_alert_queue"])
+        self.assertFalse(payload["source"]["submits_orders"])
+        self.assertFalse(payload["source"]["changes_v5"])
+        self.assertEqual(payload["replay_contract"]["data_basis"], "server_db_completed_daily_klines_snapshot")
+        self.assertEqual(payload["source"]["watchlist_context"]["watchlist_id"], "wl-1")
 
 
 if __name__ == "__main__":

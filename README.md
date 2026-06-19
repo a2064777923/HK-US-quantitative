@@ -250,6 +250,17 @@ python3 scripts/v5_local_replay_report.py \
   --output /tmp/v5_local_replay_report.json --text
 ```
 
+On the production server, replay can also use the existing DB daily K-line snapshot without copying raw CSV/minute data:
+
+```bash
+python3 /root/v5_local_replay_report.py \
+  --source db \
+  --db-lookback-days 365 \
+  --output /tmp/v5_local_replay_report.json --text
+```
+
+DB replay is read-only, uses the live v5 watchlist plus DB user-holdings overlay, and by default ends at yesterday so a same-day temporary daily row is not treated as completed daily evidence. It writes only the compact replay JSON report and must still be treated as research context, not execution readiness.
+
 Use raw minute/hour data for research, replay, and feature engineering, but promote only compact metadata, coverage, freshness, gap, source-quality, and replay reports into Hermes/server workflows.
 
 Minute rows from Tencent public endpoints are persisted as snapshot-like data, not broker-grade minute OHLCV. `scripts/minute_collector.py` writes `data_source='tencent_min'` and, when the DB schema supports it, `source_granularity='minute_snapshot_price'`. `scripts/kline_source_granularity_report.py` can hash-gate and batch-backfill this provenance without changing OHLCV prices, volumes, positions, alerts, or strategy. Hermes may use these rows to cap/challenge confidence and diagnose path risk, but not to claim full intraday execution-quality evidence.

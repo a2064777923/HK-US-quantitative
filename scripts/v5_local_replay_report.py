@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Replay v5 trigger semantics on local-only daily CSV data.
+"""Replay v5 trigger semantics on daily CSV or read-only DB snapshot data.
 
 This is a research report, not a PnL backtest and not an execution input. It
-reads local CSV bars, feeds prior completed bars plus a synthetic current-day
-close quote into rt_signal_engine_v5, and summarizes what v5 would have
-emitted under its trigger/confirmation/risk gates.
+feeds prior completed bars plus one synthetic close-time quote into
+rt_signal_engine_v5, and summarizes what v5 would have emitted under its
+trigger/confirmation/risk gates.
 """
 import argparse
 import csv
@@ -12,7 +12,7 @@ import json
 import math
 import os
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 try:
     import rt_signal_engine_v5 as v5
@@ -24,6 +24,8 @@ DEFAULT_DATA_DIR = os.environ.get("LOCAL_BACKTEST_DATA_DIR", "/tmp")
 DEFAULT_HK_CSV = os.environ.get("V5_LOCAL_REPLAY_HK_CSV", os.path.join(DEFAULT_DATA_DIR, "hk_klines_v2.csv"))
 DEFAULT_US_CSV = os.environ.get("V5_LOCAL_REPLAY_US_CSV", os.path.join(DEFAULT_DATA_DIR, "us_klines.csv"))
 DEFAULT_OUTPUT_FILE = os.environ.get("V5_LOCAL_REPLAY_REPORT_FILE", "/tmp/v5_local_replay_report.json")
+DEFAULT_SOURCE = os.environ.get("V5_LOCAL_REPLAY_SOURCE", "csv")
+DEFAULT_DB_LOOKBACK_DAYS = int(os.environ.get("V5_LOCAL_REPLAY_DB_LOOKBACK_DAYS", "365"))
 DEFAULT_MIN_HISTORY_BARS = v5.MIN_SIGNAL_HISTORY_BARS
 DEFAULT_ALERT_SAMPLE_LIMIT = 50
 ALERT_DENSITY_WARN_PER_100_BARS = 50.0
@@ -171,6 +173,129 @@ def read_market_csv(path, market, start_date=None, end_date=None):
         result["last_date"] = date_text if result["last_date"] is None else max(result["last_date"], date_text)
     result["symbol_count"] = len(grouped)
     return dict(grouped), result
+
+
+def sql_literal(value):
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def psql_rows(stdout):
+    return [line.split("|") for line in str(stdout or "").splitlines() if line.strip()]
+
+
+def db_replay_start_date(args):
+    if args.start_date:
+        return args.start_date
+    lookback_days = max(as_int(getattr(args, "db_lookback_days", DEFAULT_DB_LOOKBACK_DAYS), DEFAULT_DB_LOOKBACK_DAYS), 45)
+    return (datetime.now().date() - timedelta(days=lookback_days)).isoformat()
+
+
+def db_replay_end_date(args):
+    if args.end_date:
+        return args.end_date
+    return (datetime.now().date() - timedelta(days=1)).isoformat()
+
+
+def read_market_db(symbols, market, start_date=None, end_date=None):
+    market = str(market or "").upper()
+    symbols = v5.normalize_symbol_list(symbols, market=market)
+    result = {
+        "path": "db:klines",
+        "source_mode": "db_klines",
+        "market": market,
+        "exists": True,
+        "row_count": 0,
+        "valid_row_count": 0,
+        "invalid_row_count": 0,
+        "requested_symbol_count": len(symbols),
+        "symbol_count": 0,
+        "first_date": None,
+        "last_date": None,
+        "error": None,
+    }
+    if not symbols:
+        result["error"] = "no_symbols"
+        return {}, result
+    start_date = start_date or "1900-01-01"
+    end_date = end_date or "2999-12-31"
+    symbol_sql = ",".join(sql_literal(symbol) for symbol in symbols)
+    raw = v5.db(
+        f"""
+        SELECT symbol,
+               substring(("timestamp")::text from 1 for 10) AS dt,
+               open_price, high_price, low_price, close_price,
+               COALESCE(volume, 0)
+        FROM klines
+        WHERE interval = 'day'
+          AND symbol IN ({symbol_sql})
+          AND substring(("timestamp")::text from 1 for 10) BETWEEN {sql_literal(start_date)} AND {sql_literal(end_date)}
+        ORDER BY symbol, "timestamp"
+        """
+    )
+    by_symbol_date = {}
+    for parts in psql_rows(raw):
+        result["row_count"] += 1
+        if len(parts) < 7:
+            result["invalid_row_count"] += 1
+            continue
+        symbol = str(parts[0] or "").strip().upper()
+        date_text = str(parts[1] or "")[:10]
+        if not symbol or not date_text or not v5.valid_watchlist_symbol(symbol, market=market):
+            result["invalid_row_count"] += 1
+            continue
+        bar = v5.normalize_daily_bar(parts[5], parts[3], parts[4], parts[6])
+        open_price = as_float(parts[2])
+        if bar is None or open_price is None or open_price <= 0:
+            result["invalid_row_count"] += 1
+            continue
+        close_price, high_price, low_price, volume = bar
+        if open_price > high_price or open_price < low_price:
+            result["invalid_row_count"] += 1
+            continue
+        by_symbol_date[(symbol, date_text)] = {
+            "symbol": symbol,
+            "market": market,
+            "date": date_text,
+            "open": open_price,
+            "high": high_price,
+            "low": low_price,
+            "close": close_price,
+            "volume": volume,
+        }
+
+    grouped = defaultdict(list)
+    for (_symbol, date_text), item in sorted(by_symbol_date.items()):
+        grouped[item["symbol"]].append(item)
+        result["valid_row_count"] += 1
+        result["first_date"] = date_text if result["first_date"] is None else min(result["first_date"], date_text)
+        result["last_date"] = date_text if result["last_date"] is None else max(result["last_date"], date_text)
+    result["symbol_count"] = len(grouped)
+    if result["row_count"] <= 0:
+        result["error"] = "no_db_rows"
+    return dict(grouped), result
+
+
+def load_replay_inputs(args):
+    selected_markets = set(args.market or ["HK", "US"])
+    if replay_source_mode(args) == "db":
+        hk_watchlist, us_watchlist, watchlist_context = v5.load_watchlists()
+        start_date = db_replay_start_date(args)
+        end_date = db_replay_end_date(args)
+        hk_rows, hk_source = ({}, {"market": "HK", "source_mode": "db_klines", "skipped": True})
+        us_rows, us_source = ({}, {"market": "US", "source_mode": "db_klines", "skipped": True})
+        if "HK" in selected_markets:
+            hk_rows, hk_source = read_market_db(hk_watchlist, "HK", start_date, end_date)
+        if "US" in selected_markets:
+            us_rows, us_source = read_market_db(us_watchlist, "US", start_date, end_date)
+        return hk_rows, us_rows, hk_source, us_source, {
+            "source_mode": "db",
+            "watchlist_context": watchlist_context,
+            "db_date_range": {"start": start_date, "end": end_date},
+        }
+
+    hk_rows, hk_source = read_market_csv(args.hk_csv, "HK", args.start_date, args.end_date)
+    us_rows, us_source = read_market_csv(args.us_csv, "US", args.start_date, args.end_date)
+    return hk_rows, us_rows, hk_source, us_source, {"source_mode": "csv", "watchlist_context": None}
 
 
 def clear_realtime(indicators):
@@ -736,28 +861,64 @@ def replay_breakdown(symbol_reports, total_evaluated_bars, alert_summary):
     }
 
 
+def source_check_prefix(source):
+    return "db_klines" if (source or {}).get("source_mode") == "db_klines" else "csv"
+
+
 def data_checks(sources, total_rows, total_symbols):
     checks = [
         check(
             "OK",
-            "raw_replay_data_local_only",
-            "Replay consumes local CSV files and writes a local JSON report only.",
+            "replay_data_read_only",
+            "Replay consumes read-only daily bars and writes a compact JSON report only.",
             {
-                "raw_data_local_only": True,
+                "raw_data_local_only": not any(source_check_prefix(source) == "db_klines" for source in sources.values()),
+                "server_db_snapshot_read_only": any(
+                    source_check_prefix(source) == "db_klines" for source in sources.values()
+                ),
                 "commit_raw_csv_to_git": False,
                 "copy_to_server_by_default": False,
             },
         )
     ]
     for market, source in sources.items():
+        prefix = source_check_prefix(source)
         if not source.get("exists"):
-            checks.append(check("FAIL", f"{market.lower()}_csv_missing", "Required local replay CSV is missing.", source))
+            checks.append(
+                check(
+                    "FAIL",
+                    f"{market.lower()}_{prefix}_missing",
+                    "Required replay source is missing.",
+                    source,
+                )
+            )
         elif source.get("error"):
-            checks.append(check("FAIL", f"{market.lower()}_csv_unreadable", "Required local replay CSV could not be read.", source))
+            checks.append(
+                check(
+                    "FAIL",
+                    f"{market.lower()}_{prefix}_unreadable",
+                    "Required replay source could not be read.",
+                    source,
+                )
+            )
         elif source.get("valid_row_count", 0) <= 0:
-            checks.append(check("FAIL", f"{market.lower()}_csv_has_no_valid_rows", "CSV has no valid replay rows.", source))
+            checks.append(
+                check(
+                    "FAIL",
+                    f"{market.lower()}_{prefix}_has_no_valid_rows",
+                    "Replay source has no valid rows.",
+                    source,
+                )
+            )
         elif source.get("invalid_row_count", 0) > 0:
-            checks.append(check("WARN", f"{market.lower()}_csv_invalid_rows_skipped", "Some CSV rows were skipped.", source))
+            checks.append(
+                check(
+                    "WARN",
+                    f"{market.lower()}_{prefix}_invalid_rows_skipped",
+                    "Some replay rows were skipped.",
+                    source,
+                )
+            )
     if total_rows <= 0 or total_symbols <= 0:
         checks.append(check("FAIL", "no_replay_dataset", "No valid local replay rows were available."))
     return checks
@@ -789,9 +950,30 @@ def replay_checks(evaluated_bars, alert_summary, respect_cooldown):
     return checks
 
 
+def replay_source_mode(args):
+    source = str(getattr(args, "source", DEFAULT_SOURCE) or DEFAULT_SOURCE).strip().lower()
+    return source if source in {"csv", "db"} else "csv"
+
+
+def source_label(source):
+    return "db" if (source or {}).get("source_mode") == "db_klines" else "csv"
+
+
+def source_data_basis(source_mode):
+    if source_mode == "db":
+        return "server_db_completed_daily_klines_snapshot"
+    return "local_daily_csv_replay"
+
+
+def source_quote_time_description(source_mode):
+    if source_mode == "db":
+        return "market close timestamp generated from each DB daily row date"
+    return "market close timestamp generated from each CSV date"
+
+
 def build_report(args):
-    hk_rows, hk_source = read_market_csv(args.hk_csv, "HK", args.start_date, args.end_date)
-    us_rows, us_source = read_market_csv(args.us_csv, "US", args.start_date, args.end_date)
+    hk_rows, us_rows, hk_source, us_source, replay_source = load_replay_inputs(args)
+    source_mode = replay_source_mode(args)
     grouped = {}
     selected_markets = set(args.market or ["HK", "US"])
     if "HK" in selected_markets:
@@ -840,9 +1022,19 @@ def build_report(args):
                 if args.strategy_config_file
                 else None,
             },
+            "source_mode": replay_source.get("source_mode"),
+            "db_date_range": replay_source.get("db_date_range"),
+            "db_completed_daily_policy": (
+                "DB daily replay excludes same-day incomplete daily rows by default; live analysis still uses "
+                "realtime quotes and intraday context separately"
+            )
+            if source_mode == "db"
+            else None,
+            "watchlist_context": replay_source.get("watchlist_context"),
             "read_only_inputs": True,
             "writes_output_only": True,
-            "local_only": True,
+            "local_only": source_mode == "csv",
+            "uses_existing_db_snapshot": source_mode == "db",
             "uses_credentials": False,
             "mutates_server": False,
             "mutates_git": False,
@@ -872,8 +1064,9 @@ def build_report(args):
             "engine": "rt_signal_engine_v5",
             "indicator_model": "IncrementalIndicators with prior completed bars plus one synthetic close-time quote",
             "trigger_model": "TriggerEngine.check",
-            "data_basis": "local_daily_csv_replay",
-            "synthetic_quote_time": "market close timestamp generated from each CSV date",
+            "data_basis": source_data_basis(source_mode),
+            "source_mode": replay_source.get("source_mode"),
+            "synthetic_quote_time": source_quote_time_description(source_mode),
             "respect_cooldown": bool(args.respect_cooldown),
             "min_history_bars": max(as_int(args.min_history_bars, DEFAULT_MIN_HISTORY_BARS), v5.MIN_SIGNAL_HISTORY_BARS),
             "strategy_config_id": strategy_config.get("config_id"),
@@ -882,7 +1075,8 @@ def build_report(args):
             "strategy_config_warnings": strategy_context.get("warnings") or [],
         },
         "storage_policy": {
-            "raw_data_local_only": True,
+            "raw_data_local_only": source_mode == "csv",
+            "server_db_snapshot_read_only": source_mode == "db",
             "commit_raw_csv_to_git": False,
             "copy_to_server_by_default": False,
             "recommended_raw_data_use": "keep broad and fine-grained raw data locally; promote only compact validated reports into Hermes context",
@@ -913,6 +1107,7 @@ def build_report(args):
             "no_market_session_freshness_replay",
             "cooldown_not_modeled_unless_respect_cooldown_is_enabled",
             "local_csv_source_quality_must_still_be_cross_validated_before_institutional_claims",
+            "server_db_snapshot_source_quality_must_still_be_cross_validated_before_institutional_claims",
         ],
         "hermes_contract": {
             "contract": "v5_replay_research_context_only",
@@ -928,6 +1123,7 @@ def build_report(args):
                 "do not bypass rt_order_intake, execution_readiness, source_reliability, or Hermes judgment gates",
                 "do not treat daily-close replay as intraday path proof",
                 "do not copy raw local CSV data to GitHub or the production server by default",
+                "do not treat server DB replay as live execution readiness or data-health authority",
             ],
         },
     }
@@ -986,6 +1182,7 @@ def text_report(payload):
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--source", choices=["csv", "db"], default=DEFAULT_SOURCE)
     parser.add_argument("--hk-csv", default=DEFAULT_HK_CSV)
     parser.add_argument("--us-csv", default=DEFAULT_US_CSV)
     parser.add_argument("--output", default=DEFAULT_OUTPUT_FILE)
@@ -993,6 +1190,7 @@ def parse_args(argv=None):
     parser.add_argument("--market", action="append", choices=("HK", "US"), default=[])
     parser.add_argument("--start-date")
     parser.add_argument("--end-date")
+    parser.add_argument("--db-lookback-days", type=int, default=DEFAULT_DB_LOOKBACK_DAYS)
     parser.add_argument("--min-history-bars", type=int, default=DEFAULT_MIN_HISTORY_BARS)
     parser.add_argument("--max-symbols", type=int, default=0)
     parser.add_argument("--max-bars-per-symbol", type=int, default=0)
