@@ -133,7 +133,7 @@ def default_strategy_config():
             "min_avg_daily_turnover": dict(MIN_AVG_DAILY_TURNOVER)
         },
         "market_breadth_model": {
-            "enabled": False,
+            "enabled": True,
             "block_new_buy_in_risk_off": True,
             "min_sample_size": MARKET_BREADTH_MIN_SAMPLE,
             "risk_off_max_advancer_pct": MARKET_BREADTH_RISK_OFF_MAX_ADVANCER_PCT,

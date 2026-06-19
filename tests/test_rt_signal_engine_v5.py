@@ -2271,6 +2271,56 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIn("market_breadth_risk_off", alert["execution_blocked_reasons"])
         self.assertIsNone(alert["entry_price"])
 
+    def test_default_config_risk_off_market_breadth_downgrades_large_move_buy(self):
+        engine = rt.TriggerEngine(strategy_config={})
+        indicators = FakeIndicators(
+            score=1.0,
+            reasons=["短均線偏強", "RSI偏強(66)", "當日動量+7.2%", "5日動量+12.0%"],
+            factor_contributions=[
+                {"category": "trend", "direction": "BUY", "score_delta": 0.4, "reason": "短均線偏強"},
+                {"category": "rsi", "direction": "BUY", "score_delta": 0.3, "reason": "RSI偏強(66)"},
+                {
+                    "category": "same_session_momentum",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "當日動量+7.2%",
+                },
+                {"category": "momentum", "direction": "BUY", "score_delta": 0.2, "reason": "5日動量+12.0%"},
+            ],
+        )
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AMD",
+            indicators,
+            {
+                "price": 110,
+                "high": 111,
+                "low": 108,
+                "prev_close": 100,
+                "volume": 4_000,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 10.0,
+                "market_breadth": {
+                    "sample_count": 20,
+                    "advancer_pct": 20.0,
+                    "decliner_pct": 70.0,
+                    "avg_change_pct": -1.1,
+                },
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "急漲"][0]
+        self.assertTrue(rt.default_strategy_config()["market_breadth_model"]["enabled"])
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertEqual(alert["market_breadth_status"], "risk_off")
+        self.assertEqual(alert["suppressed_directional_reason"], "market_breadth_risk_off")
+        self.assertIn("market_breadth_risk_off", alert["execution_blocked_reasons"])
+
     def test_buy_execution_candidate_requires_non_negative_realtime_change(self):
         engine = rt.TriggerEngine(
             strategy_config={
