@@ -475,9 +475,9 @@ def duplicate_review_counts_from_rows(rows):
     return {rid: count for rid, count in counts.items() if count > 1}
 
 
-def build_recommendations(rows, reason_counts):
+def build_recommendations(rows, reason_counts, empty_recommendation="no_position_judgments_observed_yet"):
     if not rows:
-        return ["no_position_judgments_observed_yet"]
+        return [empty_recommendation]
     recs = []
     critical = (
         "schema_invalid",
@@ -619,6 +619,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
 
     reason_counts = Counter()
     current_reason_counts = Counter()
+    historical_reason_counts = Counter()
     decision_counts = Counter()
     status_counts = Counter()
     current_status_counts = Counter()
@@ -634,6 +635,8 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
             current_reason_counts[reason] += 1
     for row in historical_rows:
         historical_status_counts[row["status"]] += 1
+        for reason in row["reasons"]:
+            historical_reason_counts[reason] += 1
 
     duplicates = duplicate_review_counts_from_rows(current_rows)
     historical_duplicates = duplicate_review_counts_from_rows(historical_rows)
@@ -646,6 +649,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
                 )
         reason_counts = Counter()
         current_reason_counts = Counter()
+        historical_reason_counts = Counter()
         status_counts = Counter()
         current_status_counts = Counter()
         historical_status_counts = Counter()
@@ -659,6 +663,8 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
                     current_reason_counts[reason] += 1
             else:
                 historical_status_counts[row["status"]] += 1
+                for reason in row["reasons"]:
+                    historical_reason_counts[reason] += 1
 
     coverage = coverage_summary(latest_review_by_id, rows)
     status = "FAIL" if current_status_counts.get("FAIL") or duplicates else "OK"
@@ -666,7 +672,27 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
         status = "WARN"
     if status == "OK" and (historical_status_counts.get("FAIL") or historical_duplicates):
         status = "WARN"
-    recommendations = append_coverage_recommendations(build_recommendations(rows, reason_counts), coverage)
+    recommendations = append_coverage_recommendations(
+        build_recommendations(
+            current_rows,
+            current_reason_counts,
+            empty_recommendation=(
+                "no_current_packet_position_judgments_observed"
+                if rows
+                else "no_position_judgments_observed_yet"
+            ),
+        ),
+        coverage,
+    )
+    historical_recommendations = (
+        build_recommendations(
+            historical_rows,
+            historical_reason_counts,
+            empty_recommendation="no_historical_position_judgments_observed",
+        )
+        if historical_rows
+        else []
+    )
 
     return {
         "schema": "hermes_position_judgment_audit_report_v1",
@@ -688,6 +714,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
             "decision_counts": dict(decision_counts),
             "reason_counts": dict(reason_counts),
             "current_reason_counts": dict(current_reason_counts),
+            "historical_reason_counts": dict(historical_reason_counts),
             "duplicate_review_ids": duplicates,
             "historical_duplicate_review_ids": historical_duplicates,
             "packet_source_counts": dict(packet_source_counts),
@@ -697,6 +724,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
         "coverage": coverage,
         "judgments": rows[-100:],
         "recommendations": recommendations,
+        "historical_recommendations": historical_recommendations,
     }
 
 

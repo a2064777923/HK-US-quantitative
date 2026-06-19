@@ -526,6 +526,16 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "WARN")
         self.assertEqual(payload["counts"]["current_status_counts"], {})
         self.assertEqual(payload["counts"]["historical_status_counts"]["FAIL"], 1)
+        self.assertEqual(
+            payload["recommendations"],
+            ["no_current_packet_position_judgments_observed"],
+        )
+        self.assertIn(
+            "retain_packet_archive_for_position_judgment_audit",
+            payload["historical_recommendations"],
+        )
+        self.assertEqual(payload["counts"]["current_reason_counts"], {})
+        self.assertEqual(payload["counts"]["historical_reason_counts"]["judgment_expired"], 1)
 
     def test_duplicate_review_judgments_are_flagged(self):
         items = [judgment(), judgment(decision="hold")]

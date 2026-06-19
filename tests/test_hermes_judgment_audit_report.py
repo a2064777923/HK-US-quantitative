@@ -1814,6 +1814,16 @@ class HermesJudgmentAuditReportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "WARN")
         self.assertEqual(payload["counts"]["current_status_counts"], {})
         self.assertEqual(payload["counts"]["historical_status_counts"]["FAIL"], 1)
+        self.assertEqual(
+            payload["recommendations"],
+            ["no_current_packet_trade_judgments_observed"],
+        )
+        self.assertIn(
+            "fix_or_reject_judgments:orphan_judgment_not_in_latest_packet",
+            payload["historical_recommendations"],
+        )
+        self.assertEqual(payload["counts"]["current_reason_counts"], {})
+        self.assertEqual(payload["counts"]["historical_reason_counts"]["judgment_expired"], 1)
 
     def test_missing_packet_id_is_flagged(self):
         item = judgment("sig-1")

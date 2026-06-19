@@ -1528,6 +1528,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
 
     reason_counts = Counter()
     current_reason_counts = Counter()
+    historical_reason_counts = Counter()
     decision_counts = Counter()
     status_counts = Counter()
     current_status_counts = Counter()
@@ -1543,6 +1544,8 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
             current_reason_counts[reason] += 1
     for row in historical_rows:
         historical_status_counts[row["status"]] += 1
+        for reason in row["reasons"]:
+            historical_reason_counts[reason] += 1
 
     duplicates = duplicate_signal_counts_from_rows(current_rows)
     for sid, count in duplicates.items():
@@ -1552,6 +1555,22 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
     status = "FAIL" if current_status_counts.get("FAIL") or duplicates else "OK"
     if status == "OK" and (historical_status_counts.get("FAIL") or historical_duplicates):
         status = "WARN"
+    recommendations = build_recommendations(
+        current_rows,
+        current_reason_counts,
+        empty_recommendation=(
+            "no_current_packet_trade_judgments_observed" if rows else "no_hermes_judgments_observed_yet"
+        ),
+    )
+    historical_recommendations = (
+        build_recommendations(
+            historical_rows,
+            historical_reason_counts,
+            empty_recommendation="no_historical_trade_judgments_observed",
+        )
+        if historical_rows
+        else []
+    )
 
     payload = {
         "schema": "hermes_judgment_audit_report_v1",
@@ -1574,6 +1593,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
             "decision_counts": dict(decision_counts),
             "reason_counts": dict(reason_counts),
             "current_reason_counts": dict(current_reason_counts),
+            "historical_reason_counts": dict(historical_reason_counts),
             "duplicate_signal_ids": duplicates,
             "historical_duplicate_signal_ids": historical_duplicates,
             "packet_source_counts": dict(packet_source_counts),
@@ -1581,14 +1601,15 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
             "historical_packet_scope_count": len(historical_rows),
         },
         "judgments": rows[-100:],
-        "recommendations": build_recommendations(rows, reason_counts),
+        "recommendations": recommendations,
+        "historical_recommendations": historical_recommendations,
     }
     return payload
 
 
-def build_recommendations(rows, reason_counts):
+def build_recommendations(rows, reason_counts, empty_recommendation="no_hermes_judgments_observed_yet"):
     if not rows:
-        return ["no_hermes_judgments_observed_yet"]
+        return [empty_recommendation]
     recs = []
     critical = [
         "approval_for_ineligible_review_item",
