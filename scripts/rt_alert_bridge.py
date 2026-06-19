@@ -527,6 +527,7 @@ def build_hermes_context_lines(alert, packet, items_by_signal):
 def position_review_items(packet):
     if not INCLUDE_POSITION_REVIEW:
         return []
+    worklist_by_id = position_judgment_worklist_by_review_id(packet)
     review = packet.get("position_review") if isinstance(packet, dict) else {}
     if not isinstance(review, dict):
         return []
@@ -546,9 +547,29 @@ def position_review_items(packet):
         urgency = str(item.get("urgency") or "").lower()
         if POSITION_REVIEW_URGENCY and urgency not in POSITION_REVIEW_URGENCY:
             continue
-        rows.append(item)
+        work_item = worklist_by_id.get(str(review_id))
+        if work_item:
+            merged = dict(item)
+            merged["position_judgment_work_item"] = work_item
+            rows.append(merged)
+        else:
+            rows.append(item)
     rows.sort(key=lambda row: {"high": 0, "medium": 1, "low": 2}.get(str(row.get("urgency") or "").lower(), 9))
     return rows[: max(POSITION_REVIEW_LIMIT, 0)]
+
+
+def position_judgment_worklist_by_review_id(packet):
+    worklist = packet.get("position_judgment_worklist") if isinstance(packet, dict) else {}
+    if not isinstance(worklist, dict):
+        return {}
+    rows = {}
+    for item in worklist.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        review_id = str(item.get("review_id") or "").strip()
+        if review_id:
+            rows[review_id] = item
+    return rows
 
 
 def pending_position_reviews(packet, sent_rows, now_epoch=None):
@@ -638,6 +659,39 @@ def compact_intraday_contract(contract):
     return " ".join(parts)
 
 
+def compact_worklist_summary(work_item):
+    if not isinstance(work_item, dict) or not work_item:
+        return []
+    required = work_item.get("required_output_fields") if isinstance(work_item.get("required_output_fields"), dict) else {}
+    context_summary = work_item.get("context_summary") if isinstance(work_item.get("context_summary"), dict) else {}
+    dynamic = context_summary.get("dynamic_management") if isinstance(context_summary.get("dynamic_management"), dict) else {}
+    attention = work_item.get("required_attention_codes") if isinstance(work_item.get("required_attention_codes"), list) else []
+    lines = [
+        "├─ Hermes優先入口：position_judgment_worklist.items[]（短上下文+必填欄位；仍需審核後填寫）",
+    ]
+    if required:
+        lines.append(
+            "├─ Worklist輸出：schema={schema} advisory_only={advisory} submits_orders={orders}".format(
+                schema=required.get("schema", "?"),
+                advisory=required.get("advisory_only", "?"),
+                orders=required.get("submits_orders", "?"),
+            )
+        )
+    if dynamic:
+        lines.append(
+            "├─ Worklist動態：status={status} pnl={pnl} day={day} dist_stop={dist_stop} px_age={age}".format(
+                status=dynamic.get("target_status", "?"),
+                pnl=fmt_pct(dynamic.get("unrealized_pnl_pct")),
+                day=fmt_pct(dynamic.get("latest_daily_change_pct")),
+                dist_stop=fmt_pct(dynamic.get("distance_above_signal_stop_loss_pct")),
+                age=fmt_hours(dynamic.get("price_snapshot_age_hours")),
+            )
+        )
+    if attention:
+        lines.append(f"├─ Worklist必回應：{','.join(str(code) for code in attention[:6])}")
+    return lines
+
+
 def build_position_review_output(items, packet):
     audit = packet.get("position_judgment_audit") if isinstance(packet.get("position_judgment_audit"), dict) else {}
     coverage = audit.get("coverage") if isinstance(audit.get("coverage"), dict) else {}
@@ -659,6 +713,7 @@ def build_position_review_output(items, packet):
         advisory_plan = item.get("advisory_plan") if isinstance(item.get("advisory_plan"), dict) else {}
         digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
         attention = digest.get("position_attention") if isinstance(digest.get("position_attention"), list) else []
+        work_item = item.get("position_judgment_work_item") if isinstance(item.get("position_judgment_work_item"), dict) else {}
         lines.append("")
         lines.append(
             f"⚠️ **{item.get('symbol','?')}** {item.get('role','?')} "
@@ -715,6 +770,7 @@ def build_position_review_output(items, packet):
                 lines.append(f"├─ 盤中審核：{intraday_contract}")
         if attention:
             lines.append(f"├─ 必須回應風險：{','.join(str(code) for code in attention[:6])}")
+        lines.extend(compact_worklist_summary(work_item))
         lines.append(
             "├─ 審核ID：review_id={review_id} judgment_file=/tmp/hermes_position_judgments.jsonl".format(
                 review_id=item.get("review_id")

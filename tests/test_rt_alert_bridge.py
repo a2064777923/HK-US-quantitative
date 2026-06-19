@@ -96,6 +96,40 @@ class RtAlertBridgeTests(unittest.TestCase):
                     "unjudged_high_urgency_examples": [{"review_id": "user:3:AAPL:2026-06-12:risk_review"}],
                 }
             },
+            "position_judgment_worklist": {
+                "schema": "hermes_position_judgment_worklist_v1",
+                "advisory_only": True,
+                "submits_orders": False,
+                "items": [
+                    {
+                        "review_id": "user:3:AAPL:2026-06-12:risk_review",
+                        "review_thread_key": "user:3:AAPL",
+                        "portfolio_id": 3,
+                        "role": "user",
+                        "symbol": "AAPL",
+                        "urgency": "high",
+                        "recommended_action": "risk_review",
+                        "context_summary": {
+                            "dynamic_management": {
+                                "target_status": "below_signal_stop",
+                                "unrealized_pnl_pct": -9.5,
+                                "latest_daily_change_pct": -3.2,
+                                "distance_above_signal_stop_loss_pct": -1.2,
+                                "price_snapshot_age_hours": 36.0,
+                            }
+                        },
+                        "required_attention_codes": [
+                            "high_urgency_position_requires_contextual_rationale",
+                            "position_market_sentiment_risk_requires_discussion",
+                        ],
+                        "required_output_fields": {
+                            "schema": "hermes_position_judgment_v1",
+                            "advisory_only": True,
+                            "submits_orders": False,
+                        },
+                    }
+                ],
+            },
             "position_review": {
                 "schema": "portfolio_position_review_v1",
                 "items": [
@@ -507,6 +541,9 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("候選動作：reduce qty=5 ref=180; exit qty=10 ref=178", text)
             self.assertIn("盤中審核：tf=session,5m,15m,60m", text)
             self.assertIn("use=can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation", text)
+            self.assertIn("Hermes優先入口：position_judgment_worklist.items[]", text)
+            self.assertIn("Worklist輸出：schema=hermes_position_judgment_v1 advisory_only=True submits_orders=False", text)
+            self.assertIn("Worklist必回應：high_urgency_position_requires_contextual_rationale", text)
             self.assertIn("order_submission=false", text)
 
     def test_position_review_uses_stable_thread_key_for_action_churn(self):
