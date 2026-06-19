@@ -2361,9 +2361,6 @@ def position_context_digest_for_item(
 
 
 def position_judgment_allowed_decisions(item):
-    role = str((item or {}).get("role") or "").strip().lower()
-    if role == "user":
-        return ["hold", "watch"]
     return ["hold", "watch", "reduce", "exit", "trail_stop"]
 
 
@@ -2395,14 +2392,13 @@ def position_judgment_template_for_item(item, packet_id, judgment_file):
     item = item if isinstance(item, dict) else {}
     attention_codes = position_attention_codes_from_item(item)
     allowed_decisions = position_judgment_allowed_decisions(item)
-    role = str(item.get("role") or "").strip().lower()
     instructions = [
         "Draft only: Hermes must review the position_review item and replace every placeholder before appending.",
         "Append only one completed JSON object per review_id to the judgment file.",
         "Set advisory_only=true and submits_orders=false; this path must not submit orders or change portfolios.",
     ]
-    if role == "user":
-        instructions.append("For user role, machine-readable decision must stay hold/watch; put manual reduce/exit advice in risk_notes.")
+    if str(item.get("role") or "").strip().lower() == "user":
+        instructions.append("For user role reduce/exit/trail_stop advice, set manual_only=true and treat it as operator advice only.")
     if attention_codes:
         instructions.append("Copy every required_position_attention_code into position_attention_codes and explain one effect per code.")
     return {
@@ -2428,6 +2424,7 @@ def position_judgment_template_for_item(item, packet_id, judgment_file):
             "reviewer": "hermes",
             "advisory_only": True,
             "submits_orders": False,
+            "manual_only": "<required true when role=user and decision=reduce|exit|trail_stop>",
             "max_exit_quantity": "<optional positive number only when decision=reduce|exit>",
             "supporting_factors": ["<facts supporting the advisory decision>"],
             "opposing_factors": ["<facts against the advisory decision>"],
@@ -2851,6 +2848,7 @@ def position_judgment_contract(judgment_file):
             "reviewer": "hermes",
             "advisory_only": True,
             "submits_orders": False,
+            "manual_only": "required true when role=user and decision=reduce|exit|trail_stop",
             "max_exit_quantity": "optional advisory cap only when decision=reduce|exit",
             "supporting_factors": ["facts supporting the decision"],
             "opposing_factors": ["facts against the decision"],
@@ -2882,7 +2880,7 @@ def position_judgment_contract(judgment_file):
             "Copy packet_id and review_id exactly so audits can resolve the packet and position_review item reviewed; also copy review_thread_key and reviewed_recommended_action so fresh same-position reviews can survive packet refresh without covering escalated actions.",
             "Review position_review.items[].context_digest before writing hold, watch, reduce, exit, or trail_stop advice; negative external context, risk-off sentiment, partial fundamentals, stale intraday data, or source-reliability limits must be reflected in supporting_factors, opposing_factors, risk_notes, or follow_up.",
             "When position_review.items[].context_digest.position_attention is non-empty, set position_attention_acknowledged=true, copy all attention codes into position_attention_codes, explain the overall effect in position_attention_notes, and include one position_attention_effects[] object per reviewed code with code, effect, and decision_impact.",
-            "For user role, keep machine-readable decisions to hold or watch; put manual reduce/exit advice only in risk_notes.",
+            "For user role, reduce/exit/trail_stop decisions are manual-only advice: set manual_only=true, keep advisory_only=true and submits_orders=false, and do not send them to order intake.",
             "For simulation role, reduce/exit/trail_stop remains advisory and still requires a separate gated execution path.",
             "Do not call the simulation API from this judgment path.",
         ],

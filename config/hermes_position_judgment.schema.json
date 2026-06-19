@@ -97,6 +97,10 @@
       "type": "boolean",
       "description": "Must be false; position judgments are advisory review artifacts only."
     },
+    "manual_only": {
+      "type": "boolean",
+      "description": "Required true when role=user and decision is reduce, exit, or trail_stop; user-position action advice is for manual operator review only."
+    },
     "max_exit_quantity": {
       "type": "number",
       "minimum": 0,

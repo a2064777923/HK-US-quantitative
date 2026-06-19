@@ -1730,6 +1730,10 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(payload["position_judgment_contract"]["judgment_file"], "/tmp/position_judgments.jsonl")
         self.assertFalse(payload["position_judgment_contract"]["append_jsonl_object"]["submits_orders"])
         self.assertIn(
+            "manual_only",
+            payload["position_judgment_contract"]["append_jsonl_object"],
+        )
+        self.assertIn(
             "review_thread_key",
             payload["position_judgment_contract"]["append_jsonl_object"],
         )
@@ -1756,6 +1760,12 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertTrue(
             any(
                 "context_digest.position_attention" in rule and "position_attention_effects" in rule
+                for rule in payload["position_judgment_contract"]["hard_rules"]
+            )
+        )
+        self.assertTrue(
+            any(
+                "manual_only=true" in rule and "user role" in rule
                 for rule in payload["position_judgment_contract"]["hard_rules"]
             )
         )
@@ -3958,7 +3968,7 @@ class HermesReviewPacketTests(unittest.TestCase):
             any("position_judgment_template is a draft helper" in note for note in payload["operator_notes"])
         )
 
-    def test_user_position_judgment_template_limits_machine_decisions_to_hold_watch(self):
+    def test_user_position_judgment_template_allows_manual_only_action_advice(self):
         item = {
             "review_id": "user:1:AAPL:2026-06-12:risk_review",
             "portfolio_id": 1,
@@ -3977,11 +3987,12 @@ class HermesReviewPacketTests(unittest.TestCase):
         )
         draft = template["draft_jsonl_object"]
 
-        self.assertEqual(template["allowed_decisions"], ["hold", "watch"])
+        self.assertEqual(template["allowed_decisions"], ["hold", "watch", "reduce", "exit", "trail_stop"])
         self.assertEqual(draft["packet_id"], "packet-user-test")
         self.assertEqual(draft["role"], "user")
-        self.assertIn("hold|watch", draft["decision"])
-        self.assertIn("manual reduce/exit advice", " ".join(template["instructions"]))
+        self.assertIn("hold|watch|reduce|exit|trail_stop", draft["decision"])
+        self.assertIn("manual_only", draft)
+        self.assertIn("manual_only=true", " ".join(template["instructions"]))
         self.assertEqual(
             draft["position_attention_codes"],
             ["high_urgency_position_requires_contextual_rationale"],

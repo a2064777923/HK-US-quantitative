@@ -261,6 +261,18 @@ def validate_judgment_contract(judgment):
     return reasons
 
 
+def user_action_advice_acknowledgement_reasons(judgment, item):
+    if (item or {}).get("role") != "user":
+        return []
+    decision = str(judgment.get("decision", "")).strip().lower()
+    if decision not in ("reduce", "exit", "trail_stop"):
+        return []
+    reasons = []
+    if judgment.get("manual_only") is not True:
+        reasons.append("user_action_advice_requires_manual_only_acknowledgement")
+    return reasons
+
+
 def select_review_item_for_judgment(
     judgment,
     packet_review_by_id,
@@ -423,8 +435,7 @@ def audit_judgment(
             reasons.append("review_item_execution_policy_not_review_only")
         reasons.extend(context_review_reasons(judgment, item))
         reasons.extend(position_attention_acknowledgement_reasons(judgment, item))
-        if item.get("role") == "user" and decision in ("reduce", "exit", "trail_stop"):
-            reasons.append("user_position_decision_must_remain_advice_only")
+        reasons.extend(user_action_advice_acknowledgement_reasons(judgment, item))
         if item.get("urgency") == "high" and decision in ("hold", "watch"):
             if len(judgment.get("opposing_factors") or []) < 2 or len(judgment.get("risk_notes") or []) < 2:
                 reasons.append("high_urgency_hold_or_watch_requires_strong_rationale")
@@ -511,6 +522,8 @@ def build_recommendations(rows, reason_counts, empty_recommendation="no_position
         "position_attention_effect_decision_impact_missing"
     ):
         recs.append("position_attention_requires_structured_acknowledgement")
+    if reason_counts.get("user_action_advice_requires_manual_only_acknowledgement"):
+        recs.append("user_position_action_advice_requires_manual_only_acknowledgement")
     if reason_counts.get("judgment_expired"):
         recs.append("refresh_expired_position_judgments")
     if reason_counts.get("duplicate_position_judgments_for_review"):

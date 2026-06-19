@@ -413,7 +413,7 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
         self.assertIn("advisory_only_must_be_true", row["reasons"])
         self.assertIn("submits_orders_must_be_false", row["reasons"])
 
-    def test_user_action_decision_is_flagged_as_advice_only_violation(self):
+    def test_user_action_decision_requires_manual_only_acknowledgement(self):
         review_id = "user:7:AAPL:2026-06-12:risk_review"
         packet_payload = packet(
             [
@@ -437,7 +437,47 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
         row = payload["judgments"][0]
 
         self.assertEqual(row["status"], "FAIL")
-        self.assertIn("user_position_decision_must_remain_advice_only", row["reasons"])
+        self.assertIn("user_action_advice_requires_manual_only_acknowledgement", row["reasons"])
+        self.assertIn(
+            "user_position_action_advice_requires_manual_only_acknowledgement",
+            payload["recommendations"],
+        )
+
+    def test_user_action_decision_with_manual_only_acknowledgement_passes(self):
+        review_id = "user:7:AAPL:2026-06-12:risk_review"
+        packet_payload = packet(
+            [
+                position_item(
+                    review_id,
+                    portfolio_id=7,
+                    role="user",
+                    symbol="AAPL",
+                    urgency="high",
+                    recommended_action="reduce_or_exit_review",
+                    execution_policy={
+                        "advice_only": True,
+                        "review_only": True,
+                        "submits_orders": False,
+                        "requires_separate_order_path": True,
+                    },
+                )
+            ]
+        )
+        item = judgment(
+            review_id,
+            decision="reduce",
+            portfolio_id=7,
+            role="user",
+            symbol="AAPL",
+            manual_only=True,
+            max_exit_quantity=3,
+        )
+
+        payload = audit.build_report([item], packet_payload)
+        row = payload["judgments"][0]
+
+        self.assertEqual(row["status"], "PASS")
+        self.assertNotIn("user_action_advice_requires_manual_only_acknowledgement", row["reasons"])
 
     def test_high_urgency_hold_watch_requires_stronger_rationale(self):
         review_id = "simulation:8:00929:2026-06-12:reduce_or_exit_review"

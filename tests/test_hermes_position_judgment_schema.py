@@ -39,6 +39,13 @@ class HermesPositionJudgmentSchemaTests(unittest.TestCase):
         effect_schema = properties["position_attention_effects"]["items"]
         self.assertEqual(effect_schema["required"], ["code", "effect", "decision_impact"])
 
+    def test_manual_only_field_is_in_schema(self):
+        schema = self.load_schema()
+        properties = schema["properties"]
+
+        self.assertEqual(properties["manual_only"]["type"], "boolean")
+        self.assertIn("role=user", properties["manual_only"]["description"])
+
 
 if __name__ == "__main__":
     unittest.main()
