@@ -781,6 +781,20 @@ def normalize_strategy_config(config):
             override["enabled"] = as_bool(override.get("enabled"), True)
         if "summary_only" in override:
             override["summary_only"] = as_bool(override.get("summary_only"), False)
+        if "summary_only_when" in override:
+            raw_values = override.get("summary_only_when")
+            if not isinstance(raw_values, list):
+                raw_values = [raw_values]
+            normalized = []
+            for value in raw_values:
+                text = str(value or "").strip().lower()
+                if text == "downgraded_directional" and text not in normalized:
+                    normalized.append(text)
+            if normalized:
+                override["summary_only_when"] = normalized
+            else:
+                warnings.append(f"invalid_trigger_summary_only_when:{key}")
+                override.pop("summary_only_when", None)
         if "cooldown_seconds" in override:
             override["cooldown_seconds"] = as_int(override.get("cooldown_seconds"))
             if override["cooldown_seconds"] is None or override["cooldown_seconds"] <= 0:
@@ -2225,6 +2239,48 @@ class TriggerEngine:
         override = self.trigger_override(signal_type, trigger_name)
         return override.get("summary_only") is True
 
+    def trigger_summary_only_when(self, signal_type, trigger_name):
+        override = self.trigger_override(signal_type, trigger_name)
+        values = override.get("summary_only_when")
+        return set(values) if isinstance(values, list) else set()
+
+    def downgraded_directional_summary_only(self, signal_type, trigger_name, emitted_signal_type):
+        return (
+            signal_type in ("BUY", "SELL")
+            and emitted_signal_type == "WATCH"
+            and "downgraded_directional" in self.trigger_summary_only_when(signal_type, trigger_name)
+        )
+
+    def append_suppressed_watch_summary(
+        self,
+        symbol,
+        quote,
+        trigger_name,
+        detail,
+        candidate_signal_type,
+        emitted_signal_type,
+        suppressed_reason,
+        suppressed_directional_reason=None,
+        execution_blocked_reasons=None,
+    ):
+        self.suppressed_watch_summaries.append(
+            {
+                "schema": "rt_signal_suppressed_watch_summary_v1",
+                "symbol": symbol,
+                "market": quote.get("market", ""),
+                "trigger": trigger_name,
+                "detail": detail,
+                "candidate_signal_type": candidate_signal_type,
+                "emitted_signal_type": emitted_signal_type,
+                "suppressed_reason": suppressed_reason,
+                "suppressed_directional_reason": suppressed_directional_reason,
+                "execution_blocked_reasons": list(execution_blocked_reasons or []),
+                "price": quote.get("price"),
+                "change_pct": quote.get("change_pct", 0),
+                "quote_time": quote.get("time", ""),
+            }
+        )
+
     def trigger_cooldown_seconds(self, signal_type, trigger_name):
         override = self.trigger_override(signal_type, trigger_name)
         cooldown = as_int(override.get("cooldown_seconds"), self.strategy_config.get("signal_cooldown_seconds"))
@@ -2505,19 +2561,14 @@ class TriggerEngine:
             if not self.trigger_enabled(signal_type, trigger_name) and not trigger_disabled_observation:
                 continue
             if signal_type == "WATCH" and self.trigger_summary_only(signal_type, trigger_name):
-                self.suppressed_watch_summaries.append(
-                    {
-                        "schema": "rt_signal_suppressed_watch_summary_v1",
-                        "symbol": symbol,
-                        "market": quote.get("market", ""),
-                        "trigger": trigger_name,
-                        "detail": detail,
-                        "candidate_signal_type": signal_type,
-                        "suppressed_reason": "summary_only_watch_trigger",
-                        "price": c,
-                        "change_pct": quote.get("change_pct", 0),
-                        "quote_time": quote.get("time", ""),
-                    }
+                self.append_suppressed_watch_summary(
+                    symbol,
+                    quote,
+                    trigger_name,
+                    detail,
+                    signal_type,
+                    "WATCH",
+                    "summary_only_watch_trigger",
                 )
                 continue
             cooldown_seconds = self.trigger_cooldown_seconds(signal_type, trigger_name)
@@ -2811,6 +2862,20 @@ class TriggerEngine:
                 stop_loss = None
                 take_profit = None
                 rr_ratio = None
+
+            if self.downgraded_directional_summary_only(signal_type, trigger_name, emitted_signal_type):
+                self.append_suppressed_watch_summary(
+                    symbol,
+                    quote,
+                    trigger_name,
+                    detail,
+                    signal_type,
+                    emitted_signal_type,
+                    "summary_only_downgraded_directional",
+                    suppressed_directional_reason=suppressed_directional_reason,
+                    execution_blocked_reasons=execution_blocked_reasons,
+                )
+                continue
 
             session_key = self.alert_session_key(symbol, emitted_signal_type, trigger_name, signal_date)
             if session_key in self.emitted_session_keys:

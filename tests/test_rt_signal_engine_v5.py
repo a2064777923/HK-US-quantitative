@@ -2181,6 +2181,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
                 "trigger_overrides": {
                     "BUY:RSI超賣": {"enabled": "false", "cooldown_seconds": -5},
                     "WATCH:成交量異動": {"summary_only": "true"},
+                    "SELL:RSI超買": {"summary_only_when": ["downgraded_directional", "", "unknown"]},
                 }
             }
         )
@@ -2189,6 +2190,10 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertIs(override["enabled"], False)
         self.assertNotIn("cooldown_seconds", override)
         self.assertIs(config["trigger_overrides"]["WATCH:成交量異動"]["summary_only"], True)
+        self.assertEqual(
+            config["trigger_overrides"]["SELL:RSI超買"]["summary_only_when"],
+            ["downgraded_directional"],
+        )
         self.assertIn("invalid_trigger_cooldown_seconds:BUY:RSI超賣", warnings)
 
     def test_strategy_config_can_disable_trigger(self):
@@ -2243,6 +2248,84 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(engine.suppressed_watch_summaries[0]["trigger"], "成交量異動")
         self.assertEqual(engine.suppressed_watch_summaries[0]["suppressed_reason"], "summary_only_watch_trigger")
 
+    def test_downgraded_directional_summary_only_suppresses_alert_but_records_summary(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "trigger_overrides": {
+                    "SELL:RSI超買": {"summary_only_when": ["downgraded_directional"]},
+                }
+            }
+        )
+        indicators = FakeIndicators(score=-0.3)
+        indicators.rsi_14 = 80
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        self.assertEqual(engine.alerts, [])
+        self.assertEqual(len(engine.suppressed_watch_summaries), 1)
+        summary = engine.suppressed_watch_summaries[0]
+        self.assertEqual(summary["trigger"], "RSI超買")
+        self.assertEqual(summary["candidate_signal_type"], "SELL")
+        self.assertEqual(summary["emitted_signal_type"], "WATCH")
+        self.assertEqual(summary["suppressed_reason"], "summary_only_downgraded_directional")
+        self.assertEqual(summary["suppressed_directional_reason"], "unconfirmed_directional")
+        self.assertIn("not_confirmed", summary["execution_blocked_reasons"])
+
+    def test_downgraded_directional_summary_only_keeps_confirmed_execution_candidate(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "trigger_overrides": {
+                    "SELL:RSI超買": {"summary_only_when": ["downgraded_directional"]},
+                }
+            }
+        )
+        indicators = FakeIndicators(
+            avg_volume=100_000,
+            score=-0.9,
+            reasons=["短均線偏弱", "RSI偏高(80)", "MACD死叉+負值"],
+            factor_contributions=[
+                {"category": "trend", "direction": "SELL", "score_delta": -0.4, "reason": "短均線偏弱"},
+                {"category": "rsi", "direction": "SELL", "score_delta": -0.3, "reason": "RSI偏高(80)"},
+                {"category": "macd", "direction": "SELL", "score_delta": -0.3, "reason": "MACD死叉+負值"},
+            ],
+        )
+        indicators.rsi_14 = 80
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+        indicators.atr_14 = 2
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超買"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertEqual(alert["signal_type"], "SELL")
+        self.assertTrue(alert["execution_candidate"])
+        self.assertEqual(engine.suppressed_watch_summaries, [])
+
     def test_disabled_pending_rework_trigger_emits_diagnostic_watch(self):
         engine = rt.TriggerEngine(
             strategy_config={
@@ -2290,7 +2373,7 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         config = self.repo_strategy_config()
         normalized, warnings = rt.normalize_strategy_config(config)
         self.assertEqual(warnings, [])
-        self.assertEqual(normalized["version"], "v5.5-buy-realtime-alignment-20260618")
+        self.assertEqual(normalized["version"], "v5.6-diagnostic-summary-only-20260619")
 
         expected_modes = {
             "BUY:布林下軌突破": "disabled_pending_rework",
@@ -2310,6 +2393,8 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertFalse(overrides["BUY:站上MA5"]["enabled"])
         self.assertEqual(overrides["BUY:布林上軌動量突破"]["min_full_score"], 0.75)
         self.assertEqual(overrides["BUY:急漲"]["min_full_score"], 0.75)
+        self.assertEqual(overrides["SELL:RSI超買"]["summary_only_when"], ["downgraded_directional"])
+        self.assertEqual(overrides["SELL:布林上軌突破"]["summary_only_when"], ["downgraded_directional"])
         self.assertTrue(normalized["market_breadth_model"]["enabled"])
         self.assertTrue(normalized["market_breadth_model"]["block_new_buy_in_risk_off"])
         self.assertEqual(normalized["realtime_alignment"]["block_buy_when_change_pct_below"], 0.0)

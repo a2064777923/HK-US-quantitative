@@ -1,7 +1,7 @@
 {
   "schema": "rt_signal_strategy_config_v1",
-  "version": "v5.5-buy-realtime-alignment-20260618",
-  "description": "Realtime v5.5 quality-ranked same-scan candidates with BUY realtime direction alignment. Noisy or underperforming BUY triggers remain diagnostic, new BUY execution candidates are suppressed to WATCH when same-market realtime breadth is risk-off or the symbol's same-session change_pct is below the configured BUY alignment floor, and when one symbol emits multiple executable candidates in one scan the highest-priority/factor/RR candidate is kept while lower-ranked same-direction rows become diagnostics; Hermes, readiness, liquidity, RR, and intake gates remain unchanged.",
+  "version": "v5.6-diagnostic-summary-only-20260619",
+  "description": "Realtime v5.6 quality-ranked same-scan candidates with BUY realtime direction alignment and downgraded SELL diagnostic summary-only routing. Noisy or underperforming BUY triggers remain diagnostic, downgraded RSI-overbought and upper-band SELL diagnostics move to watch summary instead of the operator alert queue, new BUY execution candidates are suppressed to WATCH when same-market realtime breadth is risk-off or the symbol's same-session change_pct is below the configured BUY alignment floor, and when one symbol emits multiple executable candidates in one scan the highest-priority/factor/RR candidate is kept while lower-ranked same-direction rows become diagnostics; Hermes, readiness, liquidity, RR, and intake gates remain unchanged.",
   "signal_cooldown_seconds": 1800,
   "volume_anomaly_ratio": 3.0,
   "confirmation_thresholds": {
@@ -110,6 +110,26 @@
       "cooldown_seconds": 7200,
       "strategy_review_reasons": [
         "validation_pass_rate_below_50"
+      ]
+    },
+    "SELL:RSI超買": {
+      "enabled": true,
+      "summary_only_when": [
+        "downgraded_directional"
+      ],
+      "strategy_review_reasons": [
+        "single_factor_overbought_diagnostic_dominated_replay_noise",
+        "retain_confirmed_multifactor_sell_execution_candidates"
+      ]
+    },
+    "SELL:布林上軌突破": {
+      "enabled": true,
+      "summary_only_when": [
+        "downgraded_directional"
+      ],
+      "strategy_review_reasons": [
+        "upper_band_touch_without_multifactor_confirmation_is_diagnostic_noise",
+        "retain_confirmed_multifactor_sell_execution_candidates"
       ]
     }
   }

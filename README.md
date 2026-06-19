@@ -7,11 +7,11 @@ This repository is not configured for automatic real-money trading. Real broker 
 ## Current Status
 
 - `scripts/rt_signal_engine_v5.py` is the intended realtime signal source.
-- Current strategy config is `v5.5-buy-realtime-alignment-20260618`.
+- Current strategy config is `v5.6-diagnostic-summary-only-20260619`.
 - v5 scans HK/US watchlists, polls realtime quotes, and writes alerts to `/tmp/rt_signal_alerts.jsonl`.
 - v5 overlays open user holdings from DB `positions` (`portfolio_id` from `QM_USER_PORTFOLIO_IDS`, default `3`, `status='holding'`, positive quantity) onto the realtime scan list, so held symbols remain under live market monitoring even when they are not in the static watchlist.
 - Signal scoring uses completed daily OHLCV history plus one realtime quote bar.
-- v5.5 keeps the guarded momentum breakout model, downgrades noisy or underperforming BUY triggers to diagnostic `WATCH` unless later evidence supports re-enabling, ranks same-symbol same-scan executable candidates by quality, and blocks BUY execution candidates when the symbol's same-session `change_pct` is below the configured realtime-alignment floor.
+- v5.6 keeps the guarded momentum breakout model, downgrades noisy or underperforming BUY triggers to diagnostic `WATCH` unless later evidence supports re-enabling, moves configured downgraded SELL diagnostics to summary-only, ranks same-symbol same-scan executable candidates by quality, and blocks BUY execution candidates when the symbol's same-session `change_pct` is below the configured realtime-alignment floor.
 - Minute/hour data is read-only context for Hermes and quality reports; it is not the core v5 scoring authority.
 - `scripts/rt_alert_bridge.py` defaults to notify-only mode.
 - The alert bridge is fail-closed: a BUY/SELL raw trigger is not sent as an operator trade candidate unless v5 marks `execution_candidate=true`, Hermes review marks the matching item `eligible_for_approval=true`, and execution readiness is `READY` with `ready_for_execute=true`.
@@ -96,18 +96,19 @@ Executable alerts must be confirmed directional BUY/SELL candidates with valid e
 
 v5 treats same-day repeated states as one event. For the same market `signal_date`, symbol, emitted side, and trigger, the engine writes one alert and persists a session key in `/tmp/rt_signal_state.json`; cooldown remains a short-term guard, not permission to re-send the same stale condition every 30 minutes. On startup, v5 also backfills these session keys from recent `/tmp/rt_signal_alerts.jsonl` rows, so a service restart or deploy does not re-announce already observed same-day conditions. A later alert is allowed on the next market signal date, or when the emitted side changes, for example a diagnostic `WATCH` later becoming a confirmed `BUY`.
 
-Pure diagnostic WATCH triggers can be moved to summary-only mode through `trigger_overrides`, for example `WATCH:成交量異動.summary_only=true`. In that mode v5 does not append those rows to `/tmp/rt_signal_alerts.jsonl`; it writes `/tmp/rt_signal_watch_summary.json` so alert-quality and research reports still see the suppressed observation count without polluting operator trade-candidate review.
+Pure diagnostic WATCH triggers can be moved to summary-only mode through `trigger_overrides`, for example `WATCH:成交量異動.summary_only=true`. Directional triggers can also use `summary_only_when=["downgraded_directional"]`, which suppresses only rows that safety gates already downgraded to `WATCH`; confirmed execution candidates still enter `/tmp/rt_signal_alerts.jsonl`. In summary-only mode v5 writes `/tmp/rt_signal_watch_summary.json` so alert-quality and research reports still see the suppressed observation count without polluting operator trade-candidate review.
 
 The realtime scan universe is the configured watchlist plus a DB user-holdings overlay. The overlay is enabled by default in the live runtime through `RT_SIGNAL_INCLUDE_USER_HOLDINGS` semantics and refreshes every `RT_SIGNAL_USER_HOLDINGS_REFRESH_SECONDS` seconds, default `300`. It only changes which symbols are watched by v5; it does not mutate positions, change strategy thresholds, enable execution, or make user holdings tradable without Hermes/readiness/intake gates.
 
-v5.5 does not globally loosen execution gates. A `急漲` row may carry `candidate_signal_type=BUY`, but it remains `WATCH` unless full-score confirmation, factor confluence, risk geometry, liquidity, realtime direction alignment, and execution-candidate checks pass. `布林上軌動量突破` replaces the old unconditional upper-band SELL interpretation only when same-session or recent momentum supports a breakout context; weak or overbought upper-band touches still remain SELL/WATCH diagnostics.
-When a single symbol emits multiple executable BUY or SELL candidates in the same scan, v5.5 keeps the higher-quality candidate and marks lower-ranked same-direction rows as `same_scan_directional_duplicate` diagnostics. Candidates already blocked by the same-session or cooldown dedup state are skipped instead of being re-emitted as WATCH rows.
+v5.6 does not globally loosen execution gates. A `急漲` row may carry `candidate_signal_type=BUY`, but it remains `WATCH` unless full-score confirmation, factor confluence, risk geometry, liquidity, realtime direction alignment, and execution-candidate checks pass. `布林上軌動量突破` replaces the old unconditional upper-band SELL interpretation only when same-session or recent momentum supports a breakout context; weak or overbought upper-band touches still remain SELL/WATCH diagnostics.
+When a single symbol emits multiple executable BUY or SELL candidates in the same scan, v5.6 keeps the higher-quality candidate and marks lower-ranked same-direction rows as `same_scan_directional_duplicate` diagnostics. Candidates already blocked by the same-session or cooldown dedup state are skipped instead of being re-emitted as WATCH rows.
 
-The live v5.5 config uses `trigger_overrides` to reduce weak-market BUY noise:
+The live v5.6 config uses `trigger_overrides` to reduce weak-market BUY noise and downgraded SELL diagnostic noise:
 
 - `BUY:布林下軌突破`, `BUY:RSI超賣`, `BUY:MA金叉`, and `BUY:站上MA5` are `disabled_pending_rework`, so they remain diagnostic `WATCH` rows and cannot become execution candidates.
 - `BUY:布林上軌動量突破` is `shadow_only_pending_sample`, so strong breakout contexts are observed but not sent to execution review.
 - `BUY:急漲` is tightened with a higher score threshold and longer cooldown while evidence is retested.
+- Downgraded `SELL:RSI超買` and `SELL:布林上軌突破` diagnostics are summary-only; confirmed multi-factor SELL execution candidates are retained.
 - `realtime_alignment.block_buy_when_change_pct_below=0.0` downgrades BUY candidates to `WATCH` when same-session price change is negative, with `execution_blocked_reasons=["buy_realtime_direction_misaligned"]`.
 
 SELL and position-risk reviews are not globally disabled. In weak markets they may still appear frequently, but trade-signal delivery still requires Hermes item eligibility plus execution readiness `READY`.
