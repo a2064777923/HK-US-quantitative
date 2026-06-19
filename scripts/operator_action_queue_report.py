@@ -457,6 +457,18 @@ def position_actions(position_audit, packet):
                 item = items_by_thread.get(review_thread_key_for_item(example))
             advisory_plan = safe_dict(item.get("advisory_plan")) if isinstance(item, dict) else {}
             dynamic = safe_dict(advisory_plan.get("dynamic_management_context"))
+            decision_points = [
+                {
+                    "decision": point.get("decision"),
+                    "quantity_fraction": point.get("quantity_fraction"),
+                    "quantity_hint": point.get("quantity_hint"),
+                    "price_reference": point.get("price_reference"),
+                    "manual_only": point.get("manual_only"),
+                    "condition": point.get("condition"),
+                }
+                for point in safe_list(advisory_plan.get("operator_decision_points"))[:5]
+                if isinstance(point, dict)
+            ]
             template = safe_dict(item.get("position_judgment_template")) if isinstance(item, dict) else {}
             digest = safe_dict(item.get("context_digest")) if isinstance(item, dict) else {}
             write_plan.append(
@@ -480,6 +492,7 @@ def position_actions(position_audit, packet):
                         "distance_above_signal_stop_loss_pct": dynamic.get("distance_above_signal_stop_loss_pct"),
                         "review_focus": safe_list(dynamic.get("review_focus"))[:4],
                     },
+                    "operator_decision_points": decision_points,
                 }
             )
         review_workflow_command = (

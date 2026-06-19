@@ -1045,6 +1045,52 @@ def build_dynamic_position_management_context(position, action, current_price, a
     }
 
 
+def position_operator_decision_points(position, action, role, current_price, avg_cost, stop_loss, take_profit, reduce_fraction):
+    quantity = position.get("quantity")
+    manual_only = role == "user"
+    common = {
+        "advisory_only": True,
+        "submits_orders": False,
+        "manual_only": manual_only,
+        "requires_separate_order_path": True,
+    }
+    points = []
+
+    def add(decision, label, quantity_fraction=None, quantity_hint_value=None, price_reference=None, condition=None):
+        point = {
+            **common,
+            "decision": decision,
+            "label": label,
+            "quantity_fraction": quantity_fraction,
+            "quantity_hint": quantity_hint_value,
+            "price_reference": price_reference,
+            "condition": condition,
+        }
+        points.append(point)
+
+    if action == "exit_review":
+        add("exit", "review full exit if stop breach and context remain weak", 1.0, quantity_hint(quantity, 1.0), stop_loss)
+        add("reduce", "review fast partial reduction if liquidity or rebound risk argues against full exit", 0.5, quantity_hint(quantity, 0.5), current_price)
+    elif action == "reduce_or_exit_review":
+        fraction = reduce_fraction if reduce_fraction is not None else 0.5
+        add("reduce", "review partial reduction while reassessing downside pressure", fraction, quantity_hint(quantity, fraction), current_price)
+        add("exit", "review full exit if intraday, market, or external context confirms exit pressure", 1.0, quantity_hint(quantity, 1.0), stop_loss)
+    elif action == "take_profit_or_trailing_stop_review":
+        add("trail_stop", "review raising trailing floor to protect gains", None, None, max(value for value in (avg_cost, stop_loss) if value is not None) if any(value is not None for value in (avg_cost, stop_loss)) else None)
+        add("reduce", "review partial take-profit if momentum weakens near target", 0.25, quantity_hint(quantity, 0.25), take_profit)
+        if take_profit is not None and current_price is not None and current_price > 0:
+            target_gap = abs(take_profit - current_price)
+            extension_reference = current_price + (target_gap * 0.5 if target_gap > 0 else current_price * 0.03)
+            add("watch", "review target extension only if momentum and intraday context remain supportive", None, None, round(extension_reference, 4), "requires fresh momentum confirmation")
+    elif action == "risk_review":
+        add("watch", "review hold only if risk flags are contained", None, None, current_price)
+        add("reduce", "review risk reduction if flags remain unresolved", 0.25, quantity_hint(quantity, 0.25), current_price)
+    else:
+        add("watch", "review hold/watch; no action without fresh signal support", None, None, current_price)
+
+    return points
+
+
 def build_position_advisory_plan(position, action, role):
     signal = position.get("signal") if isinstance(position.get("signal"), dict) else {}
     order_prices = signal.get("order_prices") if isinstance(signal.get("order_prices"), dict) else {}
@@ -1121,6 +1167,16 @@ def build_position_advisory_plan(position, action, role):
             avg_cost,
             stop_loss,
             take_profit,
+        ),
+        "operator_decision_points": position_operator_decision_points(
+            position,
+            action,
+            role,
+            current_price,
+            avg_cost,
+            stop_loss,
+            take_profit,
+            reduce_fraction,
         ),
         "review_flags": review_flags,
         "supporting_reasons": list(position.get("recommendation_reasons") or [])[:8],

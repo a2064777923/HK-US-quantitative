@@ -84,6 +84,12 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertEqual(review["advisory_plan"]["primary_action"], "review_trailing_stop_or_partial_take_profit")
         self.assertFalse(review["advisory_plan"]["add_allowed_after_review"])
         self.assertIsNone(review["advisory_plan"]["manual_max_quantity_hint"])
+        decision_points = review["advisory_plan"]["operator_decision_points"]
+        self.assertEqual(decision_points[0]["decision"], "trail_stop")
+        self.assertTrue(decision_points[0]["manual_only"])
+        self.assertFalse(decision_points[0]["submits_orders"])
+        self.assertEqual(decision_points[1]["decision"], "reduce")
+        self.assertEqual(decision_points[1]["quantity_hint"], 1.75)
         dynamic = review["advisory_plan"]["dynamic_management_context"]
         self.assertEqual(dynamic["schema"], "position_dynamic_management_context_v1")
         self.assertEqual(dynamic["target_status"], "momentum_profit_review")
@@ -551,6 +557,32 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertEqual(item["recommended_action"], "exit_review")
         self.assertEqual(item["advisory_plan"]["primary_action"], "review_exit_all_or_fast_reduce")
 
+    def test_profit_review_target_extension_reference_stays_above_current_price(self):
+        position = {
+            "symbol": "AAPL",
+            "quantity": 10,
+            "avg_cost": 15,
+            "current_price": 22,
+            "unrealized_pnl_pct": 46.67,
+            "recommendation_reasons": ["price_reached_signal_take_profit"],
+            "signal": {
+                "side": "BUY",
+                "order_prices": {"stop_loss": 16, "take_profit": 20},
+            },
+        }
+
+        plan = report.build_position_advisory_plan(
+            position,
+            "take_profit_or_trailing_stop_review",
+            "user",
+        )
+
+        extension = [point for point in plan["operator_decision_points"] if point["decision"] == "watch"][0]
+        self.assertGreater(extension["price_reference"], 22)
+        self.assertEqual(extension["condition"], "requires fresh momentum confirmation")
+        self.assertTrue(extension["manual_only"])
+        self.assertFalse(extension["submits_orders"])
+
     def test_large_unrealized_loss_overrides_hold_signal_for_position_review(self):
         position = {
             "symbol": "00929",
@@ -605,6 +637,10 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertEqual(review["advisory_plan"]["primary_action"], "review_exit_all_or_fast_reduce")
         self.assertEqual(review["advisory_plan"]["reduce_fraction_hint"], 1.0)
         self.assertEqual(review["advisory_plan"]["manual_max_quantity_hint"], 10000)
+        self.assertEqual(review["advisory_plan"]["operator_decision_points"][0]["decision"], "exit")
+        self.assertEqual(review["advisory_plan"]["operator_decision_points"][0]["quantity_hint"], 10000)
+        self.assertEqual(review["advisory_plan"]["operator_decision_points"][1]["decision"], "reduce")
+        self.assertEqual(review["advisory_plan"]["operator_decision_points"][1]["quantity_hint"], 5000)
         self.assertFalse(review["advisory_plan"]["add_allowed_after_review"])
         self.assertIn("quantity_hint_not_lot_adjusted", review["advisory_plan"]["review_flags"])
         self.assertIn("HIGH 00929 pnl=-39.7%", text)

@@ -598,6 +598,30 @@ def fmt_hours(value):
         return "?"
 
 
+def compact_decision_points(points, limit=3):
+    rows = []
+    for point in points or []:
+        if not isinstance(point, dict):
+            continue
+        decision = point.get("decision")
+        if not decision:
+            continue
+        parts = [str(decision)]
+        quantity = point.get("quantity_hint")
+        if quantity not in (None, ""):
+            parts.append(f"qty={fmt_optional(quantity)}")
+        price = point.get("price_reference")
+        if price not in (None, ""):
+            parts.append(f"ref={fmt_optional(price)}")
+        condition = point.get("condition")
+        if condition:
+            parts.append(str(condition))
+        rows.append(" ".join(parts))
+        if len(rows) >= limit:
+            break
+    return "; ".join(rows)
+
+
 def build_position_review_output(items, packet):
     audit = packet.get("position_judgment_audit") if isinstance(packet.get("position_judgment_audit"), dict) else {}
     coverage = audit.get("coverage") if isinstance(audit.get("coverage"), dict) else {}
@@ -667,6 +691,9 @@ def build_position_review_output(items, packet):
                         trail=fmt_optional(dynamic.get("trail_floor_reference")),
                     )
                 )
+            decision_points = compact_decision_points(advisory_plan.get("operator_decision_points"))
+            if decision_points:
+                lines.append(f"├─ 候選動作：{decision_points}")
         if attention:
             lines.append(f"├─ 必須回應風險：{','.join(str(code) for code in attention[:6])}")
         lines.append(

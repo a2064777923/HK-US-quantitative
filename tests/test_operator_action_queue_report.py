@@ -115,6 +115,23 @@ def base_payloads():
                         "urgency": "high",
                         "recommended_action": "exit_review",
                         "advisory_plan": {
+                            "operator_decision_points": [
+                                {
+                                    "decision": "exit",
+                                    "quantity_fraction": 1.0,
+                                    "quantity_hint": 1200,
+                                    "price_reference": 8.16,
+                                    "manual_only": False,
+                                },
+                                {
+                                    "decision": "reduce",
+                                    "quantity_fraction": 0.5,
+                                    "quantity_hint": 600,
+                                    "price_reference": 8.32,
+                                    "manual_only": False,
+                                    "condition": "if liquidity is thin",
+                                },
+                            ],
                             "dynamic_management_context": {
                                 "target_status": "below_signal_stop",
                                 "price_snapshot_age_hours": 0.25,
@@ -627,6 +644,9 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertIn("position_dynamic_management_requires_review", write_plan[0]["required_attention_codes"])
         self.assertEqual(write_plan[0]["dynamic_management"]["target_status"], "below_signal_stop")
         self.assertEqual(write_plan[0]["dynamic_management"]["price_snapshot_age_hours"], 0.25)
+        self.assertEqual(write_plan[0]["operator_decision_points"][0]["decision"], "exit")
+        self.assertEqual(write_plan[0]["operator_decision_points"][0]["quantity_hint"], 1200)
+        self.assertEqual(write_plan[0]["operator_decision_points"][1]["condition"], "if liquidity is thin")
         self.assertIn("hermes_review_packet.py", actions["write_high_urgency_position_judgments"]["operator_command"])
         self.assertIn(
             "--output /tmp/hermes_position_judgment_audit_report.json --text",

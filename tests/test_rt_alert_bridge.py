@@ -122,6 +122,10 @@ class RtAlertBridgeTests(unittest.TestCase):
                             "reference_price_scope": "latest_signal_geometry_not_position_order",
                             "add_allowed_after_review": False,
                             "manual_max_quantity_hint": 5,
+                            "operator_decision_points": [
+                                {"decision": "reduce", "quantity_hint": 5, "price_reference": 180, "manual_only": True},
+                                {"decision": "exit", "quantity_hint": 10, "price_reference": 178, "manual_only": True},
+                            ],
                             "reference_prices": {
                                 "signal_stop_loss": 180,
                                 "signal_take_profit": 220,
@@ -491,6 +495,7 @@ class RtAlertBridgeTests(unittest.TestCase):
             text = printed.call_args.args[0]
             self.assertIn("Hermes持倉審核待辦（不下單）", text)
             self.assertIn("不代表已通過 Hermes 交易審批", text)
+            self.assertIn("候選動作：reduce qty=5 ref=180; exit qty=10 ref=178", text)
             self.assertIn("order_submission=false", text)
 
     def test_position_review_uses_stable_thread_key_for_action_churn(self):
