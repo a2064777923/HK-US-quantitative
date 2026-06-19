@@ -86,6 +86,13 @@ marks `partial_daily_bar_used_as_completed_daily=false` and
 separate read-only Hermes evidence layer and must not be promoted into completed
 daily history.
 
+When a directional BUY/SELL candidate is downgraded to diagnostic `WATCH`, Hermes
+intraday evidence still reviews the original `candidate_signal_type`, while the
+bridge displays both candidate and emitted sides. This keeps minute/session
+context answering the real question, for example whether intraday evidence
+supports or challenges the original BUY idea, without making the WATCH row
+executable.
+
 When the temporary realtime quote contributes to full-score factors, v5 marks
 those factor rows as `factor_evidence_basis.current_session_quote` and sets
 `current_session_quote_evidence.used_in_full_score=true`. Hermes must treat that

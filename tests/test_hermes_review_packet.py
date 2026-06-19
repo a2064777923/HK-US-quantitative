@@ -3570,6 +3570,39 @@ class HermesReviewPacketTests(unittest.TestCase):
             any("alert.current_session_quote_evidence.used_in_full_score=true" in rule for rule in contract["hard_rules"])
         )
 
+    def test_intraday_signal_evidence_reviews_original_candidate_side_when_downgraded_to_watch(self):
+        item = alert("downgraded-buy")
+        item.update(
+            {
+                "signal_type": "WATCH",
+                "candidate_signal_type": "BUY",
+                "execution_candidate": False,
+                "suppressed_directional_reason": "market_breadth_risk_off",
+            }
+        )
+
+        evidence = packet.intraday_signal_evidence(
+            item,
+            {
+                "schema": "hermes_review_item_intraday_context_digest_v1",
+                "status": "OK",
+                "hermes_notes": ["intraday_multi_timeframe_bearish_challenges_buy_review"],
+                "multi_timeframe_confirmation": {
+                    "alignment": "bearish_aligned",
+                    "dominant_direction": "down",
+                    "buy_confirmation": False,
+                    "sell_confirmation": True,
+                },
+            },
+        )
+
+        self.assertEqual(evidence["signal_type"], "BUY")
+        self.assertEqual(evidence["candidate_signal_type"], "BUY")
+        self.assertEqual(evidence["emitted_signal_type"], "WATCH")
+        self.assertEqual(evidence["review_side_source"], "candidate_signal_type")
+        self.assertEqual(evidence["alignment"], "challenges_signal")
+        self.assertIn("multi_timeframe_bearish_challenges_buy", evidence["challenge_codes"])
+
     def test_stale_alert_is_observation_not_trade_review_item(self):
         health = {"status": "OK", "checked_at": "2026-06-12T10:01:00", "checks": []}
         portfolio = {"generated_at": "2026-06-12T10:01:00", "portfolio_reports": []}

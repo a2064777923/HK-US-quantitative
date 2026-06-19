@@ -1660,9 +1660,20 @@ def intraday_timeframe_decision_for_alert(alert, payload):
     }
 
 
+def intraday_evidence_side(alert):
+    """Return the original directional idea reviewed against intraday evidence."""
+    candidate = candidate_side(alert)
+    if candidate in ("BUY", "SELL"):
+        return candidate
+    side = signal_side(alert)
+    return side if side in ("BUY", "SELL") else candidate
+
+
 def intraday_signal_evidence(alert, intraday_context):
     context = intraday_context if isinstance(intraday_context, dict) else {}
-    side = str((alert or {}).get("signal_type") or "").upper()
+    side = intraday_evidence_side(alert)
+    emitted_side = signal_side(alert)
+    candidate = candidate_side(alert)
     status = str(context.get("status") or "MISSING").upper()
     notes = set(normalize_list(context.get("hermes_notes")) + normalize_list(context.get("notes")))
     mtf = context.get("multi_timeframe_confirmation") if isinstance(context.get("multi_timeframe_confirmation"), dict) else {}
@@ -1745,6 +1756,9 @@ def intraday_signal_evidence(alert, intraday_context):
         "submits_orders": False,
         "changes_strategy": False,
         "signal_type": side,
+        "candidate_signal_type": candidate,
+        "emitted_signal_type": emitted_side,
+        "review_side_source": "candidate_signal_type" if candidate in ("BUY", "SELL") else "signal_type",
         "status": status,
         "alignment": evidence_alignment,
         "timeframe_alignment": alignment or None,

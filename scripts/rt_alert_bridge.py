@@ -544,6 +544,12 @@ def build_hermes_context_lines(alert, packet, items_by_signal):
     intraday = digest.get("intraday_signal_evidence") if isinstance(digest.get("intraday_signal_evidence"), dict) else {}
     if intraday:
         evidence = f"├─ 分鐘證據：{intraday.get('alignment', '?')}"
+        candidate_side = intraday.get("candidate_signal_type") or intraday.get("signal_type")
+        emitted_side = intraday.get("emitted_signal_type")
+        if candidate_side and candidate_side != emitted_side:
+            evidence += f" candidate={candidate_side} emitted={emitted_side or '?'}"
+        elif candidate_side:
+            evidence += f" side={candidate_side}"
         codes = short_list(intraday.get("codes") or [], limit=3)
         if codes:
             evidence += f" codes={codes}"
