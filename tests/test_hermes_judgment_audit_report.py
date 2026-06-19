@@ -709,6 +709,27 @@ def packet_with_intraday_minute_producer_limit():
     return payload
 
 
+def packet_with_current_session_quote_evidence(use_factor_basis=True):
+    payload = packet(items=[review_item("sig-1", eligible=True, side="BUY", market="US")])
+    alert = payload["review_items"][0]["alert"]
+    alert["current_session_quote_evidence"] = {
+        "schema": "current_session_quote_evidence_v1",
+        "used_in_full_score": True,
+        "used_for_realtime_alignment": True,
+        "used_for_trigger_detection": True,
+        "basis": "latest_realtime_quote_vs_previous_completed_close",
+        "provisional": True,
+        "mutates_completed_daily_history": False,
+        "replaces_completed_daily_bar": False,
+    }
+    if use_factor_basis:
+        alert["factor_evidence_basis"] = {
+            "completed_daily_ohlcv": 2,
+            "current_session_quote": 1,
+        }
+    return payload
+
+
 class HermesJudgmentAuditReportTests(unittest.TestCase):
     def test_no_judgments_is_not_a_failure(self):
         payload = audit.build_report([], packet())
@@ -1606,6 +1627,49 @@ class HermesJudgmentAuditReportTests(unittest.TestCase):
                 )
             ],
             packet_with_intraday_market_session_override_warning(),
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(row["status"], "PASS")
+        self.assertEqual(row["reasons"], [])
+
+    def test_current_session_quote_evidence_approval_requires_structured_acknowledgement(self):
+        payload = audit.build_report([judgment("sig-1")], packet_with_current_session_quote_evidence())
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertIn("missing_current_session_quote_evidence_acknowledgement", row["reasons"])
+        self.assertIn("current_session_quote_evidence_basis_missing", row["reasons"])
+        self.assertIn("current_session_quote_evidence_notes_missing", row["reasons"])
+        self.assertIn(
+            "current_session_quote_evidence_requires_structured_acknowledgement",
+            payload["recommendations"],
+        )
+
+    def test_current_session_quote_factor_basis_approval_requires_structured_acknowledgement(self):
+        payload = packet_with_current_session_quote_evidence()
+        payload["review_items"][0]["alert"]["current_session_quote_evidence"]["used_in_full_score"] = False
+
+        report = audit.build_report([judgment("sig-1")], payload)
+        row = report["judgments"][0]
+
+        self.assertEqual(report["status"], "FAIL")
+        self.assertIn("missing_current_session_quote_evidence_acknowledgement", row["reasons"])
+
+    def test_current_session_quote_evidence_acknowledged_approval_passes(self):
+        payload = audit.build_report(
+            [
+                judgment(
+                    "sig-1",
+                    current_session_quote_evidence_acknowledged=True,
+                    current_session_quote_evidence_basis="latest_realtime_quote_vs_previous_completed_close",
+                    current_session_quote_evidence_notes=[
+                        "Same-session quote momentum is provisional and may change before close; it does not replace completed daily OHLCV."
+                    ],
+                )
+            ],
+            packet_with_current_session_quote_evidence(),
         )
         row = payload["judgments"][0]
 

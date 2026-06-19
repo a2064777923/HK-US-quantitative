@@ -161,6 +161,14 @@ class HermesTradeJudgmentSchemaTests(unittest.TestCase):
         self.assertEqual(properties["intraday_signal_evidence_codes"]["type"], "array")
         self.assertEqual(properties["intraday_signal_evidence_notes"]["type"], "array")
 
+    def test_current_session_quote_evidence_fields_are_in_schema(self):
+        schema = self.load_schema()
+        properties = schema["properties"]
+
+        self.assertEqual(properties["current_session_quote_evidence_acknowledged"]["type"], "boolean")
+        self.assertEqual(properties["current_session_quote_evidence_basis"]["type"], "string")
+        self.assertEqual(properties["current_session_quote_evidence_notes"]["type"], "array")
+
 
 if __name__ == "__main__":
     unittest.main()

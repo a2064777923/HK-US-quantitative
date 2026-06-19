@@ -1381,6 +1381,9 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertIn("intraday_signal_evidence_alignment", payload["judgment_contract"]["append_jsonl_object"])
         self.assertIn("intraday_signal_evidence_codes", payload["judgment_contract"]["append_jsonl_object"])
         self.assertIn("intraday_signal_evidence_notes", payload["judgment_contract"]["append_jsonl_object"])
+        self.assertIn("current_session_quote_evidence_acknowledged", payload["judgment_contract"]["append_jsonl_object"])
+        self.assertIn("current_session_quote_evidence_basis", payload["judgment_contract"]["append_jsonl_object"])
+        self.assertIn("current_session_quote_evidence_notes", payload["judgment_contract"]["append_jsonl_object"])
         self.assertTrue(
             any("external_market_context_risk_acknowledged" in rule for rule in payload["judgment_contract"]["hard_rules"])
         )
@@ -1423,6 +1426,12 @@ class HermesReviewPacketTests(unittest.TestCase):
         )
         self.assertTrue(
             any("intraday_signal_evidence_acknowledged" in rule for rule in payload["judgment_contract"]["hard_rules"])
+        )
+        self.assertTrue(
+            any(
+                "alert.current_session_quote_evidence.used_in_full_score=true" in rule
+                for rule in payload["judgment_contract"]["hard_rules"]
+            )
         )
         self.assertEqual(payload["cron_audit"]["schema"], "cron_audit_report_v1")
         self.assertFalse(payload["cron_audit"]["source"]["submits_orders"])
@@ -3538,8 +3547,14 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertIn("simulation_performance_status", contract["append_jsonl_object"])
         self.assertIn("simulation_performance_reason_codes", contract["append_jsonl_object"])
         self.assertIn("simulation_performance_notes", contract["append_jsonl_object"])
+        self.assertIn("current_session_quote_evidence_acknowledged", contract["append_jsonl_object"])
+        self.assertIn("current_session_quote_evidence_basis", contract["append_jsonl_object"])
+        self.assertIn("current_session_quote_evidence_notes", contract["append_jsonl_object"])
         self.assertTrue(
             any("simulation_performance.status is WARN or FAIL" in rule for rule in contract["hard_rules"])
+        )
+        self.assertTrue(
+            any("alert.current_session_quote_evidence.used_in_full_score=true" in rule for rule in contract["hard_rules"])
         )
 
     def test_stale_alert_is_observation_not_trade_review_item(self):

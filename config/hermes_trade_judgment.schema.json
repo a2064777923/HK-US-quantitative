@@ -443,6 +443,19 @@
       "items": {"type": "string"},
       "description": "Specific notes explaining whether 5m/15m/30m/60m/session evidence supported, challenged, conflicted with, or was too low-quality to strengthen the judgment."
     },
+    "current_session_quote_evidence_acknowledged": {
+      "type": "boolean",
+      "description": "Set true when approving or reducing after v5 full_score used alert.current_session_quote_evidence or alert.factor_evidence_basis.current_session_quote as provisional same-session quote evidence."
+    },
+    "current_session_quote_evidence_basis": {
+      "type": "string",
+      "description": "Reviewed alert.current_session_quote_evidence.basis when provisional same-session quote evidence contributed to v5 full_score."
+    },
+    "current_session_quote_evidence_notes": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Specific notes explaining that current-session quote evidence is provisional, can change before close, does not mutate completed daily OHLCV, and does not replace a completed daily bar."
+    },
     "portfolio_context": {
       "type": "object"
     },

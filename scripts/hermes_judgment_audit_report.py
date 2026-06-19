@@ -1183,6 +1183,49 @@ def intraday_signal_evidence_acknowledgement_reasons(judgment, evidence_attentio
     return reasons
 
 
+def current_session_quote_evidence_attention(item):
+    alert = item.get("alert") if isinstance(item.get("alert"), dict) else {}
+    current_session = (
+        alert.get("current_session_quote_evidence")
+        if isinstance(alert.get("current_session_quote_evidence"), dict)
+        else {}
+    )
+    basis = str(current_session.get("basis") or "").strip()
+    used_in_full_score = current_session.get("used_in_full_score") is True
+    factor_basis = alert.get("factor_evidence_basis") if isinstance(alert.get("factor_evidence_basis"), dict) else {}
+    current_session_factor_count = int(as_float(factor_basis.get("current_session_quote"), 0) or 0)
+    if not used_in_full_score and current_session_factor_count <= 0:
+        return {}
+    return {
+        "basis": basis,
+        "used_in_full_score": used_in_full_score,
+        "factor_count": current_session_factor_count,
+        "provisional": current_session.get("provisional") is True,
+        "mutates_completed_daily_history": current_session.get("mutates_completed_daily_history") is True,
+        "replaces_completed_daily_bar": current_session.get("replaces_completed_daily_bar") is True,
+    }
+
+
+def current_session_quote_evidence_acknowledgement_reasons(judgment, evidence_attention):
+    if not evidence_attention:
+        return []
+    reasons = []
+    if judgment.get("current_session_quote_evidence_acknowledged") is not True:
+        reasons.append("missing_current_session_quote_evidence_acknowledgement")
+
+    expected_basis = str(evidence_attention.get("basis") or "").strip()
+    acknowledged_basis = str(judgment.get("current_session_quote_evidence_basis") or "").strip()
+    if expected_basis and not acknowledged_basis:
+        reasons.append("current_session_quote_evidence_basis_missing")
+    elif expected_basis and acknowledged_basis and acknowledged_basis != expected_basis:
+        reasons.append("current_session_quote_evidence_basis_mismatch")
+
+    notes = judgment.get("current_session_quote_evidence_notes")
+    if not isinstance(notes, list) or not notes:
+        reasons.append("current_session_quote_evidence_notes_missing")
+    return reasons
+
+
 def context_review_reasons(judgment):
     review = judgment.get("context_review")
     if not isinstance(review, dict):
@@ -1381,6 +1424,13 @@ def audit_judgment(judgment, packet, review_by_id, eligible_ids, now=None, packe
             intraday_evidence_attention = intraday_signal_evidence_attention(item)
             reasons.extend(
                 intraday_signal_evidence_acknowledgement_reasons(judgment, intraday_evidence_attention)
+            )
+            current_session_quote_attention = current_session_quote_evidence_attention(item)
+            reasons.extend(
+                current_session_quote_evidence_acknowledgement_reasons(
+                    judgment,
+                    current_session_quote_attention,
+                )
             )
             source_reliability = degraded_source_reliability(packet)
             reasons.extend(source_reliability_acknowledgement_reasons(judgment, source_reliability))
@@ -1655,6 +1705,12 @@ def build_recommendations(rows, reason_counts):
         "intraday_signal_evidence_codes_missing_or_unmatched"
     ) or reason_counts.get("intraday_signal_evidence_notes_missing"):
         recs.append("intraday_signal_evidence_requires_structured_acknowledgement")
+    if reason_counts.get("missing_current_session_quote_evidence_acknowledgement") or reason_counts.get(
+        "current_session_quote_evidence_basis_missing"
+    ) or reason_counts.get("current_session_quote_evidence_basis_mismatch") or reason_counts.get(
+        "current_session_quote_evidence_notes_missing"
+    ):
+        recs.append("current_session_quote_evidence_requires_structured_acknowledgement")
     if any(reason.startswith("approval_with_") for reason in reason_counts):
         recs.append("approvals_conflict_with_execution_gates_keep_alert_sim_disabled")
     if reason_counts.get("judgment_expired"):
