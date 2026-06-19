@@ -3940,6 +3940,39 @@ class HermesReviewPacketTests(unittest.TestCase):
             payload["position_review"]["position_judgment_template_summary"]["template_count"],
             1,
         )
+        tasks = payload["position_judgment_tasks"]
+        self.assertEqual(tasks["schema"], "hermes_position_judgment_task_index_v1")
+        self.assertTrue(tasks["advisory_only"])
+        self.assertFalse(tasks["submits_orders"])
+        self.assertEqual(tasks["judgment_file"], packet.POSITION_JUDGMENT_FILE)
+        self.assertEqual(tasks["task_count"], 1)
+        self.assertEqual(tasks["included_task_count"], 1)
+        self.assertEqual(tasks["high_urgency_task_count"], 1)
+        self.assertEqual(tasks["tasks"][0]["review_id"], "simulation:8:00700:2026-06-12:risk_review")
+        self.assertEqual(tasks["tasks"][0]["review_thread_key"], "simulation:8:00700")
+        self.assertEqual(tasks["tasks"][0]["recommended_action"], "risk_review")
+        self.assertEqual(tasks["tasks"][0]["allowed_decisions"], ["hold", "watch", "reduce", "exit", "trail_stop"])
+        self.assertIn(
+            "high_urgency_position_requires_contextual_rationale",
+            tasks["tasks"][0]["required_attention_codes"],
+        )
+        self.assertIn(
+            "position_dynamic_management_requires_review",
+            tasks["tasks"][0]["required_attention_codes"],
+        )
+        self.assertIn(
+            "position_intraday_review_contract_requires_discussion",
+            tasks["tasks"][0]["required_attention_codes"],
+        )
+        self.assertIn(
+            "position_source_reliability_limit_requires_discussion",
+            tasks["tasks"][0]["required_attention_codes"],
+        )
+        self.assertEqual(
+            tasks["tasks"][0]["intraday_review_contract"]["decision_use"],
+            "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation",
+        )
+        self.assertNotIn("draft_jsonl_object", tasks["tasks"][0])
         self.assertEqual(digest["schema"], "hermes_position_review_context_digest_v1")
         self.assertTrue(digest["advisory_only"])
         self.assertFalse(digest["submits_orders"])

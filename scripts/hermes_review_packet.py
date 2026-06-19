@@ -456,6 +456,7 @@ def compact_packet(packet):
         "operator_action_queue",
         "judgment_audit",
         "position_judgment_audit",
+        "position_judgment_tasks",
         "alert_selection",
         "review_items",
         "review_item_suppression",
@@ -2514,6 +2515,112 @@ def attach_position_judgment_templates(position_review_payload, packet_id, judgm
     return payload
 
 
+def position_task_urgency_rank(value):
+    return {"high": 0, "medium": 1, "low": 2}.get(str(value or "").strip().lower(), 9)
+
+
+def compact_position_judgment_task(item):
+    item = item if isinstance(item, dict) else {}
+    template = item.get("position_judgment_template") if isinstance(item.get("position_judgment_template"), dict) else {}
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    advisory_plan = item.get("advisory_plan") if isinstance(item.get("advisory_plan"), dict) else {}
+    dynamic = advisory_plan.get("dynamic_management_context") if isinstance(advisory_plan.get("dynamic_management_context"), dict) else {}
+    intraday_contract = (
+        advisory_plan.get("intraday_review_contract")
+        if isinstance(advisory_plan.get("intraday_review_contract"), dict)
+        else digest.get("intraday_review_contract") if isinstance(digest.get("intraday_review_contract"), dict) else {}
+    )
+    attention_codes = (
+        template.get("required_position_attention_codes")
+        if isinstance(template.get("required_position_attention_codes"), list)
+        else position_attention_codes_from_item(item)
+    )
+    return {
+        "review_id": item.get("review_id"),
+        "review_thread_key": position_review_thread_key_for_item(item),
+        "portfolio_id": item.get("portfolio_id"),
+        "role": item.get("role"),
+        "symbol": item.get("symbol"),
+        "market": item.get("market"),
+        "urgency": item.get("urgency"),
+        "recommended_action": item.get("recommended_action"),
+        "allowed_decisions": template.get("allowed_decisions") or position_judgment_allowed_decisions(item),
+        "required_attention_codes": attention_codes,
+        "dynamic_management": {
+            "target_status": dynamic.get("target_status"),
+            "unrealized_pnl_pct": dynamic.get("unrealized_pnl_pct"),
+            "latest_daily_change_pct": dynamic.get("latest_daily_change_pct"),
+            "distance_to_signal_take_profit_pct": dynamic.get("distance_to_signal_take_profit_pct"),
+            "distance_above_signal_stop_loss_pct": dynamic.get("distance_above_signal_stop_loss_pct"),
+            "price_snapshot_fresh": dynamic.get("price_snapshot_fresh"),
+            "price_snapshot_age_hours": dynamic.get("price_snapshot_age_hours"),
+            "review_focus": (dynamic.get("review_focus") or [])[:4] if isinstance(dynamic.get("review_focus"), list) else [],
+        },
+        "intraday_review_contract": {
+            "decision_use": intraday_contract.get("decision_use"),
+            "required_timeframes": (intraday_contract.get("required_timeframes") or [])[:6]
+            if isinstance(intraday_contract.get("required_timeframes"), list)
+            else [],
+            "required_checks": (intraday_contract.get("required_checks") or [])[:6]
+            if isinstance(intraday_contract.get("required_checks"), list)
+            else [],
+            "hard_limits": (intraday_contract.get("hard_limits") or [])[:4]
+            if isinstance(intraday_contract.get("hard_limits"), list)
+            else [],
+        } if intraday_contract else {},
+        "template_path": "position_review.items[].position_judgment_template",
+        "context_digest_path": "position_review.items[].context_digest",
+        "required_output": {
+            "append_jsonl_object_to": template.get("judgment_file") or POSITION_JUDGMENT_FILE,
+            "schema": POSITION_JUDGMENT_SCHEMA,
+            "copy_packet_id": True,
+            "copy_review_id": True,
+            "advisory_only": True,
+            "submits_orders": False,
+        },
+    }
+
+
+def build_position_judgment_task_index(position_review_payload, judgment_file, limit=20):
+    payload = position_review_payload if isinstance(position_review_payload, dict) else {}
+    items = [item for item in (payload.get("items") or []) if isinstance(item, dict) and item.get("review_id")]
+    items.sort(
+        key=lambda item: (
+            position_task_urgency_rank(item.get("urgency")),
+            str(item.get("role") or ""),
+            str(item.get("symbol") or ""),
+            str(item.get("review_id") or ""),
+        )
+    )
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+    included = items[: max(limit, 0)]
+    return {
+        "schema": "hermes_position_judgment_task_index_v1",
+        "advisory_only": True,
+        "submits_orders": False,
+        "changes_portfolio": False,
+        "changes_strategy": False,
+        "judgment_file": judgment_file,
+        "template_source": "position_review.items[].position_judgment_template",
+        "context_source": "position_review.items[].context_digest",
+        "task_count": len(items),
+        "included_task_count": len(included),
+        "omitted_task_count": max(len(items) - len(included), 0),
+        "high_urgency_task_count": len([
+            item for item in items if str(item.get("urgency") or "").strip().lower() == "high"
+        ]),
+        "tasks": [compact_position_judgment_task(item) for item in included],
+        "hard_rules": [
+            "Use this index only to locate position_review items that need advisory Hermes position judgments.",
+            "Do not append template placeholders; Hermes must review context_digest and write a completed judgment object.",
+            "Position judgments are advisory-only and must not submit orders or mutate portfolio state.",
+        ],
+    }
+
+
 def enrich_position_review_with_context(
     position_review_payload,
     market_context_payload,
@@ -4200,6 +4307,10 @@ def build_packet(
         packet_id,
         position_judgment_file,
     )
+    position_judgment_tasks = build_position_judgment_task_index(
+        position_review_payload,
+        position_judgment_file,
+    )
     items = apply_execution_readiness_to_items(items, execution_readiness_payload)
     items = apply_portfolio_risk_to_items(items, portfolio_payload)
     items = apply_data_health_to_items(items, data_health_payload)
@@ -4291,6 +4402,7 @@ def build_packet(
         "operator_action_queue": operator_action_queue_payload,
         "judgment_audit": judgment_audit_payload,
         "position_judgment_audit": position_judgment_audit_payload,
+        "position_judgment_tasks": position_judgment_tasks,
         "alert_selection": alert_selection_stats(source_alerts, alerts, sample_scope=alert_sample_scope, now=stats_now),
         "review_items": items,
         "review_item_suppression": review_item_suppression_summary(
