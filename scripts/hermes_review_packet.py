@@ -2690,6 +2690,10 @@ def position_task_urgency_rank(value):
     return {"high": 0, "medium": 1, "low": 2}.get(str(value or "").strip().lower(), 9)
 
 
+def position_task_role_rank(value):
+    return {"user": 0, "simulation": 1}.get(str(value or "").strip().lower(), 9)
+
+
 def compact_position_judgment_task(item):
     item = item if isinstance(item, dict) else {}
     template = item.get("position_judgment_template") if isinstance(item.get("position_judgment_template"), dict) else {}
@@ -2758,7 +2762,7 @@ def build_position_judgment_task_index(position_review_payload, judgment_file, l
     items.sort(
         key=lambda item: (
             position_task_urgency_rank(item.get("urgency")),
-            str(item.get("role") or ""),
+            position_task_role_rank(item.get("role")),
             str(item.get("symbol") or ""),
             str(item.get("review_id") or ""),
         )
@@ -2968,7 +2972,7 @@ def build_position_judgment_worklist(position_review_payload, judgment_file, lim
     items.sort(
         key=lambda item: (
             position_task_urgency_rank(item.get("urgency")),
-            str(item.get("role") or ""),
+            position_task_role_rank(item.get("role")),
             str(item.get("symbol") or ""),
             str(item.get("review_id") or ""),
         )

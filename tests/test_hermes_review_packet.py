@@ -4149,6 +4149,46 @@ class HermesReviewPacketTests(unittest.TestCase):
         )
         self.assertIn("position_intraday_evidence_requires_discussion", work_item["required_attention_codes"])
 
+    def test_position_judgment_worklist_prioritizes_user_holdings_before_simulation(self):
+        portfolio = {
+            "generated_at": "2026-06-12T10:01:00",
+            "portfolio_reports": [],
+            "position_review": {
+                "schema": "portfolio_position_review_v1",
+                "review_only": True,
+                "submits_orders": False,
+                "items": [
+                    {
+                        "review_id": "simulation:8:00177:2026-06-12:reduce_or_exit_review",
+                        "portfolio_id": 8,
+                        "role": "simulation",
+                        "symbol": "00177",
+                        "market": "HK",
+                        "urgency": "high",
+                        "recommended_action": "reduce_or_exit_review",
+                    },
+                    {
+                        "review_id": "user:3:PDD:2026-06-12:reduce_or_exit_review",
+                        "portfolio_id": 3,
+                        "role": "user",
+                        "symbol": "PDD",
+                        "market": "US",
+                        "urgency": "high",
+                        "recommended_action": "reduce_or_exit_review",
+                    },
+                ],
+            },
+        }
+
+        payload = packet.build_packet([], portfolio_payload=portfolio)
+
+        tasks = payload["position_judgment_tasks"]["tasks"]
+        work_items = payload["position_judgment_worklist"]["items"]
+        self.assertEqual(tasks[0]["review_id"], "user:3:PDD:2026-06-12:reduce_or_exit_review")
+        self.assertEqual(work_items[0]["review_id"], "user:3:PDD:2026-06-12:reduce_or_exit_review")
+        self.assertEqual(tasks[1]["review_id"], "simulation:8:00177:2026-06-12:reduce_or_exit_review")
+        self.assertEqual(work_items[1]["review_id"], "simulation:8:00177:2026-06-12:reduce_or_exit_review")
+
     def test_user_position_judgment_template_allows_manual_only_action_advice(self):
         item = {
             "review_id": "user:1:AAPL:2026-06-12:risk_review",
