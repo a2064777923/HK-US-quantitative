@@ -152,6 +152,31 @@ def base_payloads():
                             "submits_orders": False,
                         },
                     }
+                    ],
+                },
+            "position_judgment_worklist": {
+                "schema": "hermes_position_judgment_worklist_v1",
+                "advisory_only": True,
+                "submits_orders": False,
+                "item_count": 1,
+                "included_item_count": 1,
+                "high_urgency_item_count": 1,
+                "judgment_file": "/tmp/hermes_position_judgments.jsonl",
+                "items": [
+                    {
+                        "review_id": "simulation:8:00816:2026-06-12:exit_review",
+                        "review_thread_key": "simulation:8:00816",
+                        "portfolio_id": 8,
+                        "role": "simulation",
+                        "symbol": "00816",
+                        "urgency": "high",
+                        "recommended_action": "exit_review",
+                        "required_output_fields": {
+                            "schema": "hermes_position_judgment_v1",
+                            "advisory_only": True,
+                            "submits_orders": False,
+                        },
+                    }
                 ],
             },
             "position_review": {
@@ -708,6 +733,17 @@ class OperatorActionQueueReportTests(unittest.TestCase):
             actions["write_high_urgency_position_judgments"]["evidence"]["task_index"]["used_for_write_plan"]
         )
         self.assertEqual(
+            actions["write_high_urgency_position_judgments"]["evidence"]["worklist"]["schema"],
+            "hermes_position_judgment_worklist_v1",
+        )
+        self.assertTrue(
+            actions["write_high_urgency_position_judgments"]["evidence"]["worklist"]["preferred_input"]
+        )
+        self.assertEqual(
+            actions["write_high_urgency_position_judgments"]["evidence"]["worklist"]["first_review_id"],
+            "simulation:8:00816:2026-06-12:exit_review",
+        )
+        self.assertEqual(
             actions["write_high_urgency_position_judgments"]["evidence"]["manual_append_target"],
             report.POSITION_JUDGMENT_FILE,
         )
@@ -737,6 +773,10 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertIn(
             "--output /tmp/hermes_position_judgment_audit_report.json --text",
             actions["write_high_urgency_position_judgments"]["operator_command"],
+        )
+        self.assertIn(
+            "position_judgment_worklist",
+            actions["write_high_urgency_position_judgments"]["recommended_next_step"],
         )
         self.assertIn(
             "position_judgment_write_plan",

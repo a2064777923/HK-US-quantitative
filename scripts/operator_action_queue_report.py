@@ -445,6 +445,8 @@ def position_actions(position_audit, packet):
         task_rows = safe_list(task_index.get("tasks"))
         task_index_schema = str(task_index.get("schema") or "").strip()
         task_index_usable = task_index_schema == "hermes_position_judgment_task_index_v1" and bool(task_rows)
+        worklist = safe_dict(packet.get("position_judgment_worklist"))
+        worklist_rows = safe_list(worklist.get("items"))
         items_by_id = {str(item.get("review_id") or "").strip(): item for item in packet_items if isinstance(item, dict)}
         items_by_thread = {
             review_thread_key_for_item(item): item
@@ -538,6 +540,15 @@ def position_actions(position_audit, packet):
                         "submits_orders": task_index.get("submits_orders"),
                         "used_for_write_plan": task_index_usable,
                     } if task_index else {},
+                    "worklist": {
+                        "schema": worklist.get("schema"),
+                        "item_count": worklist.get("item_count"),
+                        "included_item_count": worklist.get("included_item_count"),
+                        "high_urgency_item_count": worklist.get("high_urgency_item_count"),
+                        "submits_orders": worklist.get("submits_orders"),
+                        "preferred_input": bool(worklist_rows),
+                        "first_review_id": safe_dict(worklist_rows[0]).get("review_id") if worklist_rows else None,
+                    } if worklist else {},
                     "unjudged_examples": examples,
                     "position_judgment_write_plan": write_plan,
                     "safety": {
@@ -547,9 +558,9 @@ def position_actions(position_audit, packet):
                     },
                 },
                 next_step=(
-                    f"Refresh {PACKET_FILE}, inspect high-urgency position_review.items, use each "
-                    "position_judgment_write_plan row to find the exact item/template, use position_judgment_template "
-                    "only as a draft scaffold, and append completed Hermes-reviewed "
+                    f"Refresh {PACKET_FILE}, use position_judgment_worklist.items as the compact preferred "
+                    "Hermes input, and use position_judgment_write_plan only as an index/fallback. Review the "
+                    "full position_review item when needed, replace every placeholder, and append completed Hermes-reviewed "
                     f"JSONL objects to {POSITION_JUDGMENT_FILE}. Do not copy template placeholders or set "
                     "order_submission=true; then rerun hermes_position_judgment_audit_report.py."
                 ),

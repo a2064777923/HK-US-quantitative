@@ -3973,6 +3973,28 @@ class HermesReviewPacketTests(unittest.TestCase):
             "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation",
         )
         self.assertNotIn("draft_jsonl_object", tasks["tasks"][0])
+        worklist = payload["position_judgment_worklist"]
+        work_item = worklist["items"][0]
+        self.assertEqual(worklist["schema"], "hermes_position_judgment_worklist_v1")
+        self.assertTrue(worklist["advisory_only"])
+        self.assertFalse(worklist["submits_orders"])
+        self.assertEqual(worklist["included_item_count"], 1)
+        self.assertEqual(work_item["review_id"], "simulation:8:00700:2026-06-12:risk_review")
+        self.assertEqual(work_item["context_summary"]["market_context"]["regime"], "risk_off")
+        self.assertEqual(work_item["context_summary"]["dynamic_management"]["target_status"], "below_signal_stop")
+        self.assertEqual(
+            work_item["context_summary"]["intraday_review_contract"]["decision_use"],
+            "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation",
+        )
+        self.assertIn("position_dynamic_management_requires_review", work_item["required_attention_codes"])
+        required_fields = work_item["required_output_fields"]
+        self.assertEqual(required_fields["schema"], "hermes_position_judgment_v1")
+        self.assertEqual(required_fields["review_thread_key"], "simulation:8:00700")
+        self.assertTrue(required_fields["context_review"]["position_context_reviewed"])
+        self.assertTrue(required_fields["position_attention_acknowledged"])
+        effect_codes = {row["code"] for row in required_fields["position_attention_effects"]}
+        self.assertIn("position_dynamic_management_requires_review", effect_codes)
+        self.assertNotIn("draft_jsonl_object", work_item)
         self.assertEqual(digest["schema"], "hermes_position_review_context_digest_v1")
         self.assertTrue(digest["advisory_only"])
         self.assertFalse(digest["submits_orders"])
@@ -4162,6 +4184,11 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertTrue(compact["compact_context_contract"]["lossless_for_bridge"])
         self.assertEqual(compact["review_items"][0]["signal_id"], "sig-packet")
         self.assertEqual(compact["position_review"]["items"][0]["review_id"], "simulation:8:AAPL:2026-06-12:risk_review")
+        self.assertEqual(
+            compact["position_judgment_worklist"]["items"][0]["review_id"],
+            "simulation:8:AAPL:2026-06-12:risk_review",
+        )
+        self.assertFalse(compact["position_judgment_worklist"]["submits_orders"])
         self.assertEqual(compact["market_context"]["markets"]["HK"]["regime"], "mixed")
         self.assertEqual(compact["simulation_performance"]["v5_hermes_evidence"]["status"], "INSUFFICIENT")
         self.assertNotIn("huge_rows", compact["simulation_performance"])

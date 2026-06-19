@@ -457,6 +457,7 @@ def compact_packet(packet):
         "judgment_audit",
         "position_judgment_audit",
         "position_judgment_tasks",
+        "position_judgment_worklist",
         "alert_selection",
         "review_items",
         "review_item_suppression",
@@ -2621,6 +2622,222 @@ def build_position_judgment_task_index(position_review_payload, judgment_file, l
     }
 
 
+def compact_position_judgment_context_summary(item):
+    item = item if isinstance(item, dict) else {}
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    position = item.get("position") if isinstance(item.get("position"), dict) else {}
+    latest_signal = item.get("latest_signal") if isinstance(item.get("latest_signal"), dict) else {}
+    advisory_plan = item.get("advisory_plan") if isinstance(item.get("advisory_plan"), dict) else {}
+    dynamic = (
+        advisory_plan.get("dynamic_management_context")
+        if isinstance(advisory_plan.get("dynamic_management_context"), dict)
+        else digest.get("dynamic_management_context") if isinstance(digest.get("dynamic_management_context"), dict) else {}
+    )
+    intraday = (
+        advisory_plan.get("intraday_review_contract")
+        if isinstance(advisory_plan.get("intraday_review_contract"), dict)
+        else digest.get("intraday_review_contract") if isinstance(digest.get("intraday_review_contract"), dict) else {}
+    )
+    source_limits = digest.get("source_limits") if isinstance(digest.get("source_limits"), dict) else {}
+    market_context = digest.get("market_context") if isinstance(digest.get("market_context"), dict) else {}
+    external_context = digest.get("external_market_context") if isinstance(digest.get("external_market_context"), dict) else {}
+    event_catalysts = digest.get("event_catalysts") if isinstance(digest.get("event_catalysts"), dict) else {}
+    sentiment = digest.get("market_sentiment") if isinstance(digest.get("market_sentiment"), dict) else {}
+    fundamentals = digest.get("fundamentals_context") if isinstance(digest.get("fundamentals_context"), dict) else {}
+    return {
+        "position": {
+            "quantity": position.get("quantity"),
+            "current_price": position.get("current_price"),
+            "market_value_hkd": position.get("market_value_hkd"),
+            "unrealized_pnl_pct": position.get("unrealized_pnl_pct"),
+            "latest_daily_change_pct": position.get("latest_daily_change_pct"),
+            "stop_distance_pct": position.get("stop_distance_pct"),
+            "valuation_price_source": position.get("valuation_price_source"),
+            "price_snapshot_age_hours": position.get("price_snapshot_age_hours"),
+            "price_data_flags": (position.get("price_data_flags") or [])[:6]
+            if isinstance(position.get("price_data_flags"), list)
+            else [],
+        },
+        "latest_signal": {
+            "side": latest_signal.get("side"),
+            "score": latest_signal.get("score"),
+            "trade_date": latest_signal.get("trade_date"),
+            "risk_flags": (latest_signal.get("risk_flags") or [])[:6]
+            if isinstance(latest_signal.get("risk_flags"), list)
+            else [],
+        },
+        "dynamic_management": {
+            "target_status": dynamic.get("target_status"),
+            "unrealized_pnl_pct": dynamic.get("unrealized_pnl_pct"),
+            "latest_daily_change_pct": dynamic.get("latest_daily_change_pct"),
+            "distance_to_signal_take_profit_pct": dynamic.get("distance_to_signal_take_profit_pct"),
+            "distance_above_signal_stop_loss_pct": dynamic.get("distance_above_signal_stop_loss_pct"),
+            "price_snapshot_fresh": dynamic.get("price_snapshot_fresh"),
+            "price_snapshot_age_hours": dynamic.get("price_snapshot_age_hours"),
+            "review_focus": (dynamic.get("review_focus") or [])[:4]
+            if isinstance(dynamic.get("review_focus"), list)
+            else [],
+        },
+        "intraday_review_contract": {
+            "decision_use": intraday.get("decision_use"),
+            "required_timeframes": (intraday.get("required_timeframes") or [])[:6]
+            if isinstance(intraday.get("required_timeframes"), list)
+            else [],
+            "required_checks": (intraday.get("required_checks") or [])[:6]
+            if isinstance(intraday.get("required_checks"), list)
+            else [],
+            "hard_limits": (intraday.get("hard_limits") or [])[:4]
+            if isinstance(intraday.get("hard_limits"), list)
+            else [],
+        } if intraday else {},
+        "market_context": {
+            "status": market_context.get("status"),
+            "regime": market_context.get("regime"),
+            "risk_level": market_context.get("risk_level"),
+            "notes": (market_context.get("notes") or [])[:4]
+            if isinstance(market_context.get("notes"), list)
+            else [],
+        },
+        "external_context": {
+            "status": external_context.get("status"),
+            "relevant_item_count": external_context.get("relevant_item_count"),
+        },
+        "event_catalysts": {
+            "status": event_catalysts.get("status"),
+            "negative_candidate_count": event_catalysts.get("negative_candidate_count"),
+            "positive_candidate_count": event_catalysts.get("positive_candidate_count"),
+        },
+        "market_sentiment": {
+            "status": sentiment.get("status"),
+            "relevant_indicator_count": sentiment.get("relevant_indicator_count"),
+        },
+        "fundamentals_context": {
+            "status": fundamentals.get("status"),
+            "relevant_item_count": fundamentals.get("relevant_item_count"),
+            "limit_acknowledgement_required": fundamentals.get("limit_acknowledgement_required"),
+            "support_acknowledgement_available": fundamentals.get("support_acknowledgement_available"),
+        },
+        "source_limits": {
+            "trusted_source_preflight_status": source_limits.get("trusted_source_preflight_status"),
+            "source_reliability_status": source_limits.get("source_reliability_status"),
+            "low_confidence_sources": (source_limits.get("low_confidence_sources") or [])[:6]
+            if isinstance(source_limits.get("low_confidence_sources"), list)
+            else [],
+        },
+    }
+
+
+def position_judgment_required_fields(item, judgment_file):
+    item = item if isinstance(item, dict) else {}
+    template = item.get("position_judgment_template") if isinstance(item.get("position_judgment_template"), dict) else {}
+    draft = template.get("draft_jsonl_object") if isinstance(template.get("draft_jsonl_object"), dict) else {}
+    attention_codes = position_attention_codes_from_item(item)
+    required = {
+        "schema": POSITION_JUDGMENT_SCHEMA,
+        "packet_id": draft.get("packet_id"),
+        "review_id": item.get("review_id"),
+        "review_thread_key": position_review_thread_key_for_item(item),
+        "reviewed_recommended_action": item.get("recommended_action"),
+        "portfolio_id": item.get("portfolio_id"),
+        "role": item.get("role"),
+        "symbol": item.get("symbol"),
+        "reviewer": "hermes",
+        "advisory_only": True,
+        "submits_orders": False,
+        "context_review": {
+            "position_context_reviewed": True,
+            "portfolio_risk_reviewed": True,
+            "market_context_reviewed": True,
+            "external_context_reviewed": True,
+            "intraday_context_reviewed": True,
+            "notes": ["<Hermes summary of how reviewed context changed this position advice>"],
+        },
+        "position_attention_acknowledged": bool(attention_codes),
+        "position_attention_codes": attention_codes,
+        "position_attention_effects": [
+            {
+                "code": code,
+                "effect": "<specific holding-risk interpretation>",
+                "decision_impact": "<hold/watch/reduce/exit/trail_stop impact>",
+            }
+            for code in attention_codes
+        ],
+        "append_jsonl_object_to": judgment_file,
+    }
+    if str(item.get("role") or "").strip().lower() == "user":
+        required["manual_only"] = "<true when decision is reduce, exit, or trail_stop>"
+    return required
+
+
+def build_position_judgment_worklist(position_review_payload, judgment_file, limit=20):
+    payload = position_review_payload if isinstance(position_review_payload, dict) else {}
+    items = [item for item in (payload.get("items") or []) if isinstance(item, dict) and item.get("review_id")]
+    items.sort(
+        key=lambda item: (
+            position_task_urgency_rank(item.get("urgency")),
+            str(item.get("role") or ""),
+            str(item.get("symbol") or ""),
+            str(item.get("review_id") or ""),
+        )
+    )
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+    included = items[: max(limit, 0)]
+    work_items = []
+    for item in included:
+        task = compact_position_judgment_task(item)
+        attention_codes = position_attention_codes_from_item(item)
+        work_items.append(
+            {
+                "review_id": item.get("review_id"),
+                "review_thread_key": position_review_thread_key_for_item(item),
+                "portfolio_id": item.get("portfolio_id"),
+                "role": item.get("role"),
+                "symbol": item.get("symbol"),
+                "market": item.get("market"),
+                "urgency": item.get("urgency"),
+                "recommended_action": item.get("recommended_action"),
+                "allowed_decisions": task.get("allowed_decisions"),
+                "context_summary": compact_position_judgment_context_summary(item),
+                "required_attention_codes": attention_codes,
+                "required_output_fields": position_judgment_required_fields(item, judgment_file),
+                "decision_requirements": [
+                    "Hermes must choose decision after reviewing context_summary and the full position_review item.",
+                    "supporting_factors, opposing_factors, risk_notes, confidence, reviewed_at, and optional follow_up must be completed by Hermes.",
+                    "For user positions, reduce/exit/trail_stop is manual advice only; set manual_only=true and do not submit orders.",
+                    "For simulation positions, this worklist writes advisory judgments only; separate rt_order_intake gates remain authoritative for execution.",
+                ],
+                "context_paths": {
+                    "full_item": f"position_review.items[review_id={item.get('review_id')}]",
+                    "context_digest": "position_review.items[].context_digest",
+                    "template": "position_review.items[].position_judgment_template",
+                },
+            }
+        )
+    return {
+        "schema": "hermes_position_judgment_worklist_v1",
+        "advisory_only": True,
+        "submits_orders": False,
+        "changes_portfolio": False,
+        "changes_strategy": False,
+        "judgment_file": judgment_file,
+        "item_count": len(items),
+        "included_item_count": len(included),
+        "omitted_item_count": max(len(items) - len(included), 0),
+        "high_urgency_item_count": len([
+            item for item in items if str(item.get("urgency") or "").strip().lower() == "high"
+        ]),
+        "items": work_items,
+        "hard_rules": [
+            "This is a compact Hermes worklist, not an execution command.",
+            "Do not append required_output_fields directly; replace placeholders and complete a reviewed judgment.",
+            "Every completed object must satisfy hermes_position_judgment.schema.json and hermes_position_judgment_audit_report.py.",
+        ],
+    }
+
+
 def enrich_position_review_with_context(
     position_review_payload,
     market_context_payload,
@@ -4311,6 +4528,10 @@ def build_packet(
         position_review_payload,
         position_judgment_file,
     )
+    position_judgment_worklist = build_position_judgment_worklist(
+        position_review_payload,
+        position_judgment_file,
+    )
     items = apply_execution_readiness_to_items(items, execution_readiness_payload)
     items = apply_portfolio_risk_to_items(items, portfolio_payload)
     items = apply_data_health_to_items(items, data_health_payload)
@@ -4403,6 +4624,7 @@ def build_packet(
         "judgment_audit": judgment_audit_payload,
         "position_judgment_audit": position_judgment_audit_payload,
         "position_judgment_tasks": position_judgment_tasks,
+        "position_judgment_worklist": position_judgment_worklist,
         "alert_selection": alert_selection_stats(source_alerts, alerts, sample_scope=alert_sample_scope, now=stats_now),
         "review_items": items,
         "review_item_suppression": review_item_suppression_summary(
@@ -4421,6 +4643,7 @@ def build_packet(
             "non_actionable_observations are visible for learning and diagnostics only; Hermes should not write trade judgments for them.",
             "Hermes may write position judgments for position_review.items, but those judgments are advisory and never submit orders.",
             "position_review.items[].position_judgment_template is a draft helper only; Hermes must replace placeholders before appending to the position judgment JSONL file.",
+            "position_judgment_worklist is the compact preferred input for advisory holding judgments; it groups required fields, attention codes, and short context summaries without granting execution permission.",
             "Universe context is for watchlist quality review only; do not auto-apply candidate watchlists without operator review.",
             "Watchlist diff is read-only proposal context; do not replace the live watchlist without manual review and service restart planning.",
             "Universe hygiene is for active-stock data quality review only; do not deactivate symbols without operator review.",
