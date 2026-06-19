@@ -3182,6 +3182,8 @@ When the reviewed `position_review.items[].context_digest.position_attention[]` 
 - `position_attention_notes[]` explaining how those holding-specific risks changed hold/watch/reduce/exit/trail-stop advice;
 - `position_attention_effects[]` with one object per reviewed code, each containing `code`, `effect`, and `decision_impact`.
 
+`position_review.items[].context_digest.intraday_position_evidence` is the compact same-session/last-session evidence summary for holdings. It classifies 5m/15m/30m/60m and session context as `supports_recommended_action`, `challenges_recommended_action`, `mixed_intraday_evidence`, `supports_with_limits`, `unavailable_or_stale`, or `limited_context` against the position review's `recommended_action`. When this creates `position_intraday_evidence_requires_discussion`, Hermes must cover it through the normal `position_attention_*` fields and explain whether the intraday path supports reducing/exiting, tightening a trail stop, holding, or waiting. This evidence remains advisory-only and must not submit orders or replace completed daily OHLCV evidence.
+
 This is deliberately stricter than `context_review.position_context_reviewed=true`. The checkbox proves Hermes opened the digest; the structured attention fields prove Hermes responded to the actual holding risks. `hermes_position_judgment_audit_report.py` fails missing evidence with `missing_position_attention_acknowledgement`, `position_attention_codes_missing_or_unmatched`, `position_attention_notes_missing`, `position_attention_effects_missing`, `position_attention_effects_missing_or_unmatched`, `position_attention_effect_detail_missing`, or `position_attention_effect_decision_impact_missing`.
 
 Audit command:

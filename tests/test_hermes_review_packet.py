@@ -4056,6 +4056,96 @@ class HermesReviewPacketTests(unittest.TestCase):
             any("position_judgment_template is a draft helper" in note for note in payload["operator_notes"])
         )
 
+    def test_position_review_compact_worklist_summarizes_intraday_position_evidence(self):
+        portfolio = {
+            "generated_at": "2026-06-12T10:01:00",
+            "portfolio_reports": [],
+            "position_review": {
+                "schema": "portfolio_position_review_v1",
+                "review_only": True,
+                "submits_orders": False,
+                "item_count": 1,
+                "items": [
+                    {
+                        "review_id": "user:3:AMD:2026-06-12:reduce_or_exit_review",
+                        "portfolio_id": 3,
+                        "role": "user",
+                        "symbol": "AMD",
+                        "market": "US",
+                        "urgency": "high",
+                        "recommended_action": "reduce_or_exit_review",
+                        "position": {"quantity": 10, "unrealized_pnl_pct": -8.0},
+                    }
+                ],
+            },
+        }
+
+        amd_alert = alert()
+        amd_alert.update(
+            {
+                "symbol": "AMD",
+                "market": "US",
+                "signal_type": "WATCH",
+                "candidate_signal_type": "WATCH",
+                "execution_candidate": False,
+            }
+        )
+
+        payload = packet.build_packet(
+            [amd_alert],
+            health_payload={"status": "OK", "checks": []},
+            portfolio_payload=portfolio,
+            intake_results=[intake_result()],
+            execution_readiness_payload=ready_execution_readiness(),
+            market_context_payload={"schema": "market_context_report_v1", "markets": {"US": {"regime": "risk_on"}}},
+            intraday_context_payload={
+                "schema": "intraday_context_report_v1",
+                "status": "OK",
+                "markets": {
+                    "US": {
+                        "status": "OK",
+                        "symbols": [
+                            {
+                                "symbol": "AMD",
+                                "market": "US",
+                                "status": "OK",
+                                "session": {"change_pct": -3.2, "momentum": "strong_down"},
+                                "latest_5m": {"change_pct": -0.8, "momentum": "down"},
+                                "latest_15m": {"change_pct": -1.4, "momentum": "strong_down"},
+                                "latest_60m": {"change_pct": -3.2, "momentum": "strong_down"},
+                                "multi_timeframe_confirmation": {
+                                    "schema": "intraday_multi_timeframe_confirmation_v1",
+                                    "alignment": "bearish_aligned",
+                                    "dominant_direction": "down",
+                                    "buy_confirmation": False,
+                                    "sell_confirmation": True,
+                                    "contradictions": [],
+                                },
+                                "quality": {"status": "OK"},
+                                "hermes_notes": ["intraday_multi_timeframe_bearish_challenges_buy_review"],
+                            }
+                        ],
+                    }
+                },
+            },
+        )
+
+        digest = payload["position_review"]["items"][0]["context_digest"]
+        evidence = digest["intraday_position_evidence"]
+        work_item = payload["position_judgment_worklist"]["items"][0]
+
+        self.assertEqual(evidence["schema"], "hermes_position_intraday_evidence_v1")
+        self.assertEqual(evidence["action_intent"], "risk_reduction")
+        self.assertEqual(evidence["alignment"], "supports_recommended_action")
+        self.assertIn("session_down_supports_reduce_exit", evidence["support_codes"])
+        self.assertIn("multi_timeframe_bearish_supports_reduce_exit", evidence["support_codes"])
+        self.assertIn("position_intraday_evidence_requires_discussion", digest["position_attention"])
+        self.assertEqual(
+            work_item["context_summary"]["intraday_position_evidence"]["alignment"],
+            "supports_recommended_action",
+        )
+        self.assertIn("position_intraday_evidence_requires_discussion", work_item["required_attention_codes"])
+
     def test_user_position_judgment_template_allows_manual_only_action_advice(self):
         item = {
             "review_id": "user:1:AAPL:2026-06-12:risk_review",

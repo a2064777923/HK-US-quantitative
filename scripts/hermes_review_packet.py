@@ -2156,6 +2156,163 @@ def alert_like_from_position_review_item(item):
     }
 
 
+def position_intraday_action_intent(item):
+    action = str((item or {}).get("recommended_action") or "").strip().lower()
+    if action in (
+        "exit",
+        "exit_review",
+        "reduce",
+        "reduce_review",
+        "reduce_or_exit_review",
+        "risk_review",
+        "stop_loss_review",
+    ):
+        return "risk_reduction"
+    if action in (
+        "take_profit",
+        "take_profit_review",
+        "take_profit_or_trailing_stop_review",
+        "trail_stop",
+        "trailing_stop_review",
+    ):
+        return "profit_management"
+    return "hold_or_watch"
+
+
+def momentum_direction(value):
+    text = str(value or "").strip().lower()
+    if text in ("strong_up", "up"):
+        return "up"
+    if text in ("strong_down", "down"):
+        return "down"
+    return "flat" if text == "flat" else ""
+
+
+def intraday_position_evidence(item, intraday_context):
+    context = intraday_context if isinstance(intraday_context, dict) else {}
+    status = str(context.get("status") or "MISSING").upper()
+    notes = set(normalize_list(context.get("hermes_notes")) + normalize_list(context.get("notes")))
+    mtf = (
+        context.get("multi_timeframe_confirmation")
+        if isinstance(context.get("multi_timeframe_confirmation"), dict)
+        else {}
+    )
+    session = context.get("session") if isinstance(context.get("session"), dict) else {}
+    quality = context.get("quality") if isinstance(context.get("quality"), dict) else {}
+    action_intent = position_intraday_action_intent(item)
+
+    support_codes = []
+    challenge_codes = []
+    conflict_codes = []
+    quality_codes = []
+    limit_codes = []
+
+    def add_unique(target, code):
+        text = str(code or "").strip()
+        if text and text not in target:
+            target.append(text)
+
+    if status in ("MISSING", "STALE"):
+        add_unique(limit_codes, f"intraday_context_{status.lower()}")
+    if status == "CLOSED":
+        add_unique(limit_codes, "intraday_market_not_open_last_session_only")
+
+    session_direction = momentum_direction(session.get("momentum"))
+    dominant_direction = str(mtf.get("dominant_direction") or "").strip().lower()
+    bearish_mtf = mtf.get("sell_confirmation") is True or dominant_direction == "down"
+    bullish_mtf = mtf.get("buy_confirmation") is True or dominant_direction == "up"
+    if "intraday_multi_timeframe_bearish_challenges_buy_review" in notes:
+        bearish_mtf = True
+    if "intraday_multi_timeframe_bullish_challenges_sell_review" in notes:
+        bullish_mtf = True
+
+    if action_intent == "risk_reduction":
+        if session_direction == "down":
+            add_unique(support_codes, "session_down_supports_reduce_exit")
+        elif session_direction == "up":
+            add_unique(challenge_codes, "session_up_challenges_immediate_reduce_exit")
+        if bearish_mtf:
+            add_unique(support_codes, "multi_timeframe_bearish_supports_reduce_exit")
+        if bullish_mtf:
+            add_unique(challenge_codes, "multi_timeframe_bullish_challenges_reduce_exit")
+    elif action_intent == "profit_management":
+        if session_direction == "up":
+            add_unique(support_codes, "session_up_supports_trailing_profit_review")
+        elif session_direction == "down":
+            add_unique(support_codes, "session_down_supports_take_profit_or_tighten_stop")
+        if bullish_mtf:
+            add_unique(support_codes, "multi_timeframe_bullish_supports_trailing_profit_review")
+        if bearish_mtf:
+            add_unique(support_codes, "multi_timeframe_bearish_supports_take_profit_or_tighten_stop")
+    else:
+        if session_direction == "up":
+            add_unique(support_codes, "session_up_supports_hold_watch")
+        elif session_direction == "down":
+            add_unique(challenge_codes, "session_down_challenges_hold_watch")
+        if bullish_mtf:
+            add_unique(support_codes, "multi_timeframe_bullish_supports_hold_watch")
+        if bearish_mtf:
+            add_unique(challenge_codes, "multi_timeframe_bearish_challenges_hold_watch")
+
+    for code in mtf.get("contradictions") or []:
+        add_unique(conflict_codes, code)
+    if "intraday_timeframes_conflicting_requires_disclosure" in notes:
+        add_unique(conflict_codes, "intraday_timeframes_conflicting_requires_disclosure")
+
+    quality_status = str(quality.get("status") or "").upper()
+    if quality_status and quality_status != "OK":
+        add_unique(quality_codes, f"intraday_quality_{quality_status.lower()}")
+    for code in quality.get("notes") or []:
+        add_unique(quality_codes, code)
+    if "intraday_context_quality_degraded_requires_disclosure" in notes:
+        add_unique(quality_codes, "intraday_context_quality_degraded_requires_disclosure")
+
+    if support_codes and challenge_codes:
+        alignment = "mixed_intraday_evidence"
+    elif challenge_codes:
+        alignment = "challenges_recommended_action"
+    elif conflict_codes:
+        alignment = "conflicting_timeframes"
+    elif support_codes and (quality_codes or limit_codes):
+        alignment = "supports_with_limits"
+    elif support_codes:
+        alignment = "supports_recommended_action"
+    elif status in ("MISSING", "STALE"):
+        alignment = "unavailable_or_stale"
+    elif quality_codes or limit_codes:
+        alignment = "limited_context"
+    else:
+        alignment = "neutral_or_insufficient"
+
+    codes = support_codes + challenge_codes + conflict_codes + quality_codes + limit_codes
+    return {
+        "schema": "hermes_position_intraday_evidence_v1",
+        "read_only": True,
+        "advisory_only": True,
+        "submits_orders": False,
+        "changes_portfolio": False,
+        "recommended_action": (item or {}).get("recommended_action"),
+        "action_intent": action_intent,
+        "status": status,
+        "alignment": alignment,
+        "session_momentum": session.get("momentum"),
+        "session_change_pct": session.get("change_pct"),
+        "timeframe_alignment": mtf.get("alignment"),
+        "dominant_direction": mtf.get("dominant_direction"),
+        "support_codes": support_codes,
+        "challenge_codes": challenge_codes,
+        "conflict_codes": conflict_codes,
+        "quality_codes": quality_codes,
+        "limit_codes": limit_codes,
+        "codes": codes,
+        "requires_position_attention": alignment != "neutral_or_insufficient",
+        "instruction": (
+            "Use this as advisory holding-management evidence only. It may support or challenge hold, reduce, exit, "
+            "or trail-stop advice, but it must not submit orders or replace completed daily OHLCV evidence."
+        ),
+    }
+
+
 def position_context_attention_items(
     item,
     market_context,
@@ -2219,6 +2376,17 @@ def position_context_attention_items(
         attention.append("position_intraday_context_quality_degraded_requires_disclosure")
     if "intraday_market_not_open_requires_session_context" in intraday_notes:
         attention.append("position_intraday_market_not_open_requires_session_context")
+    position_intraday = intraday_position_evidence(item, intraday_context)
+    position_intraday_intent = position_intraday.get("action_intent")
+    if (
+        position_intraday.get("requires_position_attention")
+        and (
+            urgency == "high"
+            or intraday_contract
+            or position_intraday_intent in ("risk_reduction", "profit_management")
+        )
+    ):
+        attention.append("position_intraday_evidence_requires_discussion")
     calendar_status = str((intraday_market_session_overrides or {}).get("status") or "").upper()
     calendar_report_status = str((intraday_market_session_overrides or {}).get("report_status") or "").upper()
     if (
@@ -2293,6 +2461,7 @@ def position_context_digest_for_item(
         if isinstance(advisory_plan.get("intraday_review_contract"), dict)
         else {}
     )
+    position_intraday = intraday_position_evidence(item, intraday_context)
     return {
         "schema": "hermes_position_review_context_digest_v1",
         "read_only": True,
@@ -2363,6 +2532,7 @@ def position_context_digest_for_item(
         "source_limits": source_limits,
         "dynamic_management_context": dynamic_context,
         "intraday_review_contract": intraday_contract,
+        "intraday_position_evidence": position_intraday,
         "position_attention": position_context_attention_items(
             item,
             market_context,
@@ -2640,6 +2810,11 @@ def compact_position_judgment_context_summary(item):
     )
     source_limits = digest.get("source_limits") if isinstance(digest.get("source_limits"), dict) else {}
     market_context = digest.get("market_context") if isinstance(digest.get("market_context"), dict) else {}
+    intraday_position = (
+        digest.get("intraday_position_evidence")
+        if isinstance(digest.get("intraday_position_evidence"), dict)
+        else {}
+    )
     external_context = digest.get("external_market_context") if isinstance(digest.get("external_market_context"), dict) else {}
     event_catalysts = digest.get("event_catalysts") if isinstance(digest.get("event_catalysts"), dict) else {}
     sentiment = digest.get("market_sentiment") if isinstance(digest.get("market_sentiment"), dict) else {}
@@ -2690,6 +2865,24 @@ def compact_position_judgment_context_summary(item):
             if isinstance(intraday.get("hard_limits"), list)
             else [],
         } if intraday else {},
+        "intraday_position_evidence": {
+            "action_intent": intraday_position.get("action_intent"),
+            "alignment": intraday_position.get("alignment"),
+            "status": intraday_position.get("status"),
+            "session_momentum": intraday_position.get("session_momentum"),
+            "session_change_pct": intraday_position.get("session_change_pct"),
+            "timeframe_alignment": intraday_position.get("timeframe_alignment"),
+            "dominant_direction": intraday_position.get("dominant_direction"),
+            "support_codes": (intraday_position.get("support_codes") or [])[:4]
+            if isinstance(intraday_position.get("support_codes"), list)
+            else [],
+            "challenge_codes": (intraday_position.get("challenge_codes") or [])[:4]
+            if isinstance(intraday_position.get("challenge_codes"), list)
+            else [],
+            "limit_codes": (intraday_position.get("limit_codes") or [])[:4]
+            if isinstance(intraday_position.get("limit_codes"), list)
+            else [],
+        } if intraday_position else {},
         "market_context": {
             "status": market_context.get("status"),
             "regime": market_context.get("regime"),
