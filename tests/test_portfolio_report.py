@@ -83,6 +83,12 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertEqual(review["advisory_plan"]["primary_action"], "review_trailing_stop_or_partial_take_profit")
         self.assertFalse(review["advisory_plan"]["add_allowed_after_review"])
         self.assertIsNone(review["advisory_plan"]["manual_max_quantity_hint"])
+        dynamic = review["advisory_plan"]["dynamic_management_context"]
+        self.assertEqual(dynamic["schema"], "position_dynamic_management_context_v1")
+        self.assertEqual(dynamic["target_status"], "momentum_profit_review")
+        self.assertEqual(dynamic["latest_daily_change_pct"], 3.5)
+        self.assertTrue(dynamic["requires_hermes_dynamic_review"])
+        self.assertIn("review_intraday_or_daily_strength_for_trailing_floor", dynamic["review_focus"])
         self.assertTrue(review["execution_policy"]["advice_only"])
         self.assertFalse(review["execution_policy"]["submits_orders"])
 
@@ -466,6 +472,14 @@ class PortfolioReportTests(unittest.TestCase):
         )
         self.assertEqual(payload["items"][0]["advisory_plan"]["reduce_fraction_hint"], 0.5)
         self.assertEqual(payload["items"][0]["advisory_plan"]["reference_prices"]["signal_side"], "SELL")
+        self.assertEqual(
+            payload["items"][0]["advisory_plan"]["dynamic_management_context"]["target_status"],
+            "below_signal_stop",
+        )
+        self.assertIn(
+            "confirm_exit_pressure_with_market_and_intraday_context",
+            payload["items"][0]["advisory_plan"]["dynamic_management_context"]["review_focus"],
+        )
         self.assertTrue(payload["items"][0]["execution_policy"]["requires_separate_order_path"])
 
     def test_stop_breach_with_major_loss_still_maps_to_exit_review(self):

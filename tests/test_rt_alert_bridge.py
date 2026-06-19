@@ -117,6 +117,16 @@ class RtAlertBridgeTests(unittest.TestCase):
                                 "signal_take_profit": 220,
                                 "trailing_stop_floor_reference": 180,
                             },
+                            "dynamic_management_context": {
+                                "schema": "position_dynamic_management_context_v1",
+                                "target_status": "below_signal_stop",
+                                "unrealized_pnl_pct": -9.5,
+                                "latest_daily_change_pct": -3.2,
+                                "distance_to_signal_take_profit_pct": 24.3,
+                                "distance_above_signal_stop_loss_pct": -1.2,
+                                "trail_floor_reference": None,
+                                "requires_hermes_dynamic_review": True,
+                            },
                         },
                         "context_digest": {
                             "position_attention": [
@@ -760,6 +770,8 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("qty_hint=5", text)
             self.assertIn("sig_stop_ref=180", text)
             self.assertIn("sig_target_ref=220", text)
+            self.assertIn("動態管理：status=below_signal_stop", text)
+            self.assertIn("dist_stop=-1.2%", text)
             self.assertNotIn(" stop=180", text)
             self.assertNotIn(" action=take_profit_or_trailing_stop_review", text)
 

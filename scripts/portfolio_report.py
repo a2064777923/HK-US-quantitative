@@ -904,6 +904,100 @@ def positive_price(value):
     return round(value, 4) if value > 0 else None
 
 
+def pct_to_price(current_price, target_price):
+    current = as_float(current_price, None)
+    target = as_float(target_price, None)
+    if current is None or target is None or current <= 0 or target <= 0:
+        return None
+    return round((target - current) / current * 100, 2)
+
+
+def pct_above_price(current_price, floor_price):
+    current = as_float(current_price, None)
+    floor = as_float(floor_price, None)
+    if current is None or floor is None or current <= 0 or floor <= 0:
+        return None
+    return round((current - floor) / current * 100, 2)
+
+
+def build_dynamic_position_management_context(position, action, current_price, avg_cost, stop_loss, take_profit):
+    pnl_pct = round_or_none(as_float(position.get("unrealized_pnl_pct"), None))
+    latest_daily_change_pct = round_or_none(as_float(position.get("latest_daily_change_pct"), None))
+    distance_to_take_profit_pct = pct_to_price(current_price, take_profit)
+    distance_above_stop_loss_pct = pct_above_price(current_price, stop_loss)
+    current = as_float(current_price, None)
+    stop = as_float(stop_loss, None)
+    target = as_float(take_profit, None)
+
+    if current is None or current <= 0:
+        status = "missing_current_price"
+    elif stop is not None and stop > 0 and current <= stop:
+        status = "below_signal_stop"
+    elif target is not None and target > 0 and current >= target:
+        status = "signal_target_hit"
+    elif distance_to_take_profit_pct is not None and distance_to_take_profit_pct <= 3:
+        status = "near_signal_target"
+    elif pnl_pct is not None and pnl_pct <= -8:
+        status = "loss_control_review"
+    elif latest_daily_change_pct is not None and latest_daily_change_pct <= -3:
+        status = "downside_review"
+    elif pnl_pct is not None and pnl_pct >= 15:
+        status = "large_gain_review"
+    elif latest_daily_change_pct is not None and latest_daily_change_pct >= 3 and (pnl_pct is None or pnl_pct >= 0):
+        status = "momentum_profit_review"
+    else:
+        status = "normal"
+
+    trailing_floor_candidates = [
+        value
+        for value in (avg_cost, stop_loss)
+        if value is not None and status in ("signal_target_hit", "near_signal_target", "large_gain_review", "momentum_profit_review")
+    ]
+    review_focus_by_status = {
+        "below_signal_stop": "review_reduce_or_exit_before_adding_exposure",
+        "signal_target_hit": "review_partial_take_profit_or_raise_trailing_floor",
+        "near_signal_target": "review_target_extension_vs_partial_take_profit",
+        "loss_control_review": "review_loss_control_and_position_size",
+        "downside_review": "review_downside_momentum_and_position_size",
+        "large_gain_review": "review_gain_protection_and_trailing_floor",
+        "momentum_profit_review": "review_intraday_or_daily_strength_for_trailing_floor",
+        "missing_current_price": "repair_current_price_before_decision",
+    }
+    review_focus = []
+    if status in review_focus_by_status:
+        review_focus.append(review_focus_by_status[status])
+    if action == "take_profit_or_trailing_stop_review":
+        review_focus.append("compare_momentum_with_existing_take_profit_reference")
+    elif action in ("exit_review", "reduce_or_exit_review"):
+        review_focus.append("confirm_exit_pressure_with_market_and_intraday_context")
+    elif action == "risk_review":
+        review_focus.append("confirm_risk_flags_before_add_or_hold")
+
+    deduped_focus = []
+    for value in review_focus:
+        if value not in deduped_focus:
+            deduped_focus.append(value)
+
+    return {
+        "schema": "position_dynamic_management_context_v1",
+        "advisory_only": True,
+        "submits_orders": False,
+        "reference_scope": "live_position_management_context_not_order_instruction",
+        "target_status": status,
+        "current_price": current_price,
+        "avg_cost": avg_cost,
+        "unrealized_pnl_pct": pnl_pct,
+        "latest_daily_change_pct": latest_daily_change_pct,
+        "distance_to_signal_take_profit_pct": distance_to_take_profit_pct,
+        "distance_above_signal_stop_loss_pct": distance_above_stop_loss_pct,
+        "trail_floor_reference": max(trailing_floor_candidates) if trailing_floor_candidates else None,
+        "requires_hermes_dynamic_review": status != "normal" or action != "hold_watch_review",
+        "review_focus": deduped_focus,
+        "price_basis": position.get("valuation_price_source"),
+        "kline_date": position.get("kline_date"),
+    }
+
+
 def build_position_advisory_plan(position, action, role):
     signal = position.get("signal") if isinstance(position.get("signal"), dict) else {}
     order_prices = signal.get("order_prices") if isinstance(signal.get("order_prices"), dict) else {}
@@ -973,6 +1067,14 @@ def build_position_advisory_plan(position, action, role):
             "signal_side": side,
             "trailing_stop_floor_reference": max(trailing_floor_candidates) if trailing_floor_candidates else None,
         },
+        "dynamic_management_context": build_dynamic_position_management_context(
+            position,
+            action,
+            current_price,
+            avg_cost,
+            stop_loss,
+            take_profit,
+        ),
         "review_flags": review_flags,
         "supporting_reasons": list(position.get("recommendation_reasons") or [])[:8],
     }

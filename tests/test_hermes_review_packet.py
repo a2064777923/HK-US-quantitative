@@ -3725,6 +3725,24 @@ class HermesReviewPacketTests(unittest.TestCase):
                             "submits_orders": False,
                             "requires_separate_order_path": True,
                         },
+                        "advisory_plan": {
+                            "schema": "position_advisory_plan_v1",
+                            "advisory_only": True,
+                            "submits_orders": False,
+                            "dynamic_management_context": {
+                                "schema": "position_dynamic_management_context_v1",
+                                "target_status": "below_signal_stop",
+                                "current_price": 280,
+                                "avg_cost": 300,
+                                "unrealized_pnl_pct": -6.67,
+                                "latest_daily_change_pct": -3.4,
+                                "distance_to_signal_take_profit_pct": 12.5,
+                                "distance_above_signal_stop_loss_pct": -1.79,
+                                "trail_floor_reference": None,
+                                "requires_hermes_dynamic_review": True,
+                                "review_focus": ["confirm_exit_pressure_with_market_and_intraday_context"],
+                            },
+                        },
                     }
                 ],
             },
@@ -3874,6 +3892,9 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(digest["event_catalysts"]["positive_candidate_count"], 1)
         self.assertEqual(digest["market_sentiment"]["indicators"][0]["id"], "hk-risk-off")
         self.assertTrue(digest["fundamentals_context"]["limit_acknowledgement_required"])
+        self.assertEqual(digest["dynamic_management_context"]["target_status"], "below_signal_stop")
+        self.assertTrue(digest["dynamic_management_context"]["requires_hermes_dynamic_review"])
+        self.assertIn("position_dynamic_management_requires_review", digest["position_attention"])
         self.assertIn("position_negative_external_context_requires_discussion", digest["position_attention"])
         self.assertIn("position_market_sentiment_risk_requires_discussion", digest["position_attention"])
         self.assertIn("position_fundamentals_context_limit_requires_discussion", digest["position_attention"])

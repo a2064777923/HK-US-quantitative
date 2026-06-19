@@ -2172,11 +2172,19 @@ def position_context_attention_items(
     cross_market = (market_context or {}).get("cross_market") or {}
     intraday_status = str((intraday_context or {}).get("status") or "").upper()
     intraday_notes = set((intraday_context or {}).get("hermes_notes") or (intraday_context or {}).get("notes") or [])
+    advisory_plan = (item or {}).get("advisory_plan") if isinstance((item or {}).get("advisory_plan"), dict) else {}
+    dynamic_context = (
+        advisory_plan.get("dynamic_management_context")
+        if isinstance(advisory_plan.get("dynamic_management_context"), dict)
+        else {}
+    )
 
     if urgency == "high":
         attention.append("high_urgency_position_requires_contextual_rationale")
     if action in ("exit_review", "reduce_or_exit_review", "take_profit_or_trailing_stop_review"):
         attention.append("position_exit_or_reduce_review_requires_contextual_rationale")
+    if dynamic_context.get("requires_hermes_dynamic_review"):
+        attention.append("position_dynamic_management_requires_review")
     if (market_context or {}).get("status") != "OK":
         attention.append("position_market_context_missing_for_holding_market")
     if (market_context or {}).get("regime") == "risk_off":
@@ -2258,6 +2266,12 @@ def position_context_digest_for_item(
     sentiment_items = relevant_market_sentiment(alert_like, market_sentiment_payload)
     fundamental_items = relevant_fundamentals(alert_like, fundamentals_context_payload)
     source_limits = source_limit_summary(trusted_source_preflight_payload, source_reliability_payload)
+    advisory_plan = item.get("advisory_plan") if isinstance(item.get("advisory_plan"), dict) else {}
+    dynamic_context = (
+        advisory_plan.get("dynamic_management_context")
+        if isinstance(advisory_plan.get("dynamic_management_context"), dict)
+        else {}
+    )
     return {
         "schema": "hermes_position_review_context_digest_v1",
         "read_only": True,
@@ -2326,6 +2340,7 @@ def position_context_digest_for_item(
             "items": fundamental_items,
         },
         "source_limits": source_limits,
+        "dynamic_management_context": dynamic_context,
         "position_attention": position_context_attention_items(
             item,
             market_context,

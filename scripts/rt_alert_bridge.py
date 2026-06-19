@@ -620,6 +620,22 @@ def build_position_review_output(items, packet):
                     trail=fmt_optional(refs.get("trailing_stop_floor_reference")),
                 )
             )
+            dynamic = (
+                advisory_plan.get("dynamic_management_context")
+                if isinstance(advisory_plan.get("dynamic_management_context"), dict)
+                else {}
+            )
+            if dynamic:
+                lines.append(
+                    "├─ 動態管理：status={status} pnl={pnl} day={day} dist_tp={dist_tp} dist_stop={dist_stop} trail_ref={trail}".format(
+                        status=dynamic.get("target_status", "?"),
+                        pnl=fmt_pct(dynamic.get("unrealized_pnl_pct")),
+                        day=fmt_pct(dynamic.get("latest_daily_change_pct")),
+                        dist_tp=fmt_pct(dynamic.get("distance_to_signal_take_profit_pct")),
+                        dist_stop=fmt_pct(dynamic.get("distance_above_signal_stop_loss_pct")),
+                        trail=fmt_optional(dynamic.get("trail_floor_reference")),
+                    )
+                )
         if attention:
             lines.append(f"├─ 必須回應風險：{','.join(str(code) for code in attention[:6])}")
         lines.append(
