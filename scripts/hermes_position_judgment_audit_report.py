@@ -416,7 +416,9 @@ def audit_judgment(
         latest_review_by_thread=latest_review_by_thread,
     )
     reasons.extend(match.get("thread_rejected_reasons") or [])
-    if match.get("current_packet_coverage") and match.get("match_type") == "latest_review_thread_key":
+    if match.get("current_packet_coverage") and match.get("match_type") == "latest_review_id":
+        packet_source = "latest_packet_review_id"
+    elif match.get("current_packet_coverage") and match.get("match_type") == "latest_review_thread_key":
         packet_source = "latest_packet_thread_key"
     else:
         reasons.extend(packet_reasons or [])

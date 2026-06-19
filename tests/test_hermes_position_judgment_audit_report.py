@@ -160,6 +160,36 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "OK")
         self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 0)
 
+    def test_latest_review_id_match_does_not_require_archived_packet(self):
+        high = position_item(
+            "simulation:8:00929:2026-06-18:reduce_or_exit_review",
+            urgency="high",
+            recommended_action="reduce_or_exit_review",
+        )
+        item = judgment(
+            "simulation:8:00929:2026-06-18:reduce_or_exit_review",
+            packet_id="older-packet-id",
+            decision="watch",
+            reviewed_at="2026-06-18T09:55:00",
+            opposing_factors=["support held above stop", "liquidity risk makes immediate exit worse"],
+            risk_notes=["review again next session", "do not add exposure before review"],
+        )
+
+        payload = audit.build_report(
+            [item],
+            packet([high], packet_id="latest-packet"),
+            now=datetime(2026, 6, 18, 10, 0),
+            packet_archive_dir="/tmp/does-not-exist-for-test",
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "OK")
+        self.assertEqual(row["status"], "PASS")
+        self.assertEqual(row["packet_source"], "latest_packet_review_id")
+        self.assertEqual(row["match_type"], "latest_review_id")
+        self.assertNotIn("packet_archive_missing_for_packet_id", row["reasons"])
+        self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 0)
+
     def test_unexpired_thread_judgment_can_cover_refreshed_same_position_review(self):
         current = position_item(
             "simulation:8:00929:2026-06-18:reduce_or_exit_review",
