@@ -4112,10 +4112,23 @@ class HermesReviewPacketTests(unittest.TestCase):
                                 "symbol": "AMD",
                                 "market": "US",
                                 "status": "OK",
+                                "latest_timestamp": "2026-06-12T10:25:00",
+                                "latest_age_minutes": 3,
+                                "latest_price": 125.4,
                                 "session": {"change_pct": -3.2, "momentum": "strong_down"},
-                                "latest_5m": {"change_pct": -0.8, "momentum": "down"},
+                                "latest_5m": {
+                                    "change_pct": -0.8,
+                                    "momentum": "down",
+                                    "coverage_status": "OK",
+                                    "row_count": 5,
+                                },
                                 "latest_15m": {"change_pct": -1.4, "momentum": "strong_down"},
-                                "latest_60m": {"change_pct": -3.2, "momentum": "strong_down"},
+                                "latest_30m": {"change_pct": -2.1, "momentum": "strong_down"},
+                                "latest_60m": {
+                                    "change_pct": -3.2,
+                                    "momentum": "strong_down",
+                                    "volume_state": "expanding",
+                                },
                                 "multi_timeframe_confirmation": {
                                     "schema": "intraday_multi_timeframe_confirmation_v1",
                                     "alignment": "bearish_aligned",
@@ -4124,6 +4137,8 @@ class HermesReviewPacketTests(unittest.TestCase):
                                     "sell_confirmation": True,
                                     "contradictions": [],
                                 },
+                                "data_sources": ["alpaca_minute_ohlcv"],
+                                "source_granularities": ["1m_ohlcv"],
                                 "quality": {"status": "OK"},
                                 "hermes_notes": ["intraday_multi_timeframe_bearish_challenges_buy_review"],
                             }
@@ -4146,6 +4161,20 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(
             work_item["context_summary"]["intraday_position_evidence"]["alignment"],
             "supports_recommended_action",
+        )
+        live = work_item["context_summary"]["intraday_live_context"]
+        self.assertEqual(live["latest_price"], 125.4)
+        self.assertEqual(live["latest_age_minutes"], 3)
+        self.assertEqual(live["session"]["change_pct"], -3.2)
+        self.assertEqual(live["latest_5m"]["coverage_status"], "OK")
+        self.assertEqual(live["latest_15m"]["momentum"], "strong_down")
+        self.assertEqual(live["latest_30m"]["change_pct"], -2.1)
+        self.assertEqual(live["latest_60m"]["volume_state"], "expanding")
+        self.assertEqual(live["multi_timeframe"]["alignment"], "bearish_aligned")
+        self.assertEqual(live["data_sources"], ["alpaca_minute_ohlcv"])
+        self.assertEqual(
+            live["policy"],
+            "current_session_or_last_session_context_only_not_completed_daily_ohlcv",
         )
         self.assertIn("position_intraday_evidence_requires_discussion", work_item["required_attention_codes"])
 

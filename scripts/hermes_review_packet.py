@@ -2796,6 +2796,87 @@ def build_position_judgment_task_index(position_review_payload, judgment_file, l
     }
 
 
+def compact_intraday_timeframe(row):
+    row = row if isinstance(row, dict) else {}
+    if not row:
+        return {}
+    keys = (
+        "change_pct",
+        "momentum",
+        "volume_state",
+        "coverage_status",
+        "row_count",
+        "start",
+        "end",
+    )
+    return {key: row.get(key) for key in keys if row.get(key) not in (None, "", [], {})}
+
+
+def compact_intraday_live_context(intraday_context):
+    context = intraday_context if isinstance(intraday_context, dict) else {}
+    if not context:
+        return {}
+    session = context.get("session") if isinstance(context.get("session"), dict) else {}
+    quality = context.get("quality") if isinstance(context.get("quality"), dict) else {}
+    mtf = (
+        context.get("multi_timeframe_confirmation")
+        if isinstance(context.get("multi_timeframe_confirmation"), dict)
+        else {}
+    )
+    market_session = context.get("market_session") if isinstance(context.get("market_session"), dict) else {}
+    market_breadth = context.get("market_breadth") if isinstance(context.get("market_breadth"), dict) else {}
+
+    payload = {
+        "status": context.get("status"),
+        "latest_timestamp": context.get("latest_timestamp"),
+        "latest_age_minutes": context.get("latest_age_minutes"),
+        "latest_price": context.get("latest_price"),
+        "session": compact_intraday_timeframe(session),
+        "latest_5m": compact_intraday_timeframe(context.get("latest_5m")),
+        "latest_15m": compact_intraday_timeframe(context.get("latest_15m")),
+        "latest_30m": compact_intraday_timeframe(context.get("latest_30m")),
+        "latest_60m": compact_intraday_timeframe(context.get("latest_60m")),
+        "multi_timeframe": {
+            "alignment": mtf.get("alignment"),
+            "dominant_direction": mtf.get("dominant_direction"),
+            "buy_confirmation": mtf.get("buy_confirmation"),
+            "sell_confirmation": mtf.get("sell_confirmation"),
+            "contradictions": (mtf.get("contradictions") or [])[:4]
+            if isinstance(mtf.get("contradictions"), list)
+            else [],
+        } if mtf else {},
+        "market_session": {
+            "phase": market_session.get("phase"),
+            "is_open": market_session.get("is_open"),
+            "local_time": market_session.get("local_time"),
+        } if market_session else {},
+        "market_breadth": {
+            "session_up_pct": market_breadth.get("session_up_pct"),
+            "session_down_pct": market_breadth.get("session_down_pct"),
+            "avg_change_pct": market_breadth.get("avg_change_pct"),
+        } if market_breadth else {},
+        "quality": {
+            "status": quality.get("status"),
+            "large_gap_count": quality.get("large_gap_count"),
+            "invalid_row_count": quality.get("invalid_row_count"),
+            "notes": (quality.get("notes") or [])[:4]
+            if isinstance(quality.get("notes"), list)
+            else [],
+        } if quality else {},
+        "data_sources": (context.get("data_sources") or [])[:4]
+        if isinstance(context.get("data_sources"), list)
+        else [],
+        "source_granularities": (context.get("source_granularities") or [])[:4]
+        if isinstance(context.get("source_granularities"), list)
+        else [],
+        "notes": (context.get("hermes_notes") or context.get("notes") or [])[:4]
+        if isinstance(context.get("hermes_notes") or context.get("notes"), list)
+        else [],
+        "policy": "current_session_or_last_session_context_only_not_completed_daily_ohlcv",
+    }
+    return {key: value for key, value in payload.items() if value not in (None, "", [], {})}
+
+
 def compact_position_judgment_context_summary(item):
     item = item if isinstance(item, dict) else {}
     digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
@@ -2819,6 +2900,7 @@ def compact_position_judgment_context_summary(item):
         if isinstance(digest.get("intraday_position_evidence"), dict)
         else {}
     )
+    intraday_context = digest.get("intraday_context") if isinstance(digest.get("intraday_context"), dict) else {}
     external_context = digest.get("external_market_context") if isinstance(digest.get("external_market_context"), dict) else {}
     event_catalysts = digest.get("event_catalysts") if isinstance(digest.get("event_catalysts"), dict) else {}
     sentiment = digest.get("market_sentiment") if isinstance(digest.get("market_sentiment"), dict) else {}
@@ -2869,6 +2951,7 @@ def compact_position_judgment_context_summary(item):
             if isinstance(intraday.get("hard_limits"), list)
             else [],
         } if intraday else {},
+        "intraday_live_context": compact_intraday_live_context(intraday_context),
         "intraday_position_evidence": {
             "action_intent": intraday_position.get("action_intent"),
             "alignment": intraday_position.get("alignment"),
