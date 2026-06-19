@@ -223,6 +223,25 @@ def position_review_escalated(item, sent_record):
     )
 
 
+def position_review_notice_fingerprint(item):
+    if not isinstance(item, dict):
+        return ""
+    work_item = item.get("position_judgment_work_item") if isinstance(item.get("position_judgment_work_item"), dict) else {}
+    if not work_item:
+        return ""
+    required_output = work_item.get("required_output_fields") if isinstance(work_item.get("required_output_fields"), dict) else {}
+    attention = work_item.get("required_attention_codes") if isinstance(work_item.get("required_attention_codes"), list) else []
+    return "|".join(
+        [
+            str(work_item.get("schema") or "").strip(),
+            str(required_output.get("schema") or "").strip(),
+            str(required_output.get("advisory_only")),
+            str(required_output.get("submits_orders")),
+            ",".join(str(code) for code in attention[:10]),
+        ]
+    )
+
+
 def fmt_number(value):
     try:
         return f"{float(value):.0f}"
@@ -587,9 +606,12 @@ def pending_position_reviews(packet, sent_rows, now_epoch=None):
         thread_key = position_review_thread_key(item)
         last_sent = sent_by_thread.get(thread_key)
         last_sent_at = sent_record_time(last_sent)
+        notice_fingerprint = position_review_notice_fingerprint(item)
+        last_notice_fingerprint = str((last_sent or {}).get("notice_fingerprint") or "")
         if (
             last_sent is None
             or position_review_escalated(item, last_sent)
+            or (notice_fingerprint and notice_fingerprint != last_notice_fingerprint)
             or (reminder_seconds > 0 and now_epoch - last_sent_at >= reminder_seconds)
         ):
             pending.append(item)
@@ -856,6 +878,7 @@ def mark_position_reviews_sent(sent, items):
             "urgency": item.get("urgency"),
             "recommended_action": item.get("recommended_action"),
             "sent_at_epoch": now_epoch,
+            "notice_fingerprint": position_review_notice_fingerprint(item),
         }
         if thread_key in existing_keys:
             existing = [old for old in existing if position_review_thread_key(old) != thread_key]

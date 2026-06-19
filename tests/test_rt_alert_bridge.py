@@ -558,6 +558,8 @@ class RtAlertBridgeTests(unittest.TestCase):
         item["review_id"] = "user:3:AAPL:2026-06-13:reduce_or_exit_review"
         item["recommended_action"] = "reduce_or_exit_review"
         item["urgency"] = "high"
+        current = bridge.position_review_items(packet)[0]
+        notice_fingerprint = bridge.position_review_notice_fingerprint(current)
         sent_rows = [
             {
                 "review_id": "user:3:AAPL:2026-06-12:exit_review",
@@ -565,6 +567,7 @@ class RtAlertBridgeTests(unittest.TestCase):
                 "urgency": "high",
                 "recommended_action": "exit_review",
                 "sent_at_epoch": 1000,
+                "notice_fingerprint": notice_fingerprint,
             }
         ]
 
@@ -576,6 +579,33 @@ class RtAlertBridgeTests(unittest.TestCase):
         bridge = self.load_bridge(
             RT_ALERT_REMOTE="local",
             RT_ALERT_EXECUTION_MODE="notify",
+        )
+        packet = self.packet_with_position_review()
+        item = packet["position_review"]["items"][0]
+        item["review_thread_key"] = "user:3:AAPL"
+        current = bridge.position_review_items(packet)[0]
+        notice_fingerprint = bridge.position_review_notice_fingerprint(current)
+        sent_rows = [
+            {
+                "review_thread_key": "user:3:AAPL",
+                "review_id": "user:3:AAPL:2026-06-12:risk_review",
+                "symbol": "AAPL",
+                "urgency": "high",
+                "recommended_action": "risk_review",
+                "sent_at_epoch": 1000,
+                "notice_fingerprint": notice_fingerprint,
+            }
+        ]
+
+        pending = bridge.pending_position_reviews(packet, sent_rows, now_epoch=1000 + 7 * 3600)
+
+        self.assertEqual(pending, [])
+
+    def test_position_review_worklist_notice_change_realerts_before_reminder_window(self):
+        bridge = self.load_bridge(
+            RT_ALERT_REMOTE="local",
+            RT_ALERT_EXECUTION_MODE="notify",
+            RT_POSITION_REVIEW_REMINDER_HOURS="24",
         )
         packet = self.packet_with_position_review()
         item = packet["position_review"]["items"][0]
@@ -593,7 +623,7 @@ class RtAlertBridgeTests(unittest.TestCase):
 
         pending = bridge.pending_position_reviews(packet, sent_rows, now_epoch=1000 + 7 * 3600)
 
-        self.assertEqual(pending, [])
+        self.assertEqual([row["review_id"] for row in pending], ["user:3:AAPL:2026-06-12:risk_review"])
 
     def test_compact_position_review_sent_keeps_latest_per_thread(self):
         bridge = self.load_bridge(
@@ -640,6 +670,12 @@ class RtAlertBridgeTests(unittest.TestCase):
             review_sent = Path(td) / "position_sent.json"
             packet_file = Path(td) / "packet.json"
             packet = self.packet_with_position_review()
+            bridge_for_fingerprint = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_EXECUTION_MODE="notify",
+            )
+            current_item = bridge_for_fingerprint.position_review_items(packet)[0]
+            notice_fingerprint = bridge_for_fingerprint.position_review_notice_fingerprint(current_item)
             packet["execution_readiness"] = {
                 "schema": "execution_readiness_report_v1",
                 "status": "BLOCKED",
@@ -664,6 +700,7 @@ class RtAlertBridgeTests(unittest.TestCase):
                             "urgency": "high",
                             "recommended_action": "exit_review",
                             "sent_at_epoch": 1100,
+                            "notice_fingerprint": notice_fingerprint,
                         },
                     ]
                 ),
