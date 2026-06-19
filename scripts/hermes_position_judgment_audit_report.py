@@ -22,6 +22,8 @@ REPORT_FILE = os.environ.get(
     "/tmp/hermes_position_judgment_audit_report.json",
 )
 MAX_JUDGMENT_AGE_MINUTES = int(os.environ.get("HERMES_POSITION_MAX_JUDGMENT_AGE_MINUTES", "1440"))
+MIN_POSITION_ATTENTION_EFFECTS = int(os.environ.get("HERMES_POSITION_MIN_ATTENTION_EFFECTS", "3"))
+MAX_POSITION_ATTENTION_EFFECTS_REQUIRED = int(os.environ.get("HERMES_POSITION_MAX_ATTENTION_EFFECTS_REQUIRED", "4"))
 VALID_DECISIONS = {"hold", "watch", "reduce", "exit", "trail_stop"}
 ACTION_RANKS = {
     "hold": 0,
@@ -352,6 +354,33 @@ def position_attention_for_item(item):
     return [str(value).strip() for value in values if str(value).strip()]
 
 
+def required_position_attention_effect_codes(attention):
+    attention = [str(value).strip() for value in attention or [] if str(value).strip()]
+    if not attention:
+        return set()
+    max_required = max(as_int(MAX_POSITION_ATTENTION_EFFECTS_REQUIRED, 4) or 4, 1)
+    min_required = min(max(as_int(MIN_POSITION_ATTENTION_EFFECTS, 3) or 3, 1), len(attention), max_required)
+    priority_prefixes = (
+        "high_urgency_",
+        "position_exit_or_reduce_",
+        "position_dynamic_management_",
+        "position_intraday_",
+        "position_risk_off_",
+    )
+    selected = []
+    for code in attention:
+        if len(selected) >= min_required:
+            break
+        if code.startswith(priority_prefixes):
+            selected.append(code)
+    for code in attention:
+        if len(selected) >= min_required:
+            break
+        if code not in selected:
+            selected.append(code)
+    return set(selected)
+
+
 def position_attention_acknowledgement_reasons(judgment, item):
     attention = position_attention_for_item(item)
     if not attention:
@@ -382,7 +411,11 @@ def position_attention_acknowledgement_reasons(judgment, item):
             for effect in effects
             if isinstance(effect, dict) and str(effect.get("code") or "").strip()
         }
-        if not set(attention).issubset(effect_codes):
+        required_effect_codes = required_position_attention_effect_codes(attention)
+        if acknowledged:
+            required_effect_codes &= acknowledged
+        missing_required_effects = required_effect_codes - effect_codes
+        if missing_required_effects:
             reasons.append("position_attention_effects_missing_or_unmatched")
         for effect in effects:
             if not isinstance(effect, dict):

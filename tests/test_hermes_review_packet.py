@@ -3996,7 +3996,15 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertTrue(required_fields["context_review"]["position_context_reviewed"])
         self.assertTrue(required_fields["position_attention_acknowledged"])
         effect_codes = {row["code"] for row in required_fields["position_attention_effects"]}
+        self.assertLess(len(effect_codes), len(work_item["required_attention_codes"]))
         self.assertIn("position_dynamic_management_requires_review", effect_codes)
+        self.assertTrue(
+            required_fields["position_attention_effect_policy"]["all_codes_must_be_listed_in_position_attention_codes"]
+        )
+        self.assertEqual(
+            set(required_fields["position_attention_effect_policy"]["detailed_effects_required_for_codes"]),
+            effect_codes,
+        )
         self.assertNotIn("draft_jsonl_object", work_item)
         self.assertEqual(digest["schema"], "hermes_position_review_context_digest_v1")
         self.assertTrue(digest["advisory_only"])
@@ -4047,9 +4055,10 @@ class HermesReviewPacketTests(unittest.TestCase):
         )
         self.assertTrue(draft["intraday_review_notes"])
         self.assertEqual(draft["position_attention_codes"], digest["position_attention"])
-        self.assertEqual(
+        self.assertLess(len(draft["position_attention_effects"]), len(digest["position_attention"]))
+        self.assertIn(
+            "position_dynamic_management_requires_review",
             [row["code"] for row in draft["position_attention_effects"]],
-            digest["position_attention"],
         )
         self.assertIn("set true only after", draft["context_review"]["position_context_reviewed"])
         self.assertTrue(

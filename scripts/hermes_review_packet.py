@@ -2563,6 +2563,31 @@ def position_attention_codes_from_item(item):
     return deduped
 
 
+def required_position_attention_effect_codes(attention_codes, limit=4):
+    codes = [str(code or "").strip() for code in attention_codes or [] if str(code or "").strip()]
+    if not codes:
+        return []
+    priority_prefixes = (
+        "high_urgency_",
+        "position_exit_or_reduce_",
+        "position_dynamic_management_",
+        "position_intraday_",
+        "position_risk_off_",
+    )
+    selected = []
+    for code in codes:
+        if len(selected) >= limit:
+            break
+        if code.startswith(priority_prefixes):
+            selected.append(code)
+    for code in codes:
+        if len(selected) >= min(limit, len(codes)):
+            break
+        if code not in selected:
+            selected.append(code)
+    return selected
+
+
 def position_review_thread_key_for_item(item):
     item = item if isinstance(item, dict) else {}
     explicit = str(item.get("review_thread_key") or "").strip()
@@ -2588,7 +2613,10 @@ def position_judgment_template_for_item(item, packet_id, judgment_file):
     if str(item.get("role") or "").strip().lower() == "user":
         instructions.append("For user role reduce/exit/trail_stop advice, set manual_only=true and treat it as operator advice only.")
     if attention_codes:
-        instructions.append("Copy every required_position_attention_code into position_attention_codes and explain one effect per code.")
+        instructions.append(
+            "Copy every required_position_attention_code into position_attention_codes; summarize all codes in "
+            "position_attention_notes and include detailed position_attention_effects for the highlighted risk codes."
+        )
     digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
     intraday_contract = (
         digest.get("intraday_review_contract")
@@ -2655,7 +2683,7 @@ def position_judgment_template_for_item(item, packet_id, judgment_file):
                     "effect": "<specific holding-risk interpretation for this code>",
                     "decision_impact": "<how this code changed the advisory decision>",
                 }
-                for code in attention_codes
+                for code in required_position_attention_effect_codes(attention_codes)
             ],
             "follow_up": ["<optional manual follow-up items>"],
         },
@@ -3012,6 +3040,7 @@ def position_judgment_required_fields(item, judgment_file):
     template = item.get("position_judgment_template") if isinstance(item.get("position_judgment_template"), dict) else {}
     draft = template.get("draft_jsonl_object") if isinstance(template.get("draft_jsonl_object"), dict) else {}
     attention_codes = position_attention_codes_from_item(item)
+    effect_codes = required_position_attention_effect_codes(attention_codes)
     required = {
         "schema": POSITION_JUDGMENT_SCHEMA,
         "packet_id": draft.get("packet_id"),
@@ -3040,8 +3069,13 @@ def position_judgment_required_fields(item, judgment_file):
                 "effect": "<specific holding-risk interpretation>",
                 "decision_impact": "<hold/watch/reduce/exit/trail_stop impact>",
             }
-            for code in attention_codes
+            for code in effect_codes
         ],
+        "position_attention_effect_policy": {
+            "all_codes_must_be_listed_in_position_attention_codes": True,
+            "notes_must_summarize_all_attention_codes": True,
+            "detailed_effects_required_for_codes": effect_codes,
+        } if attention_codes else {},
         "append_jsonl_object_to": judgment_file,
     }
     if str(item.get("role") or "").strip().lower() == "user":
@@ -3505,7 +3539,7 @@ def position_judgment_contract(judgment_file):
             "position_attention_notes": "required notes explaining how holding-specific attention changed hold/watch/reduce/exit/trail-stop advice",
             "position_attention_effects": [
                 {
-                    "code": "<one copied position_attention code>",
+                    "code": "<one highlighted position_attention code>",
                     "effect": "specific holding-risk interpretation for this code",
                     "decision_impact": "how this code changed hold/watch/reduce/exit/trail_stop advice",
                 }
@@ -3519,7 +3553,7 @@ def position_judgment_contract(judgment_file):
             "Copy packet_id and review_id exactly so audits can resolve the packet and position_review item reviewed; also copy review_thread_key and reviewed_recommended_action so fresh same-position reviews can survive packet refresh without covering escalated actions.",
             "Review position_review.items[].context_digest before writing hold, watch, reduce, exit, or trail_stop advice; negative external context, risk-off sentiment, partial fundamentals, stale intraday data, or source-reliability limits must be reflected in supporting_factors, opposing_factors, risk_notes, or follow_up.",
             "When position_review.items[].context_digest.intraday_review_contract is present, review required_checks, decision_use, and hard_limits; set intraday_review_contract_acknowledged=true and explain how session/5m/15m/60m evidence changed the advisory decision in intraday_review_notes.",
-            "When position_review.items[].context_digest.position_attention is non-empty, set position_attention_acknowledged=true, copy all attention codes into position_attention_codes, explain the overall effect in position_attention_notes, and include one position_attention_effects[] object per reviewed code with code, effect, and decision_impact.",
+            "When position_review.items[].context_digest.position_attention is non-empty, set position_attention_acknowledged=true, copy all attention codes into position_attention_codes, explain the overall effect in position_attention_notes, and include detailed position_attention_effects[] objects for the highlighted high-impact codes with code, effect, and decision_impact.",
             "For user role, reduce/exit/trail_stop decisions are manual-only advice: set manual_only=true, keep advisory_only=true and submits_orders=false, and do not send them to order intake.",
             "For simulation role, reduce/exit/trail_stop remains advisory and still requires a separate gated execution path.",
             "Do not call the simulation API from this judgment path.",

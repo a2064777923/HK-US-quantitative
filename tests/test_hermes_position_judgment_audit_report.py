@@ -406,9 +406,9 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
 
         self.assertEqual(payload["status"], "FAIL")
         self.assertIn("position_attention_codes_missing_or_unmatched", row["reasons"])
-        self.assertIn("position_attention_effects_missing_or_unmatched", row["reasons"])
+        self.assertNotIn("position_attention_effects_missing_or_unmatched", row["reasons"])
 
-    def test_position_attention_effects_must_explain_each_code(self):
+    def test_position_attention_effects_must_explain_highlighted_codes(self):
         ack = position_attention_acknowledgement()
         ack["position_attention_effects"] = [
             {
@@ -436,6 +436,48 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "FAIL")
         self.assertIn("position_attention_effect_detail_missing", row["reasons"])
         self.assertIn("position_attention_effect_decision_impact_missing", row["reasons"])
+
+    def test_position_attention_effects_do_not_need_one_row_per_attention_code(self):
+        item = position_item_with_context()
+        item["context_digest"]["position_attention"] = [
+            "high_urgency_position_requires_contextual_rationale",
+            "position_dynamic_management_requires_review",
+            "position_intraday_evidence_requires_discussion",
+            "position_negative_external_context_requires_discussion",
+            "position_source_reliability_limit_requires_discussion",
+        ]
+        attention_codes = item["context_digest"]["position_attention"]
+        ack = position_attention_acknowledgement(*attention_codes)
+        ack["position_attention_effects"] = [
+            {
+                "code": "high_urgency_position_requires_contextual_rationale",
+                "effect": "high urgency requires immediate advisory review",
+                "decision_impact": "kept advice conservative",
+            },
+            {
+                "code": "position_dynamic_management_requires_review",
+                "effect": "dynamic stop and target distances were reviewed",
+                "decision_impact": "prevented adding exposure",
+            },
+            {
+                "code": "position_intraday_evidence_requires_discussion",
+                "effect": "intraday evidence was discussed as timing context",
+                "decision_impact": "adjusted urgency without submitting orders",
+            },
+        ]
+        payload = audit.build_report(
+            [
+                judgment(
+                    context_review=context_review(),
+                    **ack,
+                )
+            ],
+            packet([item]),
+        )
+
+        row = payload["judgments"][0]
+        self.assertEqual(payload["status"], "OK")
+        self.assertNotIn("position_attention_effects_missing_or_unmatched", row["reasons"])
 
     def test_position_attention_notes_accepts_non_empty_string_for_legacy_judgments(self):
         ack = position_attention_acknowledgement()
