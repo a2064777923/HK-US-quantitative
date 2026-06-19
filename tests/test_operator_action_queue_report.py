@@ -537,7 +537,27 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertTrue(actions["write_high_urgency_position_judgments"]["operator_effect"]["writes_judgments"])
         self.assertTrue(actions["write_high_urgency_position_judgments"]["operator_effect"]["advisory_only"])
         self.assertFalse(actions["write_high_urgency_position_judgments"]["operator_effect"]["submits_orders"])
+        self.assertFalse(actions["write_high_urgency_position_judgments"]["operator_effect"]["changes_portfolio"])
+        self.assertFalse(actions["write_high_urgency_position_judgments"]["operator_effect"]["changes_strategy"])
+        self.assertFalse(actions["write_high_urgency_position_judgments"]["operator_effect"]["changes_crontab"])
         self.assertIn("template_summary", actions["write_high_urgency_position_judgments"]["evidence"])
+        self.assertEqual(
+            actions["write_high_urgency_position_judgments"]["evidence"]["manual_append_target"],
+            report.POSITION_JUDGMENT_FILE,
+        )
+        self.assertEqual(
+            actions["write_high_urgency_position_judgments"]["evidence"]["template_source"],
+            f"{report.PACKET_FILE} position_review.items[].position_judgment_template",
+        )
+        self.assertIn("hermes_review_packet.py", actions["write_high_urgency_position_judgments"]["operator_command"])
+        self.assertIn(
+            "--output /tmp/hermes_position_judgment_audit_report.json --text",
+            actions["write_high_urgency_position_judgments"]["operator_command"],
+        )
+        self.assertIn(
+            "Do not copy template placeholders",
+            actions["write_high_urgency_position_judgments"]["recommended_next_step"],
+        )
 
     def test_stale_alert_packet_action_is_observation_only(self):
         payload = report.build_report(base_payloads())

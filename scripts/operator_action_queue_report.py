@@ -427,6 +427,11 @@ def position_actions(position_audit, packet):
         examples = safe_list(coverage.get("unjudged_high_urgency_examples"))
         packet_review = packet.get("position_review") if isinstance(packet.get("position_review"), dict) else {}
         template_summary = packet_review.get("position_judgment_template_summary") or {}
+        review_workflow_command = (
+            f"/usr/bin/python3 /root/hermes_review_packet.py --ephemeral-state --output {PACKET_FILE} && "
+            f"/usr/bin/python3 /root/hermes_position_judgment_audit_report.py "
+            f"--output {POSITION_AUDIT_FILE} --text"
+        )
         actions.append(
             action(
                 "write_high_urgency_position_judgments",
@@ -438,14 +443,33 @@ def position_actions(position_audit, packet):
                     "position_judgment_audit_status": position_audit.get("status"),
                     "coverage": coverage,
                     "packet_id": packet.get("packet_id"),
+                    "packet_file": PACKET_FILE,
+                    "judgment_file": POSITION_JUDGMENT_FILE,
+                    "manual_append_target": POSITION_JUDGMENT_FILE,
+                    "template_source": f"{PACKET_FILE} position_review.items[].position_judgment_template",
                     "template_summary": template_summary,
                     "unjudged_examples": examples,
+                    "safety": {
+                        "template_only": bool(template_summary.get("template_only")),
+                        "ready_to_append_without_hermes_review": False,
+                        "order_submission": False,
+                    },
                 },
                 next_step=(
-                    "Use position_review.items[].position_judgment_template from the latest packet, replace placeholders, "
-                    f"append completed JSONL objects to {POSITION_JUDGMENT_FILE}, then rerun hermes_position_judgment_audit_report.py."
+                    f"Refresh {PACKET_FILE}, inspect high-urgency position_review.items, use each "
+                    "position_judgment_template only as a draft scaffold, and append completed Hermes-reviewed "
+                    f"JSONL objects to {POSITION_JUDGMENT_FILE}. Do not copy template placeholders or set "
+                    "order_submission=true; then rerun hermes_position_judgment_audit_report.py."
                 ),
-                operator_effect={"writes_judgments": True, "advisory_only": True, "submits_orders": False},
+                command=review_workflow_command,
+                operator_effect={
+                    "writes_judgments": True,
+                    "advisory_only": True,
+                    "submits_orders": False,
+                    "changes_portfolio": False,
+                    "changes_strategy": False,
+                    "changes_crontab": False,
+                },
             )
         )
     return actions
