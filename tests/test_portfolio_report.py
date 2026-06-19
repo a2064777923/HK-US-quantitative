@@ -1,6 +1,7 @@
 import unittest
 import json
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -87,10 +88,48 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertEqual(dynamic["schema"], "position_dynamic_management_context_v1")
         self.assertEqual(dynamic["target_status"], "momentum_profit_review")
         self.assertEqual(dynamic["latest_daily_change_pct"], 3.5)
+        self.assertFalse(dynamic["price_snapshot_fresh"])
+        self.assertIn("price_snapshot_stale", dynamic["price_data_flags"])
         self.assertTrue(dynamic["requires_hermes_dynamic_review"])
         self.assertIn("review_intraday_or_daily_strength_for_trailing_floor", dynamic["review_focus"])
         self.assertTrue(review["execution_policy"]["advice_only"])
         self.assertFalse(review["execution_policy"]["submits_orders"])
+
+    def test_position_review_marks_stale_price_snapshot_for_hermes_context(self):
+        with patch.object(report, "datetime") as fake_datetime:
+            fake_datetime.now.return_value = datetime(2026, 6, 16, 12, 0, 0)
+            fake_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            fake_datetime.strptime.side_effect = datetime.strptime
+            position = {
+                "symbol": "MSFT",
+                "name": "Microsoft",
+                "quantity": 2,
+                "avg_cost": 500,
+                "current_price": 470,
+                "status": "holding",
+                "exchange": "NASDAQ",
+                "updated_at": "2026-06-15 00:00:00",
+            }
+            enriched = report.enrich_position(
+                position,
+                {
+                    "trade_date": "2026-06-15",
+                    "side": "SELL",
+                    "score": -0.6,
+                    "quality": {"order_prices": {"stop_loss": 478, "take_profit": 530}},
+                },
+                {"close": 470, "change_pct": -1.2, "date": "2026-06-15"},
+            )
+
+        review = report.build_position_review_item({"portfolio_id": 3, "role": "user"}, enriched)
+        dynamic = review["advisory_plan"]["dynamic_management_context"]
+
+        self.assertEqual(enriched["price_snapshot_age_hours"], 36.0)
+        self.assertIn("price_snapshot_stale", enriched["price_data_flags"])
+        self.assertEqual(review["position"]["price_snapshot_age_hours"], 36.0)
+        self.assertFalse(dynamic["price_snapshot_fresh"])
+        self.assertIn("price_snapshot_stale", dynamic["price_data_flags"])
+        self.assertEqual(dynamic["target_status"], "below_signal_stop")
 
     def test_build_portfolio_report_separates_user_and_simulation_roles(self):
         position = {

@@ -2185,6 +2185,8 @@ def position_context_attention_items(
         attention.append("position_exit_or_reduce_review_requires_contextual_rationale")
     if dynamic_context.get("requires_hermes_dynamic_review"):
         attention.append("position_dynamic_management_requires_review")
+    if dynamic_context and not dynamic_context.get("price_snapshot_fresh", True):
+        attention.append("position_price_snapshot_stale_requires_disclosure")
     if (market_context or {}).get("status") != "OK":
         attention.append("position_market_context_missing_for_holding_market")
     if (market_context or {}).get("regime") == "risk_off":

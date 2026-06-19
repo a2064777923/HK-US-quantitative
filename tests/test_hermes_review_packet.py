@@ -3739,6 +3739,9 @@ class HermesReviewPacketTests(unittest.TestCase):
                                 "distance_to_signal_take_profit_pct": 12.5,
                                 "distance_above_signal_stop_loss_pct": -1.79,
                                 "trail_floor_reference": None,
+                                "price_snapshot_fresh": False,
+                                "price_snapshot_age_hours": 36.0,
+                                "price_data_flags": ["price_snapshot_stale"],
                                 "requires_hermes_dynamic_review": True,
                                 "review_focus": ["confirm_exit_pressure_with_market_and_intraday_context"],
                             },
@@ -3895,6 +3898,7 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(digest["dynamic_management_context"]["target_status"], "below_signal_stop")
         self.assertTrue(digest["dynamic_management_context"]["requires_hermes_dynamic_review"])
         self.assertIn("position_dynamic_management_requires_review", digest["position_attention"])
+        self.assertIn("position_price_snapshot_stale_requires_disclosure", digest["position_attention"])
         self.assertIn("position_negative_external_context_requires_discussion", digest["position_attention"])
         self.assertIn("position_market_sentiment_risk_requires_discussion", digest["position_attention"])
         self.assertIn("position_fundamentals_context_limit_requires_discussion", digest["position_attention"])

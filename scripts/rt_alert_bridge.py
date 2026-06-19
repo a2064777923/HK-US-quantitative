@@ -568,6 +568,13 @@ def fmt_optional(value):
         return str(value)
 
 
+def fmt_hours(value):
+    try:
+        return f"{float(value):.1f}h"
+    except Exception:
+        return "?"
+
+
 def build_position_review_output(items, packet):
     audit = packet.get("position_judgment_audit") if isinstance(packet.get("position_judgment_audit"), dict) else {}
     coverage = audit.get("coverage") if isinstance(audit.get("coverage"), dict) else {}
@@ -627,12 +634,13 @@ def build_position_review_output(items, packet):
             )
             if dynamic:
                 lines.append(
-                    "├─ 動態管理：status={status} pnl={pnl} day={day} dist_tp={dist_tp} dist_stop={dist_stop} trail_ref={trail}".format(
+                    "├─ 動態管理：status={status} pnl={pnl} day={day} dist_tp={dist_tp} dist_stop={dist_stop} px_age={age} trail_ref={trail}".format(
                         status=dynamic.get("target_status", "?"),
                         pnl=fmt_pct(dynamic.get("unrealized_pnl_pct")),
                         day=fmt_pct(dynamic.get("latest_daily_change_pct")),
                         dist_tp=fmt_pct(dynamic.get("distance_to_signal_take_profit_pct")),
                         dist_stop=fmt_pct(dynamic.get("distance_above_signal_stop_loss_pct")),
+                        age=fmt_hours(dynamic.get("price_snapshot_age_hours")),
                         trail=fmt_optional(dynamic.get("trail_floor_reference")),
                     )
                 )

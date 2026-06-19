@@ -124,6 +124,7 @@ class RtAlertBridgeTests(unittest.TestCase):
                                 "latest_daily_change_pct": -3.2,
                                 "distance_to_signal_take_profit_pct": 24.3,
                                 "distance_above_signal_stop_loss_pct": -1.2,
+                                "price_snapshot_age_hours": 36.0,
                                 "trail_floor_reference": None,
                                 "requires_hermes_dynamic_review": True,
                             },
@@ -772,6 +773,7 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("sig_target_ref=220", text)
             self.assertIn("動態管理：status=below_signal_stop", text)
             self.assertIn("dist_stop=-1.2%", text)
+            self.assertIn("px_age=36.0h", text)
             self.assertNotIn(" stop=180", text)
             self.assertNotIn(" action=take_profit_or_trailing_stop_review", text)
 

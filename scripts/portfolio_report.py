@@ -32,6 +32,7 @@ USER_PORTFOLIO_IDS = user_portfolio_ids_from_env()
 INITIAL_CAPITAL_HKD = float(os.environ.get("QM_INITIAL_CAPITAL_HKD", "100000"))
 USD_TO_HKD = float(os.environ.get("USD_TO_HKD", "7.80"))
 MAX_DB_PRICE_TO_KLINE_RATIO = float(os.environ.get("QM_MAX_DB_PRICE_TO_KLINE_RATIO", "3.0"))
+POSITION_PRICE_STALE_HOURS = float(os.environ.get("QM_POSITION_PRICE_STALE_HOURS", "18"))
 SIGNAL_MODEL_VERSION = os.environ.get("QM_SIGNAL_MODEL_VERSION", "signal_v4")
 SIGNAL_FEATURE_VERSION = os.environ.get("QM_SIGNAL_FEATURE_VERSION", "v4_full")
 
@@ -196,6 +197,38 @@ def parse_date(value):
         return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
     except Exception:
         return None
+
+
+def parse_datetime(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except Exception:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text[: len(fmt)], fmt)
+        except Exception:
+            continue
+    return None
+
+
+def hours_since(value, now=None):
+    dt = parse_datetime(value)
+    if not dt:
+        return None
+    if now is None:
+        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    elif dt.tzinfo and now.tzinfo is None:
+        now = now.replace(tzinfo=dt.tzinfo)
+    elif not dt.tzinfo and now.tzinfo is not None:
+        now = now.replace(tzinfo=None)
+    return max((now - dt).total_seconds() / 3600, 0.0)
 
 
 def days_between(later, earlier):
@@ -412,6 +445,7 @@ def enrich_position(position, signal, kline):
     db_price = as_float(position.get("current_price"))
     kline_close = as_float(kline.get("close"))
     kline_change_pct = as_float(kline.get("change_pct"), None)
+    price_snapshot_age_hours = hours_since(position.get("updated_at"))
     signal_price = as_float(signal.get("expected_price"))
     price_source = "missing"
     db_price_consistent, db_kline_ratio = db_price_is_consistent_with_kline(db_price, kline_close)
@@ -454,6 +488,10 @@ def enrich_position(position, signal, kline):
         price_flags.append("latest_kline_missing")
     if price_source != "db_current_price":
         price_flags.append(f"fallback_valuation_used:{price_source}")
+    if price_snapshot_age_hours is None:
+        price_flags.append("price_snapshot_timestamp_missing")
+    elif price_snapshot_age_hours > POSITION_PRICE_STALE_HOURS:
+        price_flags.append("price_snapshot_stale")
 
     if side == "SELL":
         recommendation = "review_reduce_or_exit"
@@ -512,6 +550,9 @@ def enrich_position(position, signal, kline):
         "db_latest_kline_price_ratio": round_or_none(db_kline_ratio),
         "valuation_price_source": price_source,
         "price_data_flags": price_flags,
+        "price_snapshot_updated_at": position.get("updated_at", ""),
+        "price_snapshot_age_hours": round_or_none(price_snapshot_age_hours),
+        "price_snapshot_stale_after_hours": POSITION_PRICE_STALE_HOURS,
         "kline_date": kline.get("date", ""),
         "market": market_for_position(position),
         "quote_currency": quote_currency_for_position(position),
@@ -928,6 +969,7 @@ def build_dynamic_position_management_context(position, action, current_price, a
     current = as_float(current_price, None)
     stop = as_float(stop_loss, None)
     target = as_float(take_profit, None)
+    price_flags = list(position.get("price_data_flags") or [])
 
     if current is None or current <= 0:
         status = "missing_current_price"
@@ -994,6 +1036,11 @@ def build_dynamic_position_management_context(position, action, current_price, a
         "requires_hermes_dynamic_review": status != "normal" or action != "hold_watch_review",
         "review_focus": deduped_focus,
         "price_basis": position.get("valuation_price_source"),
+        "price_snapshot_updated_at": position.get("price_snapshot_updated_at"),
+        "price_snapshot_age_hours": position.get("price_snapshot_age_hours"),
+        "price_snapshot_stale_after_hours": position.get("price_snapshot_stale_after_hours"),
+        "price_snapshot_fresh": "price_snapshot_stale" not in price_flags and "price_snapshot_timestamp_missing" not in price_flags,
+        "price_data_flags": price_flags[:6],
         "kline_date": position.get("kline_date"),
     }
 
@@ -1114,6 +1161,9 @@ def build_position_review_item(report, position):
             "latest_daily_change_pct": position.get("latest_daily_change_pct"),
             "stop_distance_pct": position.get("stop_distance_pct"),
             "valuation_price_source": position.get("valuation_price_source"),
+            "price_snapshot_updated_at": position.get("price_snapshot_updated_at"),
+            "price_snapshot_age_hours": position.get("price_snapshot_age_hours"),
+            "price_data_flags": position.get("price_data_flags", []),
             "kline_date": position.get("kline_date"),
         },
         "latest_signal": {
