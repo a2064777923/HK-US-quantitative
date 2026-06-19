@@ -2180,6 +2180,11 @@ def position_context_attention_items(
         if isinstance(advisory_plan.get("dynamic_management_context"), dict)
         else {}
     )
+    intraday_contract = (
+        advisory_plan.get("intraday_review_contract")
+        if isinstance(advisory_plan.get("intraday_review_contract"), dict)
+        else {}
+    )
 
     if urgency == "high":
         attention.append("high_urgency_position_requires_contextual_rationale")
@@ -2187,6 +2192,11 @@ def position_context_attention_items(
         attention.append("position_exit_or_reduce_review_requires_contextual_rationale")
     if dynamic_context.get("requires_hermes_dynamic_review"):
         attention.append("position_dynamic_management_requires_review")
+    if intraday_contract and (
+        dynamic_context.get("requires_hermes_dynamic_review")
+        or action in ("exit_review", "reduce_or_exit_review", "take_profit_or_trailing_stop_review", "risk_review")
+    ):
+        attention.append("position_intraday_review_contract_requires_discussion")
     if dynamic_context and not dynamic_context.get("price_snapshot_fresh", True):
         attention.append("position_price_snapshot_stale_requires_disclosure")
     if (market_context or {}).get("status") != "OK":
@@ -2276,6 +2286,11 @@ def position_context_digest_for_item(
         if isinstance(advisory_plan.get("dynamic_management_context"), dict)
         else {}
     )
+    intraday_contract = (
+        advisory_plan.get("intraday_review_contract")
+        if isinstance(advisory_plan.get("intraday_review_contract"), dict)
+        else {}
+    )
     return {
         "schema": "hermes_position_review_context_digest_v1",
         "read_only": True,
@@ -2345,6 +2360,7 @@ def position_context_digest_for_item(
         },
         "source_limits": source_limits,
         "dynamic_management_context": dynamic_context,
+        "intraday_review_contract": intraday_contract,
         "position_attention": position_context_attention_items(
             item,
             market_context,
@@ -2401,6 +2417,14 @@ def position_judgment_template_for_item(item, packet_id, judgment_file):
         instructions.append("For user role reduce/exit/trail_stop advice, set manual_only=true and treat it as operator advice only.")
     if attention_codes:
         instructions.append("Copy every required_position_attention_code into position_attention_codes and explain one effect per code.")
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    intraday_contract = (
+        digest.get("intraday_review_contract")
+        if isinstance(digest.get("intraday_review_contract"), dict)
+        else {}
+    )
+    if intraday_contract:
+        instructions.append("When intraday_review_contract is present, discuss required_checks and decision_use in risk_notes, position_attention_notes, or position_attention_effects.")
     return {
         "schema": "hermes_position_judgment_template_v1",
         "template_only": True,
@@ -2408,6 +2432,7 @@ def position_judgment_template_for_item(item, packet_id, judgment_file):
         "judgment_file": judgment_file,
         "allowed_decisions": allowed_decisions,
         "required_position_attention_codes": attention_codes,
+        "intraday_review_contract": intraday_contract,
         "instructions": instructions,
         "draft_jsonl_object": {
             "schema": POSITION_JUDGMENT_SCHEMA,
@@ -2429,6 +2454,14 @@ def position_judgment_template_for_item(item, packet_id, judgment_file):
             "supporting_factors": ["<facts supporting the advisory decision>"],
             "opposing_factors": ["<facts against the advisory decision>"],
             "risk_notes": ["<position risk, stale data, market/news/fundamental/intraday/source limits>"],
+            "intraday_review_contract_acknowledged": (
+                "<set true after reviewing intraday_review_contract.required_checks and decision_use>"
+                if intraday_contract
+                else False
+            ),
+            "intraday_review_notes": [
+                "<how session/5m/15m/60m evidence changed confidence, target, trail_stop, reduce, exit, hold, or watch advice>"
+            ] if intraday_contract else [],
             "context_review": {
                 "position_context_reviewed": "<set true only after reviewing context_digest>",
                 "portfolio_risk_reviewed": "<set true only after reviewing portfolio_risk and execution_policy>",
@@ -2853,6 +2886,8 @@ def position_judgment_contract(judgment_file):
             "supporting_factors": ["facts supporting the decision"],
             "opposing_factors": ["facts against the decision"],
             "risk_notes": ["position risk, stale data, concentration, market condition, external context, fundamentals, or intraday path risk"],
+            "intraday_review_contract_acknowledged": "required true when position_review.items[].context_digest.intraday_review_contract is present",
+            "intraday_review_notes": "required notes explaining how session/5m/15m/60m evidence changed confidence, target, trail_stop, reduce, exit, hold, or watch advice when intraday_review_contract is present",
             "context_review": {
                 "position_context_reviewed": "required true after reviewing position_review.items[].context_digest when present",
                 "portfolio_risk_reviewed": "required true after reviewing the position, portfolio_risk, and advisory execution_policy",
@@ -2879,6 +2914,7 @@ def position_judgment_contract(judgment_file):
             "Always set advisory_only=true and submits_orders=false.",
             "Copy packet_id and review_id exactly so audits can resolve the packet and position_review item reviewed; also copy review_thread_key and reviewed_recommended_action so fresh same-position reviews can survive packet refresh without covering escalated actions.",
             "Review position_review.items[].context_digest before writing hold, watch, reduce, exit, or trail_stop advice; negative external context, risk-off sentiment, partial fundamentals, stale intraday data, or source-reliability limits must be reflected in supporting_factors, opposing_factors, risk_notes, or follow_up.",
+            "When position_review.items[].context_digest.intraday_review_contract is present, review required_checks, decision_use, and hard_limits; set intraday_review_contract_acknowledged=true and explain how session/5m/15m/60m evidence changed the advisory decision in intraday_review_notes.",
             "When position_review.items[].context_digest.position_attention is non-empty, set position_attention_acknowledged=true, copy all attention codes into position_attention_codes, explain the overall effect in position_attention_notes, and include one position_attention_effects[] object per reviewed code with code, effect, and decision_impact.",
             "For user role, reduce/exit/trail_stop decisions are manual-only advice: set manual_only=true, keep advisory_only=true and submits_orders=false, and do not send them to order intake.",
             "For simulation role, reduce/exit/trail_stop remains advisory and still requires a separate gated execution path.",

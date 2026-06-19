@@ -126,6 +126,15 @@ class RtAlertBridgeTests(unittest.TestCase):
                                 {"decision": "reduce", "quantity_hint": 5, "price_reference": 180, "manual_only": True},
                                 {"decision": "exit", "quantity_hint": 10, "price_reference": 178, "manual_only": True},
                             ],
+                            "intraday_review_contract": {
+                                "required_timeframes": ["session", "5m", "15m", "60m"],
+                                "required_checks": [
+                                    "confirm_symbol_session_direction_and_change_pct",
+                                    "review_5m_15m_60m_alignment_before_action",
+                                    "confirm_sell_or_stop_pressure_is_not_only_stale_daily_signal",
+                                ],
+                                "decision_use": "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation",
+                            },
                             "reference_prices": {
                                 "signal_stop_loss": 180,
                                 "signal_take_profit": 220,
@@ -496,6 +505,8 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("Hermes持倉審核待辦（不下單）", text)
             self.assertIn("不代表已通過 Hermes 交易審批", text)
             self.assertIn("候選動作：reduce qty=5 ref=180; exit qty=10 ref=178", text)
+            self.assertIn("盤中審核：tf=session,5m,15m,60m", text)
+            self.assertIn("use=can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation", text)
             self.assertIn("order_submission=false", text)
 
     def test_position_review_uses_stable_thread_key_for_action_churn(self):

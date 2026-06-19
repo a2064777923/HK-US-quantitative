@@ -3770,6 +3770,20 @@ class HermesReviewPacketTests(unittest.TestCase):
                             "schema": "position_advisory_plan_v1",
                             "advisory_only": True,
                             "submits_orders": False,
+                            "intraday_review_contract": {
+                                "schema": "position_intraday_review_contract_v1",
+                                "required_timeframes": ["session", "5m", "15m", "60m"],
+                                "required_checks": [
+                                    "confirm_symbol_session_direction_and_change_pct",
+                                    "review_5m_15m_60m_alignment_before_action",
+                                    "confirm_sell_or_stop_pressure_is_not_only_stale_daily_signal",
+                                ],
+                                "decision_use": "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation",
+                                "hard_limits": [
+                                    "intraday_context_must_not_replace_completed_daily_ohlcv",
+                                    "position_advice_path_submits_no_orders",
+                                ],
+                            },
                             "dynamic_management_context": {
                                 "schema": "position_dynamic_management_context_v1",
                                 "target_status": "below_signal_stop",
@@ -3938,7 +3952,16 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertTrue(digest["fundamentals_context"]["limit_acknowledgement_required"])
         self.assertEqual(digest["dynamic_management_context"]["target_status"], "below_signal_stop")
         self.assertTrue(digest["dynamic_management_context"]["requires_hermes_dynamic_review"])
+        self.assertEqual(
+            digest["intraday_review_contract"]["decision_use"],
+            "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation",
+        )
+        self.assertIn(
+            "confirm_sell_or_stop_pressure_is_not_only_stale_daily_signal",
+            digest["intraday_review_contract"]["required_checks"],
+        )
         self.assertIn("position_dynamic_management_requires_review", digest["position_attention"])
+        self.assertIn("position_intraday_review_contract_requires_discussion", digest["position_attention"])
         self.assertIn("position_price_snapshot_stale_requires_disclosure", digest["position_attention"])
         self.assertIn("position_negative_external_context_requires_discussion", digest["position_attention"])
         self.assertIn("position_market_sentiment_risk_requires_discussion", digest["position_attention"])
@@ -3948,6 +3971,11 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertTrue(template["template_only"])
         self.assertFalse(template["ready_to_append_without_hermes_review"])
         self.assertEqual(template["allowed_decisions"], ["hold", "watch", "reduce", "exit", "trail_stop"])
+        self.assertEqual(
+            template["intraday_review_contract"]["decision_use"],
+            "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation",
+        )
+        self.assertIn("intraday_review_contract", " ".join(template["instructions"]))
         self.assertEqual(draft["packet_id"], payload["packet_id"])
         self.assertEqual(draft["review_id"], "simulation:8:00700:2026-06-12:risk_review")
         self.assertEqual(draft["review_thread_key"], "simulation:8:00700")
@@ -3955,6 +3983,11 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(draft["portfolio_id"], 8)
         self.assertEqual(draft["role"], "simulation")
         self.assertEqual(draft["symbol"], "00700")
+        self.assertEqual(
+            draft["intraday_review_contract_acknowledged"],
+            "<set true after reviewing intraday_review_contract.required_checks and decision_use>",
+        )
+        self.assertTrue(draft["intraday_review_notes"])
         self.assertEqual(draft["position_attention_codes"], digest["position_attention"])
         self.assertEqual(
             [row["code"] for row in draft["position_attention_effects"]],

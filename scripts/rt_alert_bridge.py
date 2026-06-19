@@ -622,6 +622,22 @@ def compact_decision_points(points, limit=3):
     return "; ".join(rows)
 
 
+def compact_intraday_contract(contract):
+    if not isinstance(contract, dict) or not contract:
+        return ""
+    timeframes = ",".join(str(value) for value in (contract.get("required_timeframes") or [])[:4])
+    checks = ",".join(str(value) for value in (contract.get("required_checks") or [])[:3])
+    decision_use = contract.get("decision_use")
+    parts = []
+    if timeframes:
+        parts.append(f"tf={timeframes}")
+    if decision_use:
+        parts.append(f"use={decision_use}")
+    if checks:
+        parts.append(f"checks={checks}")
+    return " ".join(parts)
+
+
 def build_position_review_output(items, packet):
     audit = packet.get("position_judgment_audit") if isinstance(packet.get("position_judgment_audit"), dict) else {}
     coverage = audit.get("coverage") if isinstance(audit.get("coverage"), dict) else {}
@@ -694,6 +710,9 @@ def build_position_review_output(items, packet):
             decision_points = compact_decision_points(advisory_plan.get("operator_decision_points"))
             if decision_points:
                 lines.append(f"├─ 候選動作：{decision_points}")
+            intraday_contract = compact_intraday_contract(advisory_plan.get("intraday_review_contract"))
+            if intraday_contract:
+                lines.append(f"├─ 盤中審核：{intraday_contract}")
         if attention:
             lines.append(f"├─ 必須回應風險：{','.join(str(code) for code in attention[:6])}")
         lines.append(

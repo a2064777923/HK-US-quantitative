@@ -457,6 +457,7 @@ def position_actions(position_audit, packet):
                 item = items_by_thread.get(review_thread_key_for_item(example))
             advisory_plan = safe_dict(item.get("advisory_plan")) if isinstance(item, dict) else {}
             dynamic = safe_dict(advisory_plan.get("dynamic_management_context"))
+            intraday_contract = safe_dict(advisory_plan.get("intraday_review_contract"))
             decision_points = [
                 {
                     "decision": point.get("decision"),
@@ -492,6 +493,12 @@ def position_actions(position_audit, packet):
                         "distance_above_signal_stop_loss_pct": dynamic.get("distance_above_signal_stop_loss_pct"),
                         "review_focus": safe_list(dynamic.get("review_focus"))[:4],
                     },
+                    "intraday_review_contract": {
+                        "decision_use": intraday_contract.get("decision_use"),
+                        "required_timeframes": safe_list(intraday_contract.get("required_timeframes"))[:6],
+                        "required_checks": safe_list(intraday_contract.get("required_checks"))[:6],
+                        "hard_limits": safe_list(intraday_contract.get("hard_limits"))[:4],
+                    } if intraday_contract else {},
                     "operator_decision_points": decision_points,
                 }
             )

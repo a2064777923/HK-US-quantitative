@@ -1045,6 +1045,74 @@ def build_dynamic_position_management_context(position, action, current_price, a
     }
 
 
+def build_intraday_review_contract(position, action):
+    market = str(position.get("market") or market_for_position(position)).upper()
+    reasons = set(position.get("recommendation_reasons") or [])
+    signal = position.get("signal") if isinstance(position.get("signal"), dict) else {}
+    side = str(signal.get("side") or "").upper()
+    pnl_pct = round_or_none(as_float(position.get("unrealized_pnl_pct"), None))
+    day_change = round_or_none(as_float(position.get("latest_daily_change_pct"), None))
+    urgent = action in ("exit_review", "reduce_or_exit_review")
+    profit_review = action == "take_profit_or_trailing_stop_review"
+
+    required_checks = [
+        "confirm_symbol_session_direction_and_change_pct",
+        "review_5m_15m_60m_alignment_before_action",
+        "check_intraday_context_quality_staleness_and_market_session",
+    ]
+    if urgent:
+        required_checks.append("confirm_sell_or_stop_pressure_is_not_only_stale_daily_signal")
+    if profit_review:
+        required_checks.append("confirm_momentum_before_target_extension_or_trailing_floor_raise")
+    if day_change is not None and abs(day_change) >= 3:
+        required_checks.append("compare_same_session_move_with_latest_daily_change")
+    if side:
+        required_checks.append(f"test_intraday_context_supports_or_challenges_{side.lower()}_signal")
+
+    confidence_policy = "diagnostic_only_until_fresh_context"
+    if action in ("exit_review", "reduce_or_exit_review"):
+        confidence_policy = "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation"
+    elif profit_review:
+        confidence_policy = "can_support_trailing_stop_or_target_extension_only_after_momentum_confirmation"
+    elif action == "risk_review":
+        confidence_policy = "can_raise_or_lower_watch_urgency_but_not_submit_orders"
+
+    return {
+        "schema": "position_intraday_review_contract_v1",
+        "advisory_only": True,
+        "submits_orders": False,
+        "market": market,
+        "current_position_state": {
+            "signal_side": side or None,
+            "recommended_action": action,
+            "unrealized_pnl_pct": pnl_pct,
+            "latest_daily_change_pct": day_change,
+            "price_snapshot_fresh": "price_snapshot_stale" not in (position.get("price_data_flags") or [])
+            and "price_snapshot_timestamp_missing" not in (position.get("price_data_flags") or []),
+        },
+        "required_timeframes": ["session", "5m", "15m", "60m"],
+        "optional_timeframes": ["1m", "30m"],
+        "required_checks": required_checks,
+        "supportive_evidence_examples": [
+            "fresh_session_move_aligns_with_candidate_action",
+            "5m_15m_60m_alignment_supports_position_management_decision",
+            "intraday_quality_ok_and_market_session_open_or_recent",
+        ],
+        "challenge_evidence_examples": [
+            "same_session_reversal_against_candidate_action",
+            "multi_timeframe_conflict_or_low_fidelity_minute_rows",
+            "market_closed_or_stale_intraday_context",
+        ],
+        "decision_use": confidence_policy,
+        "hard_limits": [
+            "intraday_context_must_not_replace_completed_daily_ohlcv",
+            "position_advice_path_submits_no_orders",
+            "user_position_actions_remain_manual_only",
+        ],
+        "trigger_reasons": sorted(reasons)[:8],
+    }
+
+
 def position_operator_decision_points(position, action, role, current_price, avg_cost, stop_loss, take_profit, reduce_fraction):
     quantity = position.get("quantity")
     manual_only = role == "user"
@@ -1168,6 +1236,7 @@ def build_position_advisory_plan(position, action, role):
             stop_loss,
             take_profit,
         ),
+        "intraday_review_contract": build_intraday_review_contract(position, action),
         "operator_decision_points": position_operator_decision_points(
             position,
             action,

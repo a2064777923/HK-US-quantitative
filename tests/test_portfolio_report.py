@@ -98,6 +98,18 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertIn("price_snapshot_stale", dynamic["price_data_flags"])
         self.assertTrue(dynamic["requires_hermes_dynamic_review"])
         self.assertIn("review_intraday_or_daily_strength_for_trailing_floor", dynamic["review_focus"])
+        intraday_contract = review["advisory_plan"]["intraday_review_contract"]
+        self.assertEqual(intraday_contract["schema"], "position_intraday_review_contract_v1")
+        self.assertEqual(intraday_contract["required_timeframes"], ["session", "5m", "15m", "60m"])
+        self.assertEqual(
+            intraday_contract["decision_use"],
+            "can_support_trailing_stop_or_target_extension_only_after_momentum_confirmation",
+        )
+        self.assertIn(
+            "confirm_momentum_before_target_extension_or_trailing_floor_raise",
+            intraday_contract["required_checks"],
+        )
+        self.assertIn("intraday_context_must_not_replace_completed_daily_ohlcv", intraday_contract["hard_limits"])
         self.assertTrue(review["execution_policy"]["advice_only"])
         self.assertFalse(review["execution_policy"]["submits_orders"])
 
@@ -136,6 +148,15 @@ class PortfolioReportTests(unittest.TestCase):
         self.assertFalse(dynamic["price_snapshot_fresh"])
         self.assertIn("price_snapshot_stale", dynamic["price_data_flags"])
         self.assertEqual(dynamic["target_status"], "below_signal_stop")
+        intraday_contract = review["advisory_plan"]["intraday_review_contract"]
+        self.assertEqual(
+            intraday_contract["decision_use"],
+            "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation",
+        )
+        self.assertIn(
+            "confirm_sell_or_stop_pressure_is_not_only_stale_daily_signal",
+            intraday_contract["required_checks"],
+        )
 
     def test_build_portfolio_report_separates_user_and_simulation_roles(self):
         position = {

@@ -115,6 +115,19 @@ def base_payloads():
                         "urgency": "high",
                         "recommended_action": "exit_review",
                         "advisory_plan": {
+                            "intraday_review_contract": {
+                                "decision_use": "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation",
+                                "required_timeframes": ["session", "5m", "15m", "60m"],
+                                "required_checks": [
+                                    "confirm_symbol_session_direction_and_change_pct",
+                                    "review_5m_15m_60m_alignment_before_action",
+                                    "confirm_sell_or_stop_pressure_is_not_only_stale_daily_signal",
+                                ],
+                                "hard_limits": [
+                                    "intraday_context_must_not_replace_completed_daily_ohlcv",
+                                    "position_advice_path_submits_no_orders",
+                                ],
+                            },
                             "operator_decision_points": [
                                 {
                                     "decision": "exit",
@@ -644,6 +657,14 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertIn("position_dynamic_management_requires_review", write_plan[0]["required_attention_codes"])
         self.assertEqual(write_plan[0]["dynamic_management"]["target_status"], "below_signal_stop")
         self.assertEqual(write_plan[0]["dynamic_management"]["price_snapshot_age_hours"], 0.25)
+        self.assertEqual(
+            write_plan[0]["intraday_review_contract"]["decision_use"],
+            "can_support_reduce_exit_only_after_fresh_intraday_or_market_confirmation",
+        )
+        self.assertIn(
+            "review_5m_15m_60m_alignment_before_action",
+            write_plan[0]["intraday_review_contract"]["required_checks"],
+        )
         self.assertEqual(write_plan[0]["operator_decision_points"][0]["decision"], "exit")
         self.assertEqual(write_plan[0]["operator_decision_points"][0]["quantity_hint"], 1200)
         self.assertEqual(write_plan[0]["operator_decision_points"][1]["condition"], "if liquidity is thin")
