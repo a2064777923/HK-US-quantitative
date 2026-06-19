@@ -50,6 +50,7 @@ OPERATOR_ACTION_SUPPRESSED_IDS = {
     ).split(",")
     if item.strip()
 }
+POSITION_REVIEW_NOTICE_CONTRACT_VERSION = "position_review_notice_v2_jsonl_instruction"
 
 PASSTHROUGH_ENV_KEYS = (
     "RT_ORDER_EXECUTE_PILOT_ENABLED",
@@ -274,6 +275,7 @@ def position_review_notice_fingerprint(item):
     intraday_evidence = intraday_position_evidence_fingerprint(context_summary.get("intraday_position_evidence"))
     return "|".join(
         [
+            POSITION_REVIEW_NOTICE_CONTRACT_VERSION,
             str(work_item.get("schema") or "").strip(),
             str(required_output.get("schema") or "").strip(),
             str(required_output.get("advisory_only")),

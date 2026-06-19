@@ -730,6 +730,38 @@ class RtAlertBridgeTests(unittest.TestCase):
 
         self.assertEqual([row["review_id"] for row in pending], ["user:3:AAPL:2026-06-12:risk_review"])
 
+    def test_position_review_notice_contract_version_realerts_old_sent_records(self):
+        bridge = self.load_bridge(
+            RT_ALERT_REMOTE="local",
+            RT_ALERT_EXECUTION_MODE="notify",
+            RT_POSITION_REVIEW_REMINDER_HOURS="24",
+        )
+        packet = self.packet_with_position_review()
+        item = packet["position_review"]["items"][0]
+        item["review_thread_key"] = "user:3:AAPL"
+        current = bridge.position_review_items(packet)[0]
+        current_fingerprint = bridge.position_review_notice_fingerprint(current)
+        old_fingerprint = current_fingerprint.replace(
+            bridge.POSITION_REVIEW_NOTICE_CONTRACT_VERSION,
+            "position_review_notice_v1",
+        )
+        sent_rows = [
+            {
+                "review_thread_key": "user:3:AAPL",
+                "review_id": "user:3:AAPL:2026-06-12:risk_review",
+                "symbol": "AAPL",
+                "urgency": "high",
+                "recommended_action": "risk_review",
+                "sent_at_epoch": 1000,
+                "notice_fingerprint": old_fingerprint,
+            }
+        ]
+
+        pending = bridge.pending_position_reviews(packet, sent_rows, now_epoch=1000 + 7 * 3600)
+
+        self.assertIn(bridge.POSITION_REVIEW_NOTICE_CONTRACT_VERSION, current_fingerprint)
+        self.assertEqual([row["review_id"] for row in pending], ["user:3:AAPL:2026-06-12:risk_review"])
+
     def test_position_review_intraday_evidence_change_realerts_before_reminder_window(self):
         bridge = self.load_bridge(
             RT_ALERT_REMOTE="local",
