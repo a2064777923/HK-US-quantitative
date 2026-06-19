@@ -223,6 +223,24 @@ def position_review_escalated(item, sent_record):
     )
 
 
+def intraday_position_evidence_fingerprint(evidence):
+    if not isinstance(evidence, dict) or not evidence:
+        return ""
+    stable = {
+        "action_intent": evidence.get("action_intent"),
+        "alignment": evidence.get("alignment"),
+        "status": evidence.get("status"),
+        "timeframe_alignment": evidence.get("timeframe_alignment"),
+        "dominant_direction": evidence.get("dominant_direction"),
+        "support_codes": evidence.get("support_codes") if isinstance(evidence.get("support_codes"), list) else [],
+        "challenge_codes": evidence.get("challenge_codes") if isinstance(evidence.get("challenge_codes"), list) else [],
+        "conflict_codes": evidence.get("conflict_codes") if isinstance(evidence.get("conflict_codes"), list) else [],
+        "quality_codes": evidence.get("quality_codes") if isinstance(evidence.get("quality_codes"), list) else [],
+        "limit_codes": evidence.get("limit_codes") if isinstance(evidence.get("limit_codes"), list) else [],
+    }
+    return json.dumps(stable, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+
+
 def position_review_notice_fingerprint(item):
     if not isinstance(item, dict):
         return ""
@@ -231,6 +249,8 @@ def position_review_notice_fingerprint(item):
         return ""
     required_output = work_item.get("required_output_fields") if isinstance(work_item.get("required_output_fields"), dict) else {}
     attention = work_item.get("required_attention_codes") if isinstance(work_item.get("required_attention_codes"), list) else []
+    context_summary = work_item.get("context_summary") if isinstance(work_item.get("context_summary"), dict) else {}
+    intraday_evidence = intraday_position_evidence_fingerprint(context_summary.get("intraday_position_evidence"))
     return "|".join(
         [
             str(work_item.get("schema") or "").strip(),
@@ -238,6 +258,7 @@ def position_review_notice_fingerprint(item):
             str(required_output.get("advisory_only")),
             str(required_output.get("submits_orders")),
             ",".join(str(code) for code in attention[:10]),
+            intraday_evidence,
         ]
     )
 
