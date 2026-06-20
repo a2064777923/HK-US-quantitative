@@ -448,6 +448,42 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertIn("judgment_missing_packet_id", result["hermes"]["reasons"])
             submit.assert_not_called()
 
+    def test_execute_rejects_judgment_with_mismatched_reviewed_alert_identity(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            packet_file = Path(td) / "packet.json"
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-reviewed-identity", symbol="AAPL")
+            self.write_judgments(
+                judgment_file,
+                judgment(
+                    alert["signal_id"],
+                    reviewed_symbol="MSFT",
+                    reviewed_signal_type="SELL",
+                    reviewed_trigger="other-trigger",
+                ),
+            )
+            packet_file.write_text(json.dumps(hermes_packet(alert["signal_id"])), encoding="utf-8")
+
+            with patch.object(intake, "HERMES_REVIEW_PACKET_FILE", str(packet_file)):
+                result, submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                    submit_result={"order_id": "should-not-submit"},
+                    hermes_packet_gate=None,
+                )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("hermes_judgment_gate_failed", result["reasons"])
+            self.assertIn("judgment_reviewed_symbol_mismatch", result["hermes"]["reasons"])
+            self.assertIn("judgment_reviewed_signal_type_mismatch", result["hermes"]["reasons"])
+            self.assertIn("judgment_reviewed_trigger_mismatch", result["hermes"]["reasons"])
+            submit.assert_not_called()
+
     def test_dry_run_reports_hermes_packet_would_block_execute_without_rejecting(self):
         with tempfile.TemporaryDirectory() as td:
             state_file = str(Path(td) / "state.json")

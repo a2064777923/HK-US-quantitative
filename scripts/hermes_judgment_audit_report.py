@@ -1412,6 +1412,28 @@ def validate_judgment_contract(judgment):
     return reasons
 
 
+def reviewed_alert_identity_reasons(judgment, alert):
+    reasons = []
+    checks = (
+        ("reviewed_symbol", str((alert or {}).get("symbol") or "").strip().upper(), "judgment_reviewed_symbol_mismatch"),
+        (
+            "reviewed_signal_type",
+            str((alert or {}).get("signal_type") or "").strip().upper(),
+            "judgment_reviewed_signal_type_mismatch",
+        ),
+        ("reviewed_trigger", str((alert or {}).get("trigger") or "").strip(), "judgment_reviewed_trigger_mismatch"),
+    )
+    for field, expected, reason in checks:
+        actual = str((judgment or {}).get(field) or "").strip()
+        if not actual:
+            continue
+        if field in ("reviewed_symbol", "reviewed_signal_type"):
+            actual = actual.upper()
+        if expected and actual != expected:
+            reasons.append(reason)
+    return reasons
+
+
 def audit_judgment(judgment, packet, review_by_id, eligible_ids, now=None, packet_source="latest_packet", packet_reasons=None):
     now = now or datetime.now()
     sid = str(judgment.get("signal_id", "")).strip()
@@ -1423,6 +1445,7 @@ def audit_judgment(judgment, packet, review_by_id, eligible_ids, now=None, packe
         reasons.append("orphan_judgment_not_in_latest_packet")
     else:
         alert = item.get("alert") or {}
+        reasons.extend(reviewed_alert_identity_reasons(judgment, alert))
         if approval and sid not in eligible_ids:
             reasons.append("approval_for_ineligible_review_item")
         if approval and alert.get("confirmed") is not True:

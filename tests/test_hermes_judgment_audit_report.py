@@ -786,6 +786,26 @@ class HermesJudgmentAuditReportTests(unittest.TestCase):
         self.assertEqual(row["reasons"], [])
         self.assertEqual(payload["recommendations"], ["judgment_audit_clean_continue_review_only_observation"])
 
+    def test_judgment_reviewed_alert_identity_mismatch_fails(self):
+        payload = audit.build_report(
+            [
+                judgment(
+                    "sig-1",
+                    reviewed_symbol="MSFT",
+                    reviewed_signal_type="SELL",
+                    reviewed_trigger="other-trigger",
+                )
+            ],
+            packet(market_regime="risk_on", outcome_ok=True),
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("judgment_reviewed_symbol_mismatch", row["reasons"])
+        self.assertIn("judgment_reviewed_signal_type_mismatch", row["reasons"])
+        self.assertIn("judgment_reviewed_trigger_mismatch", row["reasons"])
+
     def test_approval_requires_structured_context_review(self):
         item = judgment("sig-1")
         item.pop("context_review")

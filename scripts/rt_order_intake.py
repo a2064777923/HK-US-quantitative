@@ -1332,6 +1332,9 @@ def build_judgment_request(alert, plan, context):
         "required_fields": {
             "signal_id": signal_id(alert),
             "packet_id": "copy from current hermes_signal_review_packet_v1.packet_id",
+            "reviewed_symbol": "copy from review_items[].alert.symbol",
+            "reviewed_signal_type": "copy from review_items[].alert.signal_type",
+            "reviewed_trigger": "copy from review_items[].alert.trigger",
             "decision": "approve|reject|reduce|hold",
             "confidence": "0.0-1.0",
             "reviewed_at": "ISO-8601 datetime",
@@ -1392,6 +1395,28 @@ def build_judgment_request(alert, plan, context):
     }
 
 
+def reviewed_alert_identity_reasons(judgment, alert):
+    reasons = []
+    checks = (
+        ("reviewed_symbol", str((alert or {}).get("symbol") or "").strip().upper(), "judgment_reviewed_symbol_mismatch"),
+        (
+            "reviewed_signal_type",
+            str((alert or {}).get("signal_type") or "").strip().upper(),
+            "judgment_reviewed_signal_type_mismatch",
+        ),
+        ("reviewed_trigger", str((alert or {}).get("trigger") or "").strip(), "judgment_reviewed_trigger_mismatch"),
+    )
+    for field, expected, reason in checks:
+        actual = str((judgment or {}).get(field) or "").strip()
+        if not actual:
+            continue
+        if field in ("reviewed_symbol", "reviewed_signal_type"):
+            actual = actual.upper()
+        if expected and actual != expected:
+            reasons.append(reason)
+    return reasons
+
+
 def evaluate_hermes_judgment(alert, plan, context, mode, judgment_file, hermes_packet=None):
     sid = signal_id(alert)
     request = build_judgment_request(alert, plan, context)
@@ -1420,6 +1445,7 @@ def evaluate_hermes_judgment(alert, plan, context, mode, judgment_file, hermes_p
             reasons.append("judgment_missing_packet_id")
         elif judgment_packet_id != packet_id:
             reasons.append("judgment_packet_id_mismatch")
+    reasons.extend(reviewed_alert_identity_reasons(judgment, alert))
 
     decision = str(judgment.get("decision", "")).strip().lower()
     if decision not in ("approve", "reduce"):

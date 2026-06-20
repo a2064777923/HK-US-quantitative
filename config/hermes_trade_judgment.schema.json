@@ -73,6 +73,19 @@
       "minLength": 1,
       "description": "Copy from hermes_signal_review_packet_v1.packet_id."
     },
+    "reviewed_symbol": {
+      "type": "string",
+      "description": "Copy from review_items[].alert.symbol. When present, rt_order_intake.py execute mode rejects mismatches with the alert being submitted."
+    },
+    "reviewed_signal_type": {
+      "type": "string",
+      "enum": ["BUY", "SELL", "WATCH"],
+      "description": "Copy from review_items[].alert.signal_type. When present, rt_order_intake.py execute mode rejects mismatches with the alert being submitted."
+    },
+    "reviewed_trigger": {
+      "type": "string",
+      "description": "Copy from review_items[].alert.trigger. When present, rt_order_intake.py execute mode rejects mismatches with the alert being submitted."
+    },
     "decision": {
       "type": "string",
       "enum": ["approve", "reject", "reduce", "hold"]
