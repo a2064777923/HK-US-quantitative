@@ -1026,25 +1026,22 @@ class HermesReviewPacketTests(unittest.TestCase):
                                 "status": "OK",
                                 "latest_timestamp": "2026-06-12T10:01:00",
                                 "latest_age_minutes": 1.0,
-                                "session": {"change_pct": -1.2, "momentum": "strong_down"},
+                                "session": {"change_pct": 1.2, "momentum": "strong_up"},
                                 "latest_5m": {
-                                    "change_pct": -0.4,
-                                    "momentum": "down",
+                                    "change_pct": 0.4,
+                                    "momentum": "up",
                                     "volume_state": "expanding",
                                 },
-                                "latest_60m": {"change_pct": -1.2, "momentum": "strong_down"},
+                                "latest_60m": {"change_pct": 1.2, "momentum": "strong_up"},
                                 "multi_timeframe_confirmation": {
                                     "schema": "intraday_multi_timeframe_confirmation_v1",
-                                    "alignment": "bearish_aligned",
-                                    "dominant_direction": "down",
-                                    "buy_confirmation": False,
-                                    "sell_confirmation": True,
+                                    "alignment": "bullish_aligned",
+                                    "dominant_direction": "up",
+                                    "buy_confirmation": True,
+                                    "sell_confirmation": False,
                                     "contradictions": [],
                                 },
-                                "hermes_notes": [
-                                    "intraday_session_down_against_new_buy_review",
-                                    "intraday_multi_timeframe_bearish_challenges_buy_review",
-                                ],
+                                "hermes_notes": ["intraday_session_up_supports_buy_review"],
                             }
                         ],
                     }
@@ -1683,10 +1680,10 @@ class HermesReviewPacketTests(unittest.TestCase):
         intraday_digest = payload["review_items"][0]["context_digest"]["intraday_context"]
         self.assertEqual(intraday_digest["schema"], "hermes_review_item_intraday_context_digest_v1")
         self.assertEqual(intraday_digest["status"], "OK")
-        self.assertEqual(intraday_digest["session"]["momentum"], "strong_down")
-        self.assertEqual(intraday_digest["multi_timeframe_confirmation"]["alignment"], "bearish_aligned")
+        self.assertEqual(intraday_digest["session"]["momentum"], "strong_up")
+        self.assertEqual(intraday_digest["multi_timeframe_confirmation"]["alignment"], "bullish_aligned")
         self.assertIn(
-            "intraday_context_challenges_buy_requires_discussion",
+            "intraday_minute_producer_limit_requires_acknowledgement",
             payload["review_items"][0]["context_digest"]["required_judgment_attention"],
         )
         self.assertEqual(payload["kline_gap_source_diagnostic"]["schema"], "kline_gap_source_diagnostic_report_v1")
@@ -2683,6 +2680,11 @@ class HermesReviewPacketTests(unittest.TestCase):
             "intraday_context_timeframe_conflict_requires_disclosure",
             digest["required_judgment_attention"],
         )
+        item = payload["review_items"][0]
+        self.assertFalse(item["eligible_for_approval"])
+        self.assertEqual(item["recommended_judgment"], "reject_or_hold")
+        self.assertIn("intraday_signal_evidence_conflicting_timeframes", item["blocking_reasons"])
+        self.assertIn("intraday_conflict:latest_5m_contradicts_session", item["blocking_reasons"])
 
     def test_intraday_quality_degradation_requires_hermes_disclosure(self):
         payload = packet.build_packet(
@@ -2741,6 +2743,55 @@ class HermesReviewPacketTests(unittest.TestCase):
             "intraday_context_quality_degraded_requires_disclosure",
             digest["required_judgment_attention"],
         )
+        item = payload["review_items"][0]
+        self.assertTrue(item["eligible_for_approval"])
+        self.assertNotIn("intraday_signal_evidence_supports_with_limits", item["blocking_reasons"])
+
+    def test_intraday_challenge_blocks_trade_approval(self):
+        payload = packet.build_packet(
+            [alert()],
+            health_payload={"overall_status": "OK", "checks": []},
+            portfolio_payload={},
+            intake_results=[intake_result()],
+            execution_readiness_payload=ready_execution_readiness(),
+            market_context_payload={"schema": "market_context_report_v1", "markets": {"HK": {"regime": "mixed"}}},
+            data_health_payload={"schema": "data_health_report_v1", "status": "OK", "markets": {}},
+            intraday_context_payload={
+                "schema": "intraday_context_report_v1",
+                "status": "OK",
+                "source": {"read_only": True, "submits_orders": False},
+                "markets": {
+                    "HK": {
+                        "status": "OK",
+                        "latest_timestamp": "2026-06-12T10:01:00",
+                        "symbols": [
+                            {
+                                "symbol": "00700",
+                                "market": "HK",
+                                "status": "OK",
+                                "session": {"change_pct": -1.4, "momentum": "strong_down"},
+                                "multi_timeframe_confirmation": {
+                                    "schema": "intraday_multi_timeframe_confirmation_v1",
+                                    "alignment": "bearish",
+                                    "dominant_direction": "down",
+                                    "buy_confirmation": False,
+                                },
+                                "hermes_notes": ["intraday_session_down_against_new_buy_review"],
+                            }
+                        ],
+                    }
+                },
+            },
+        )
+
+        item = payload["review_items"][0]
+        digest = item["context_digest"]
+
+        self.assertEqual(digest["intraday_signal_evidence"]["alignment"], "challenges_signal")
+        self.assertFalse(item["eligible_for_approval"])
+        self.assertEqual(item["recommended_judgment"], "reject_or_hold")
+        self.assertIn("intraday_signal_evidence_challenges_signal", item["blocking_reasons"])
+        self.assertIn("intraday_challenge:session_down_challenges_buy", item["blocking_reasons"])
 
     def test_closed_intraday_market_requires_session_context_disclosure(self):
         payload = packet.build_packet(

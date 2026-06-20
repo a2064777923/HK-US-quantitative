@@ -12,7 +12,7 @@ This repository is not configured for automatic real-money trading. Real broker 
 - v5 overlays open user holdings from DB `positions` (`portfolio_id` from `QM_USER_PORTFOLIO_IDS`, default `3`, `status='holding'`, positive quantity) onto the realtime scan list, so held symbols remain under live market monitoring even when they are not in the static watchlist.
 - Signal scoring uses completed daily OHLCV history plus one realtime quote bar.
 - v5.7 keeps the guarded momentum breakout model, downgrades noisy or underperforming BUY triggers to diagnostic `WATCH` unless later evidence supports re-enabling, moves configured downgraded SELL diagnostics to summary-only, ranks same-symbol same-scan executable candidates by quality, and blocks BUY execution candidates when realtime breadth is missing/risk-off or the symbol's same-session `change_pct` is below the configured realtime-alignment floor.
-- Minute/hour data is read-only context for Hermes and quality reports; it is not the core v5 scoring authority.
+- Minute/hour data is read-only context for Hermes and quality reports; it is not the core v5 scoring authority. Clear session/5m/15m/30m/60m contradiction now blocks Hermes trade approval for the matching `review_item` through `intraday_signal_evidence_*` blocking reasons; supportive or limited intraday evidence can inform timing/confidence notes but cannot relax daily, readiness, strategy-evidence, or intake gates.
 - Hermes position-review flow now has a compact write packet between the seeded review packet and the operator queue so advisory holdings judgments stay easier to draft without becoming executable trades.
 - `scripts/rt_alert_bridge.py` defaults to notify-only mode.
 - The alert bridge is fail-closed: a BUY/SELL raw trigger is not sent as an operator trade candidate unless v5 marks `execution_candidate=true`, Hermes review marks the matching item `eligible_for_approval=true`, and execution readiness is `READY` with `ready_for_execute=true`.
@@ -86,6 +86,14 @@ marks `partial_daily_bar_used_as_completed_daily=false` and
 `completed_daily_mutation_allowed=false`. Stored 5m/15m/30m/60m context remains a
 separate read-only Hermes evidence layer and must not be promoted into completed
 daily history.
+
+That layer still participates in live judgment. `hermes_review_packet.py` maps
+stored session/5m/15m/30m/60m summaries into
+`context_digest.intraday_signal_evidence`; clear `challenges_signal` or
+`conflicting_timeframes` evidence marks the matching trade item
+`eligible_for_approval=false`. This lets fresh intraday market evolution stop a
+trade candidate without creating standalone orders or overriding the completed
+daily strategy contract.
 
 When a directional BUY/SELL candidate is downgraded to diagnostic `WATCH`, Hermes
 intraday evidence still reviews the original `candidate_signal_type`, while the

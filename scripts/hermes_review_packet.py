@@ -2161,6 +2161,31 @@ def attach_context_digests_to_items(
     return items
 
 
+def intraday_evidence_blocking_reasons(item):
+    digest = item.get("context_digest") if isinstance(item.get("context_digest"), dict) else {}
+    evidence = digest.get("intraday_signal_evidence") if isinstance(digest.get("intraday_signal_evidence"), dict) else {}
+    alignment = str(evidence.get("alignment") or "").strip()
+    if alignment not in ("challenges_signal", "conflicting_timeframes"):
+        return []
+
+    reasons = [f"intraday_signal_evidence_{alignment}"]
+    for code in (evidence.get("challenge_codes") or [])[:4]:
+        if code:
+            reasons.append(f"intraday_challenge:{code}")
+    for code in (evidence.get("conflict_codes") or [])[:4]:
+        if code:
+            reasons.append(f"intraday_conflict:{code}")
+    return reasons
+
+
+def apply_intraday_evidence_to_items(items):
+    for item in items:
+        reasons = intraday_evidence_blocking_reasons(item)
+        if reasons:
+            merge_blocking_reasons([item], reasons)
+    return items
+
+
 def alert_like_from_position_review_item(item):
     return {
         "signal_id": item.get("review_id"),
@@ -4884,6 +4909,7 @@ def build_packet(
         source_reliability_payload,
         kline_gap_source_diagnostic_payload,
     )
+    items = apply_intraday_evidence_to_items(items)
     generated_at = now_iso()
     stats_now = parse_timestamp(generated_at)
     return {
