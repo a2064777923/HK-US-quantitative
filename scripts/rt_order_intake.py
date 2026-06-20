@@ -43,6 +43,7 @@ STATE_LOCK_TIMEOUT_SECONDS = float(os.environ.get("RT_ORDER_STATE_LOCK_TIMEOUT_S
 ALERT_QUEUE_FILE = os.environ.get("RT_ALERT_QUEUE_FILE", "/tmp/rt_signal_alerts.jsonl")
 ALERT_FILE = os.environ.get("RT_ALERT_FILE", "/tmp/rt_signal_alert.json")
 JUDGMENT_FILE = os.environ.get("RT_ORDER_JUDGMENT_FILE", "/tmp/hermes_trade_judgments.jsonl")
+HERMES_REVIEW_PACKET_FILE = os.environ.get("HERMES_REVIEW_PACKET_FILE", "/tmp/hermes_signal_review_packet.json")
 STRATEGY_EVIDENCE_FILE = os.environ.get("RT_SIGNAL_OUTCOME_REPORT_FILE", "/tmp/rt_signal_outcome_report.json")
 MARKET_CONTEXT_FILE = os.environ.get("MARKET_CONTEXT_REPORT_FILE", "/tmp/market_context_report.json")
 EXECUTION_READINESS_FILE = os.environ.get("EXECUTION_READINESS_REPORT_FILE", "/tmp/execution_readiness_report.json")
@@ -62,8 +63,10 @@ MAX_ALERT_AGE_MINUTES = int(os.environ.get("RT_ORDER_MAX_ALERT_AGE_MINUTES", "60
 SELL_FRACTION = float(os.environ.get("RT_ORDER_SELL_FRACTION", "1.0"))
 DEFAULT_EQUITY_HKD = float(os.environ.get("RT_ORDER_DEFAULT_EQUITY_HKD", "100000"))
 REQUIRE_HERMES_JUDGMENT = os.environ.get("RT_ORDER_REQUIRE_HERMES_JUDGMENT", "1") != "0"
+REQUIRE_HERMES_PACKET_ELIGIBLE = os.environ.get("RT_ORDER_REQUIRE_HERMES_PACKET_ELIGIBLE", "1") != "0"
 MIN_HERMES_CONFIDENCE = float(os.environ.get("RT_ORDER_MIN_HERMES_CONFIDENCE", "0.60"))
 MAX_JUDGMENT_AGE_MINUTES = int(os.environ.get("RT_ORDER_MAX_JUDGMENT_AGE_MINUTES", "240"))
+MAX_HERMES_PACKET_AGE_MINUTES = int(os.environ.get("RT_ORDER_MAX_HERMES_PACKET_AGE_MINUTES", "30"))
 REQUIRE_STRATEGY_EVIDENCE = os.environ.get("RT_ORDER_REQUIRE_STRATEGY_EVIDENCE", "1") != "0"
 STRATEGY_EVIDENCE_HORIZON = os.environ.get("RT_ORDER_STRATEGY_EVIDENCE_HORIZON", "1d")
 MIN_OUTCOME_SAMPLE = int(os.environ.get("RT_ORDER_MIN_OUTCOME_SAMPLE", "30"))
@@ -921,6 +924,99 @@ def risk_reduction_execute_override(alert, plan, context, execution_readiness, s
     return not reasons, payload
 
 
+def review_items_by_signal(packet):
+    rows = packet.get("review_items") if isinstance(packet, dict) else []
+    if not isinstance(rows, list):
+        return {}
+    return {
+        str(item.get("signal_id")): item
+        for item in rows
+        if isinstance(item, dict) and item.get("signal_id")
+    }
+
+
+def packet_allows_risk_reduction_review(alert, item, packet):
+    """Let the later SELL risk-reduction override review sample/readiness blockers."""
+    if str((alert or {}).get("signal_type") or "").strip().upper() != "SELL":
+        return False
+    blockers = {str(reason or "") for reason in (item or {}).get("blocking_reasons") or []}
+    if not blockers:
+        return False
+
+    allowed = {"execution_readiness_would_block_execute", "strategy_evidence_would_block_execute"}
+    allowed.update(RISK_REDUCTION_READINESS_REASONS)
+    allowed.update(f"execution_readiness:{reason}" for reason in RISK_REDUCTION_READINESS_REASONS)
+    allowed.update(f"execution_readiness:{reason}" for reason in RISK_REDUCTION_READINESS_BLOCKING_GATES)
+    for reason in blockers:
+        if reason.startswith("strategy_evidence:"):
+            strategy_reason = reason.split(":", 1)[1]
+            if strategy_reasons_are_sample_only({"reasons": [strategy_reason]}):
+                allowed.add(reason)
+    return bool(blockers) and blockers <= allowed
+
+
+def hermes_packet_gate(alert, mode, packet_file=None):
+    packet_file = packet_file or HERMES_REVIEW_PACKET_FILE
+    if not REQUIRE_HERMES_PACKET_ELIGIBLE:
+        return True, {"status": "DISABLED", "packet_file": packet_file}
+
+    sid = signal_id(alert)
+    packet = load_json_file(packet_file, {})
+    reasons = []
+    if not isinstance(packet, dict) or packet.get("schema") != "hermes_signal_review_packet_v1":
+        reasons.append("hermes_packet_missing_or_invalid")
+        packet = {}
+
+    generated_at = parse_time(packet.get("generated_at")) if packet else None
+    if packet and not generated_at:
+        reasons.append("hermes_packet_generated_at_missing")
+    elif generated_at:
+        age = datetime.now() - generated_at
+        if age.total_seconds() < -300:
+            reasons.append("hermes_packet_generated_at_in_future")
+        elif age > timedelta(minutes=MAX_HERMES_PACKET_AGE_MINUTES):
+            reasons.append("hermes_packet_stale")
+
+    item = review_items_by_signal(packet).get(str(sid)) if packet else None
+    if packet and not item:
+        reasons.append("hermes_review_item_missing")
+    elif item and item.get("eligible_for_approval") is not True:
+        if not reasons and packet_allows_risk_reduction_review(alert, item, packet):
+            return True, {
+                "status": "RISK_REDUCTION_REVIEW_ALLOWED",
+                "packet_file": packet_file,
+                "packet_id": packet.get("packet_id"),
+                "packet_generated_at": packet.get("generated_at"),
+                "signal_id": sid,
+                "eligible_for_approval": item.get("eligible_for_approval"),
+                "recommended_judgment": item.get("recommended_judgment"),
+                "blocking_reasons": item.get("blocking_reasons") or [],
+                "note": "existing-position SELL risk-reduction review remains subject to downstream gates",
+            }
+        reasons.append("hermes_review_item_not_eligible")
+        for reason in item.get("blocking_reasons") or []:
+            if reason:
+                reasons.append(f"hermes:{reason}")
+
+    payload = {
+        "status": "PASS" if not reasons else "REJECTED",
+        "packet_file": packet_file,
+        "packet_id": packet.get("packet_id") if packet else None,
+        "packet_generated_at": packet.get("generated_at") if packet else None,
+        "signal_id": sid,
+        "eligible_for_approval": item.get("eligible_for_approval") if isinstance(item, dict) else None,
+        "recommended_judgment": item.get("recommended_judgment") if isinstance(item, dict) else None,
+        "blocking_reasons": item.get("blocking_reasons") if isinstance(item, dict) else None,
+        "max_packet_age_minutes": MAX_HERMES_PACKET_AGE_MINUTES,
+        "reasons": reasons,
+    }
+    if mode != "execute":
+        payload["status"] = "DRY_RUN_ONLY"
+        payload["would_block_execute"] = bool(reasons)
+        return True, payload
+    return not reasons, payload
+
+
 def order_intake_broker_reconciliation_gate(backend, mode, report_file=ORDER_INTAKE_EVENT_STORE_REPORT_FILE):
     """Require Alpaca paper broker/state reconciliation before execute-mode submits."""
     if backend != "alpaca-paper":
@@ -1278,6 +1374,9 @@ def build_judgment_request(alert, plan, context):
             "requires_execution_readiness": REQUIRE_EXECUTION_READINESS,
             "execution_readiness_report_file": EXECUTION_READINESS_FILE,
             "max_readiness_report_age_hours": MAX_READINESS_REPORT_AGE_HOURS,
+            "requires_hermes_packet_eligible": REQUIRE_HERMES_PACKET_ELIGIBLE,
+            "hermes_review_packet_file": HERMES_REVIEW_PACKET_FILE,
+            "max_hermes_packet_age_minutes": MAX_HERMES_PACKET_AGE_MINUTES,
             "requires_broker_reconciliation": True,
             "broker_reconciliation_report_file": ORDER_INTAKE_EVENT_STORE_REPORT_FILE,
             "max_broker_reconciliation_age_minutes": MAX_BROKER_RECONCILIATION_AGE_MINUTES,
@@ -1773,6 +1872,25 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
         record_decision(state, sid, decision, state_file, mode)
         return decision
 
+    packet_ok, hermes_packet = hermes_packet_gate(alert, mode)
+    if not packet_ok:
+        decision = {
+            "signal_id": sid,
+            "status": "rejected",
+            "reasons": ["hermes_packet_gate_failed"],
+            "hermes_packet": hermes_packet,
+            "symbol_conflict": conflict_gate,
+            "hermes": hermes_gate,
+            "context": {
+                "cash_hkd": context["cash_hkd"],
+                "equity_hkd": context["equity_hkd"],
+                "positions": sorted(context["positions"].keys()),
+            },
+            "checked_at": now_iso(),
+        }
+        record_decision(state, sid, decision, state_file, mode)
+        return decision
+
     readiness_ok, execution_readiness = execution_readiness_gate(mode)
     strategy_ok, strategy_gate = strategy_evidence_gate(alert, mode)
     risk_reduction_override = None
@@ -1801,6 +1919,7 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
                 "strategy_evidence": strategy_gate,
                 "risk_reduction_override": risk_reduction_override,
                 "symbol_conflict": conflict_gate,
+                "hermes_packet": hermes_packet,
                 "hermes": hermes_gate,
                 "context": {
                     "cash_hkd": context["cash_hkd"],
@@ -1866,6 +1985,7 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
         "pilot_execution": pilot_gate,
         "pilot_cap": pilot_cap,
         "risk_reduction_override": risk_reduction_override,
+        "hermes_packet": hermes_packet,
         "hermes": hermes_gate,
         "alert": {
             "symbol": alert.get("symbol"),

@@ -2,7 +2,8 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime
+from contextlib import ExitStack
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -56,10 +57,37 @@ def judgment(signal_id, decision="approve", **extra):
     return item
 
 
+def hermes_packet(signal_id, eligible=True, **extra):
+    item = {
+        "signal_id": signal_id,
+        "eligible_for_approval": eligible,
+        "recommended_judgment": "approve_or_reduce_allowed_after_llm_review" if eligible else "reject_or_hold",
+        "blocking_reasons": [] if eligible else ["intraday_signal_evidence_challenges_signal"],
+        "alert": {"signal_id": signal_id},
+    }
+    item.update(extra.pop("review_item", {}))
+    packet = {
+        "schema": "hermes_signal_review_packet_v1",
+        "packet_id": "packet-test",
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "review_items": [item],
+        "execution_readiness": {
+            "schema": "execution_readiness_report_v1",
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "status": "READY",
+            "ready_for_execute": True,
+        },
+    }
+    packet.update(extra)
+    return packet
+
+
 class RtOrderIntakeTests(unittest.TestCase):
     def setUp(self):
         intake.REQUIRE_HERMES_JUDGMENT = True
+        intake.REQUIRE_HERMES_PACKET_ELIGIBLE = True
         intake.MIN_HERMES_CONFIDENCE = 0.6
+        intake.MAX_HERMES_PACKET_AGE_MINUTES = 30
         intake.REQUIRE_EXECUTION_READINESS = True
         intake.MAX_READINESS_REPORT_AGE_HOURS = 2
         intake.REQUIRE_STRATEGY_EVIDENCE = True
@@ -100,6 +128,7 @@ class RtOrderIntakeTests(unittest.TestCase):
         market_gate=(True, {"status": "PASS"}),
         readiness_gate=(True, {"status": "PASS"}),
         broker_reconciliation_gate=(True, {"status": "PASS"}),
+        hermes_packet_gate=(True, {"status": "PASS", "packet_id": "packet-test"}),
         context_result=None,
         pilot_enabled=None,
         pilot_notional_cap=None,
@@ -127,14 +156,18 @@ class RtOrderIntakeTests(unittest.TestCase):
             patch.object(intake, "fetch_context_for_backend", return_value=context_result),
             patch.object(intake, "market_context_gate", return_value=market_gate),
         ]
-        if submit_result is not None:
-            patches.append(patch.object(intake, "submit_order", return_value=submit_result))
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        if hermes_packet_gate is not None:
+            patches.append(patch.object(intake, "hermes_packet_gate", return_value=hermes_packet_gate))
+        with ExitStack() as stack:
+            submit = None
+            for item in patches:
+                stack.enter_context(item)
             if submit_result is not None:
-                with patches[7] as submit:
-                    result = intake.process_alert(alert, mode, state, state_file, judgment_file)
-                    return result, submit
-            return intake.process_alert(alert, mode, state, state_file, judgment_file), None
+                submit = stack.enter_context(patch.object(intake, "submit_order", return_value=submit_result))
+            result = intake.process_alert(alert, mode, state, state_file, judgment_file)
+            if submit_result is not None:
+                return result, submit
+            return result, None
 
     def test_dry_run_does_not_consume_signal_for_execute(self):
         with tempfile.TemporaryDirectory() as td:
@@ -258,6 +291,194 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertEqual(result["status"], "rejected")
             self.assertIn("hermes_judgment_gate_failed", result["reasons"])
             submit.assert_not_called()
+
+    def test_execute_requires_matching_eligible_hermes_packet_item(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            packet_file = Path(td) / "packet.json"
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-packet-block")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+            packet_file.write_text(
+                json.dumps(
+                    hermes_packet(
+                        alert["signal_id"],
+                        eligible=False,
+                        review_item={
+                            "blocking_reasons": [
+                                "intraday_signal_evidence_challenges_signal",
+                                "intraday_challenge:latest_15m_down",
+                            ]
+                        },
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(intake, "HERMES_REVIEW_PACKET_FILE", str(packet_file)):
+                result, submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                    submit_result={"order_id": "should-not-submit"},
+                    hermes_packet_gate=None,
+                )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("hermes_packet_gate_failed", result["reasons"])
+            self.assertIn("hermes_review_item_not_eligible", result["hermes_packet"]["reasons"])
+            self.assertIn(
+                "hermes:intraday_signal_evidence_challenges_signal",
+                result["hermes_packet"]["reasons"],
+            )
+            submit.assert_not_called()
+
+    def test_execute_blocks_when_hermes_packet_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            packet_file = Path(td) / "missing-packet.json"
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-packet-missing")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            with patch.object(intake, "HERMES_REVIEW_PACKET_FILE", str(packet_file)):
+                result, submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                    submit_result={"order_id": "should-not-submit"},
+                    hermes_packet_gate=None,
+                )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("hermes_packet_gate_failed", result["reasons"])
+            self.assertIn("hermes_packet_missing_or_invalid", result["hermes_packet"]["reasons"])
+            submit.assert_not_called()
+
+    def test_execute_allows_eligible_hermes_packet_and_judgment(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            packet_file = Path(td) / "packet.json"
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-packet-pass")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+            packet_file.write_text(json.dumps(hermes_packet(alert["signal_id"])), encoding="utf-8")
+
+            with patch.object(intake, "HERMES_REVIEW_PACKET_FILE", str(packet_file)):
+                result, submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                    submit_result={"order_id": "packet-ok"},
+                    hermes_packet_gate=None,
+                )
+
+            self.assertEqual(result["status"], "submitted")
+            self.assertEqual(result["hermes_packet"]["status"], "PASS")
+            submit.assert_called_once()
+
+    def test_dry_run_reports_hermes_packet_would_block_execute_without_rejecting(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            packet_file = Path(td) / "packet.json"
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-packet-dry-run")
+            packet_file.write_text(
+                json.dumps(hermes_packet(alert["signal_id"], eligible=False)),
+                encoding="utf-8",
+            )
+
+            with patch.object(intake, "HERMES_REVIEW_PACKET_FILE", str(packet_file)):
+                result, _submit = self.run_with_common_patches(
+                    alert,
+                    "dry-run",
+                    state,
+                    state_file,
+                    judgment_file,
+                    hermes_packet_gate=None,
+                )
+
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["hermes_packet"]["status"], "DRY_RUN_ONLY")
+            self.assertTrue(result["hermes_packet"]["would_block_execute"])
+            self.assertIn("hermes_review_item_not_eligible", result["hermes_packet"]["reasons"])
+
+    def test_hermes_packet_gate_rejects_stale_packet(self):
+        alert = fresh_alert("sig-stale-packet")
+        old_generated_at = (datetime.now() - timedelta(minutes=45)).isoformat(timespec="seconds")
+        with tempfile.TemporaryDirectory() as td:
+            packet_file = Path(td) / "packet.json"
+            packet_file.write_text(
+                json.dumps(hermes_packet(alert["signal_id"], generated_at=old_generated_at)),
+                encoding="utf-8",
+            )
+
+            ok, payload = intake.hermes_packet_gate(alert, "execute", str(packet_file))
+
+        self.assertFalse(ok)
+        self.assertEqual(payload["status"], "REJECTED")
+        self.assertIn("hermes_packet_stale", payload["reasons"])
+
+    def test_hermes_packet_gate_allows_reviewed_sell_risk_reduction_blockers_only_when_fresh(self):
+        alert = fresh_sell_alert("sig-sell-packet-risk-reduction")
+        blockers = [
+            "execution_readiness_would_block_execute",
+            "execution_readiness:execution_readiness_status_blocked",
+            "strategy_evidence_would_block_execute",
+            "strategy_evidence:overall_outcome_sample_below_30",
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            packet_file = Path(td) / "packet.json"
+            packet_file.write_text(
+                json.dumps(
+                    hermes_packet(
+                        alert["signal_id"],
+                        eligible=False,
+                        review_item={"blocking_reasons": blockers},
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            ok, payload = intake.hermes_packet_gate(alert, "execute", str(packet_file))
+
+        self.assertTrue(ok)
+        self.assertEqual(payload["status"], "RISK_REDUCTION_REVIEW_ALLOWED")
+        self.assertEqual(payload["blocking_reasons"], blockers)
+
+    def test_stale_packet_does_not_allow_sell_risk_reduction_exception(self):
+        alert = fresh_sell_alert("sig-sell-stale-packet")
+        old_generated_at = (datetime.now() - timedelta(minutes=45)).isoformat(timespec="seconds")
+        with tempfile.TemporaryDirectory() as td:
+            packet_file = Path(td) / "packet.json"
+            packet_file.write_text(
+                json.dumps(
+                    hermes_packet(
+                        alert["signal_id"],
+                        eligible=False,
+                        generated_at=old_generated_at,
+                        review_item={"blocking_reasons": ["execution_readiness_would_block_execute"]},
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            ok, payload = intake.hermes_packet_gate(alert, "execute", str(packet_file))
+
+        self.assertFalse(ok)
+        self.assertEqual(payload["status"], "REJECTED")
+        self.assertIn("hermes_packet_stale", payload["reasons"])
+        self.assertIn("hermes_review_item_not_eligible", payload["reasons"])
 
     def test_hermes_request_preserves_intraday_quote_evidence_contract(self):
         alert = fresh_alert("sig-intraday-contract", "AAPL")

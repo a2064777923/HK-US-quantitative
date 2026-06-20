@@ -13,7 +13,8 @@ This document explains how to connect the realtime v5 signal path without breaki
 - Large positive same-session moves (`BUY:急漲`) now require `large_move_buy_min_non_momentum_factors=2` before they can remain executable. Same-session momentum and 5-day momentum still contribute score and explanation, but they belong to one canonical `momentum` family and cannot self-confirm a trade. Alerts expose `non_momentum_buy_factor_categories`, `non_momentum_buy_factor_count`, `large_move_non_momentum_min_count`, and `large_move_non_momentum_blocked` so Hermes can explain why a strong rally stayed WATCH-only.
 - v5.8 adds `factor_evidence_roles`, a read-only explanation layer that tells Hermes whether a factor came from a current-session change, current-session volume pace, a completed-daily threshold tested against the realtime quote, or a completed-daily lookback with the realtime quote. This does not change eligibility; it only makes the alert easier to critique without assuming every current-session basis means the same thing.
 - Stored session/5m/15m/30m/60m evidence remains outside v5 core scoring, but it is no longer merely decorative in Hermes. `hermes_review_packet.py` now converts clear `context_digest.intraday_signal_evidence.alignment=challenges_signal` or `conflicting_timeframes` into `eligible_for_approval=false` with `intraday_signal_evidence_*`, `intraday_challenge:*`, or `intraday_conflict:*` blocking reasons. Supportive or limited intraday evidence may guide confidence and timing notes, but it cannot create standalone orders or override completed-daily, readiness, strategy-evidence, or intake gates.
-- This is a no-loss integration change. Existing alert fields, candidate geometry, Hermes packet filtering, order intake, simulation state, and paper broker wiring remain unchanged; the new fields are additive read-only context and can only make BUY execution eligibility stricter.
+- `rt_order_intake.py --mode execute` now independently requires the latest Hermes review packet to contain a fresh matching `review_items[].eligible_for_approval=true` before paper/simulation submission. This closes the direct-intake bypass where an old JSONL Hermes judgment could otherwise outlive a newer packet-level blocker such as intraday contradiction, readiness failure, data-health failure, or simulation-performance failure.
+- This is a no-loss integration change. Existing alert fields, candidate geometry, simulation state, and paper broker wiring remain unchanged; the new fields and packet gate are additive and can only make execution eligibility stricter, except for the existing narrow reviewed SELL risk-reduction path.
 
 ### 2026-06-19 user-holdings monitoring overlay
 
@@ -289,6 +290,14 @@ Execute mode requires a matching Hermes judgment unless `RT_ORDER_REQUIRE_HERMES
 ```bash
 /tmp/hermes_trade_judgments.jsonl
 ```
+
+Execute mode also requires packet eligibility unless `RT_ORDER_REQUIRE_HERMES_PACKET_ELIGIBLE=0` is set. The default packet file is:
+
+```bash
+/tmp/hermes_signal_review_packet.json
+```
+
+The packet gate is intentionally separate from the judgment gate. It requires a fresh `hermes_signal_review_packet_v1`, a matching `review_items[].signal_id`, and `eligible_for_approval=true` before a judgment can be used for execution. `RT_ORDER_MAX_HERMES_PACKET_AGE_MINUTES` defaults to `30`. Missing, stale, invalid, unmatched, or ineligible packets reject execute mode with `hermes_packet_gate_failed`; dry-run output reports `hermes_packet.would_block_execute=true` without submitting. Existing bridge jobs can keep generating the same packet every minute; no alert schema or judgment schema migration is required.
 
 Schema is provided at `config/hermes_trade_judgment.schema.json`.
 
@@ -668,11 +677,11 @@ The packet is review-only. It does not submit simulation orders. Hermes should u
 - `true` means Hermes may still approve or reduce only after independent LLM review;
 - `false` means Hermes must write `reject` or `hold`, or write no judgment.
 
-`review_items[].eligible_for_approval` is now also forced to `false` when top-level `execution_readiness.status` is not `READY`, `ready_for_execute` is not `true`, or the per-alert dry-run intake result reports `execution_readiness.would_block_execute=true`. This is intentionally redundant with `rt_order_intake.py --mode execute`: Hermes sees the same closed gate in review packets before it can write a trade judgment, while execute mode still remains the authoritative submit path.
+`review_items[].eligible_for_approval` is now also forced to `false` when top-level `execution_readiness.status` is not `READY`, `ready_for_execute` is not `true`, or the per-alert dry-run intake result reports `execution_readiness.would_block_execute=true`. This is intentionally redundant with `rt_order_intake.py --mode execute`: Hermes sees the same closed gate in review packets before it can write a trade judgment, and execute mode now re-reads the same packet through `RT_ORDER_REQUIRE_HERMES_PACKET_ELIGIBLE=1` before submitting. Direct intake therefore needs both artifacts to agree: a fresh eligible packet item plus a fresh Hermes trade judgment for the same `signal_id`.
 
 The packet also exposes `portfolio_risk` and `position_review` at the top level, copied from `portfolio_context`. If the simulation portfolio risk level is `critical`, all review items receive portfolio risk blocking reasons and are not eligible for approval. If portfolio risk shows `exit_pressure_above_30pct`, new `BUY` approvals are blocked until high-urgency position reviews are handled; `SELL`/reduction review is not blocked by that reason. This is intentionally fail-closed for adding exposure while still allowing exit review.
 
-Execute mode still happens only through `rt_order_intake.py --mode execute`, and still requires a matching fresh Hermes judgment for the same `signal_id`.
+Execute mode still happens only through `rt_order_intake.py --mode execute`, and still requires a matching fresh Hermes judgment for the same `signal_id`. Packet eligibility is a precondition, not an LLM approval: `eligible_for_approval=true` only means Hermes may review the item; it does not submit an order or replace the judgment contract.
 
 ### Portfolio context and simulation review
 

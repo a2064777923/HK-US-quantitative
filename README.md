@@ -19,7 +19,7 @@ This repository is not configured for automatic real-money trading. Real broker 
 - v5 enables same-market realtime breadth gating by default: a new BUY candidate is downgraded to WATCH when the scanned market is risk-off, or when the live v5.7 config cannot see enough same-market realtime breadth to validate the context.
 - `scripts/portfolio_report.py` produces advisory `position_review` items for user and simulation holdings, including large unrealized losses and daily holding moves that need trailing-stop/take-profit/reduction review.
 - Each position review includes an advisory plan with candidate action, add permission, quantity hint, latest-signal geometry references, optional trailing references, and `dynamic_management_context` for Hermes/operator review. The dynamic context includes price-snapshot age and stale flags so Hermes can disclose weak current-price evidence before advising on target extension, trailing floors, reductions, or adds. Full-exit drafts are reserved for major loss pressure; ordinary SELL or shallow stop pressure becomes reduce/exit review. The hint is not lot-adjusted and never submits orders.
-- `scripts/rt_order_intake.py` is the gated paper/simulation intake path.
+- `scripts/rt_order_intake.py` is the gated paper/simulation intake path and independently requires the latest Hermes review packet to contain a matching eligible `review_item` before execute mode can submit.
 - HK simulated orders use the QuantMind simulation API.
 - US paper orders may use Alpaca paper only when explicitly enabled.
 
@@ -51,7 +51,7 @@ RT_ORDER_PILOT_MAX_ORDER_RISK_HKD=500
 RT_ORDER_PILOT_MAX_DAILY_SUBMITTED_ORDERS=1
 ```
 
-The bridge also forces order-intake execute gates on when invoking `alert-dry-run` or `alert-sim`: `RT_ORDER_REQUIRE_EXECUTION_READINESS=1`, `RT_ORDER_REQUIRE_STRATEGY_EVIDENCE=1`, `RT_ORDER_REQUIRE_HERMES_JUDGMENT=1`, `RT_ORDER_REQUIRE_MARKET_CONTEXT=1`, and `RT_ORDER_REQUIRE_NO_SYMBOL_CONFLICT=1`. Do not pass `RT_ORDER_REQUIRE_*=0` through bridge jobs; a raw technical trigger without a matching Hermes review item must remain blocked. Order intake has one narrower exception for simulation/paper risk reduction: an existing-position `SELL` plan may continue past aggregate readiness or strategy-sample blockers only after broker context, symbol-conflict, plan construction, and a fresh Hermes `approve`/`reduce` judgment all pass. The exception does not apply to new `BUY` exposure, data-health/system/source blockers, or negative forward strategy evidence; it is recorded as `risk_reduction_override`.
+The bridge also forces order-intake execute gates on when invoking `alert-dry-run` or `alert-sim`: `RT_ORDER_REQUIRE_EXECUTION_READINESS=1`, `RT_ORDER_REQUIRE_STRATEGY_EVIDENCE=1`, `RT_ORDER_REQUIRE_HERMES_JUDGMENT=1`, `RT_ORDER_REQUIRE_HERMES_PACKET_ELIGIBLE=1`, `RT_ORDER_REQUIRE_MARKET_CONTEXT=1`, and `RT_ORDER_REQUIRE_NO_SYMBOL_CONFLICT=1`. Do not pass `RT_ORDER_REQUIRE_*=0` through bridge jobs; a raw technical trigger without a matching eligible Hermes review item must remain blocked. Direct `rt_order_intake.py --mode execute` is fail-closed the same way: it reads `HERMES_REVIEW_PACKET_FILE`, default `/tmp/hermes_signal_review_packet.json`, and requires a fresh matching `review_items[].eligible_for_approval=true` in addition to a fresh Hermes trade judgment. Order intake has one narrower exception for simulation/paper risk reduction: an existing-position `SELL` plan may continue past aggregate readiness or strategy-sample blockers only after broker context, symbol-conflict, plan construction, packet review, and a fresh Hermes `approve`/`reduce` judgment all pass. The exception does not apply to new `BUY` exposure, data-health/system/source blockers, intraday contradiction blockers, or negative forward strategy evidence; it is recorded as `risk_reduction_override`.
 
 For US Alpaca paper:
 
@@ -91,8 +91,10 @@ That layer still participates in live judgment. `hermes_review_packet.py` maps
 stored session/5m/15m/30m/60m summaries into
 `context_digest.intraday_signal_evidence`; clear `challenges_signal` or
 `conflicting_timeframes` evidence marks the matching trade item
-`eligible_for_approval=false`. This lets fresh intraday market evolution stop a
-trade candidate without creating standalone orders or overriding the completed
+`eligible_for_approval=false`, and order intake now enforces those packet
+blocking reasons before paper/simulation execute mode. This lets fresh intraday
+market evolution stop or critique a trade candidate without creating standalone
+orders, being misused as a completed daily bar, or overriding the completed
 daily strategy contract.
 
 When a directional BUY/SELL candidate is downgraded to diagnostic `WATCH`, Hermes
