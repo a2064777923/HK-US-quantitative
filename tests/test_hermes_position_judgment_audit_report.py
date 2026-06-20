@@ -104,6 +104,7 @@ def judgment(review_id="simulation:8:00929:2026-06-12:reduce_or_exit_review", de
         f"{item.get('role')}:{item.get('portfolio_id')}:{str(item.get('symbol')).upper()}",
     )
     item.setdefault("reviewed_recommended_action", audit.reviewed_action_from_id(item.get("review_id")))
+    item.setdefault("reviewed_urgency", "medium")
     return item
 
 
@@ -256,6 +257,7 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
             "simulation:8:00929:2026-06-17:reduce_or_exit_review",
             packet_id="old-packet",
             reviewed_at="2026-06-18T09:30:00",
+            reviewed_urgency="high",
             decision="watch",
             opposing_factors=["support held above stop", "liquidity risk makes immediate exit worse"],
             risk_notes=["review again next session", "do not add exposure before review"],
@@ -276,6 +278,68 @@ class HermesPositionJudgmentAuditReportTests(unittest.TestCase):
         self.assertEqual(row["match_type"], "latest_review_thread_key")
         self.assertEqual(row["covered_review_id"], "simulation:8:00929:2026-06-18:reduce_or_exit_review")
         self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 0)
+
+    def test_thread_judgment_does_not_cover_escalated_current_urgency(self):
+        current = position_item(
+            "simulation:8:00929:2026-06-18:reduce_or_exit_review",
+            urgency="high",
+            recommended_action="reduce_or_exit_review",
+        )
+        prior = judgment(
+            "simulation:8:00929:2026-06-17:reduce_or_exit_review",
+            packet_id="old-packet",
+            reviewed_at="2026-06-18T09:30:00",
+            reviewed_recommended_action="reduce_or_exit_review",
+            reviewed_urgency="medium",
+            decision="watch",
+            opposing_factors=["support held above stop", "liquidity risk makes immediate exit worse"],
+            risk_notes=["review again next session", "do not add exposure before review"],
+        )
+
+        payload = audit.build_report(
+            [prior],
+            packet([current], packet_id="latest-packet"),
+            now=datetime(2026, 6, 18, 10, 0),
+            packet_archive_dir="/tmp/does-not-exist-for-test",
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "WARN")
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("thread_match_current_urgency_escalated", row["reasons"])
+        self.assertEqual(row["audit_scope"], "historical_packet")
+        self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 1)
+
+    def test_thread_judgment_missing_reviewed_urgency_does_not_cover_current_urgency(self):
+        current = position_item(
+            "simulation:8:00929:2026-06-18:reduce_or_exit_review",
+            urgency="high",
+            recommended_action="reduce_or_exit_review",
+        )
+        prior = judgment(
+            "simulation:8:00929:2026-06-17:reduce_or_exit_review",
+            packet_id="old-packet",
+            reviewed_at="2026-06-18T09:30:00",
+            reviewed_recommended_action="reduce_or_exit_review",
+            decision="watch",
+            opposing_factors=["support held above stop", "liquidity risk makes immediate exit worse"],
+            risk_notes=["review again next session", "do not add exposure before review"],
+        )
+        prior.pop("reviewed_urgency")
+
+        payload = audit.build_report(
+            [prior],
+            packet([current], packet_id="latest-packet"),
+            now=datetime(2026, 6, 18, 10, 0),
+            packet_archive_dir="/tmp/does-not-exist-for-test",
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "WARN")
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("thread_match_missing_reviewed_urgency", row["reasons"])
+        self.assertEqual(row["audit_scope"], "historical_packet")
+        self.assertEqual(payload["coverage"]["unjudged_high_urgency_review_count"], 1)
 
     def test_thread_judgment_does_not_cover_escalated_current_action(self):
         current = position_item(

@@ -33,6 +33,11 @@ ACTION_RANKS = {
     "reduce_or_exit_review": 3,
     "exit_review": 4,
 }
+URGENCY_RANKS = {
+    "low": 0,
+    "medium": 1,
+    "high": 2,
+}
 REQUIRED_CONTEXT_REVIEW_FLAGS = (
     "position_context_reviewed",
     "portfolio_risk_reviewed",
@@ -170,6 +175,35 @@ def current_action_covered_by_judgment(judgment, item):
     return True, []
 
 
+def reviewed_urgency_for_judgment(judgment):
+    return str(
+        (judgment or {}).get("reviewed_urgency")
+        or (judgment or {}).get("urgency")
+        or ""
+    ).strip().lower()
+
+
+def urgency_rank(value):
+    value = str(value or "").strip().lower()
+    if not value:
+        return None
+    return URGENCY_RANKS.get(value)
+
+
+def current_urgency_covered_by_judgment(judgment, item):
+    current_urgency = str((item or {}).get("urgency") or "").strip().lower()
+    current_rank = urgency_rank(current_urgency)
+    if current_rank is None:
+        return True, []
+    reviewed_urgency = reviewed_urgency_for_judgment(judgment)
+    reviewed_rank = urgency_rank(reviewed_urgency)
+    if reviewed_rank is None:
+        return False, ["thread_match_missing_reviewed_urgency"]
+    if current_rank > reviewed_rank:
+        return False, ["thread_match_current_urgency_escalated"]
+    return True, []
+
+
 def judgment_expiry_minutes(judgment):
     expiry = (judgment or {}).get("expiry_minutes", MAX_JUDGMENT_AGE_MINUTES)
     try:
@@ -299,8 +333,10 @@ def select_review_item_for_judgment(
     thread_key = review_thread_key_for(judgment)
     if thread_key and thread_key in latest_review_by_thread and not judgment_is_expired(judgment, now or datetime.now()):
         item = latest_review_by_thread[thread_key]
-        covered, rejected = current_action_covered_by_judgment(judgment, item)
-        if covered:
+        action_covered, action_rejected = current_action_covered_by_judgment(judgment, item)
+        urgency_covered, urgency_rejected = current_urgency_covered_by_judgment(judgment, item)
+        rejected = action_rejected + urgency_rejected
+        if action_covered and urgency_covered:
             return item, {
                 "match_type": "latest_review_thread_key",
                 "current_packet_coverage": True,
@@ -541,6 +577,11 @@ def build_recommendations(rows, reason_counts, empty_recommendation="no_position
         recs.append("include_packet_id_in_position_judgments")
     if reason_counts.get("packet_archive_missing_for_packet_id"):
         recs.append("retain_packet_archive_for_position_judgment_audit")
+    if (
+        reason_counts.get("thread_match_missing_reviewed_urgency")
+        or reason_counts.get("thread_match_current_urgency_escalated")
+    ):
+        recs.append("refresh_position_judgments_for_escalated_urgency")
     if reason_counts.get("high_urgency_hold_or_watch_requires_strong_rationale"):
         recs.append("review_high_urgency_hold_watch_rationale")
     if reason_counts.get("context_review_missing") or any(

@@ -25,7 +25,7 @@ This document explains how to connect the realtime v5 signal path without breaki
 - Alert metadata now carries `watchlist_overlays`, `user_holding_symbol`, and `user_holding_portfolio_ids`. Hermes should treat `user_holding_symbol=true` as position-management context: prioritize trailing-stop, reduce/add, and risk review logic, but still require the existing Hermes/readiness/intake gates before any paper execution.
 - Static watchlist membership still drives broader opportunity discovery. DB holdings are an additive overlay so held symbols cannot disappear from realtime attention when the operator buys something outside the current watchlist.
 - `hermes_review_packet.py` compact output now preserves a capped, compact `operator_action_queue.actions[]` list in addition to the queue summary. This lets Hermes see the actual P0/P1 remediation items, such as high-urgency position judgments or simulation recovery reviews, while still keeping bulky source reports out of the bridge-safe packet. The queue remains read-only and does not submit orders, write judgments, change portfolios, change strategy, or install cron by itself.
-- Position-judgment templates now include `review_thread_key=role:portfolio_id:symbol` and `reviewed_recommended_action`. `hermes_position_judgment_audit_report.py` can use that stable key to keep a fresh same-position advisory judgment valid across packet/review-id refreshes, but only when the judgment is not expired and the current recommended action has not escalated beyond the action Hermes reviewed. Expired judgments, role/portfolio/symbol mismatches, and escalated actions still fail or leave the current high-urgency review unjudged.
+- Position-judgment templates now include `review_thread_key=role:portfolio_id:symbol`, `reviewed_recommended_action`, and `reviewed_urgency`. `hermes_position_judgment_audit_report.py` can use that stable key to keep a fresh same-position advisory judgment valid across packet/review-id refreshes, but only when the judgment is not expired and neither the current recommended action nor urgency has escalated beyond what Hermes reviewed. Expired judgments, role/portfolio/symbol mismatches, escalated actions, and escalated urgency still fail or leave the current high-urgency review unjudged.
 
 ### 2026-06-18 live-server reliability fix
 
@@ -3159,6 +3159,9 @@ Hermes should append one JSON object per reviewed position item:
   "schema": "hermes_position_judgment_v1",
   "packet_id": "copy from hermes_signal_review_packet_v1.packet_id",
   "review_id": "copy from position_review.items[].review_id",
+  "review_thread_key": "copy from position_review.items[].review_thread_key",
+  "reviewed_recommended_action": "copy from position_review.items[].recommended_action",
+  "reviewed_urgency": "copy from position_review.items[].urgency",
   "portfolio_id": 8,
   "role": "simulation",
   "symbol": "00929",
@@ -3225,6 +3228,7 @@ The audit checks:
 
 - judgment schema and required advisory flags;
 - exact `packet_id` and `review_id` linkage through `/tmp/hermes_review_packet_archive/`;
+- stable `review_thread_key` reuse only when `reviewed_recommended_action` and `reviewed_urgency` still cover the latest same-position review;
 - symbol, portfolio, and role consistency with the reviewed `position_review` item;
 - complete `context_review` flags when the reviewed `position_review` item includes `context_digest`;
 - complete `position_attention` acknowledgement when the reviewed context digest highlights holding-specific risks;
@@ -3249,7 +3253,7 @@ Hermes packet integration:
 - `hermes_review_packet.py` exposes `position_judgment_contract` at the top level;
 - `position_judgment_contract.append_jsonl_object.context_review` lists the required advisory context-review flags for enriched position items;
 - `position_judgment_contract.append_jsonl_object.position_attention_*` lists the required structured attention acknowledgement fields for any non-empty `context_digest.position_attention[]`;
-- each `position_review.items[]` also carries `position_judgment_template`, a draft helper that pre-fills `packet_id`, `review_id`, `portfolio_id`, `role`, `symbol`, and all required `position_attention_codes[]`/effect rows; it is marked `template_only=true` and `ready_to_append_without_hermes_review=false`, keeps `confidence`, `reviewed_at`, and `context_review` as placeholders, and must not be appended unchanged;
+- each `position_review.items[]` also carries `position_judgment_template`, a draft helper that pre-fills `packet_id`, `review_id`, `review_thread_key`, `reviewed_recommended_action`, `reviewed_urgency`, `portfolio_id`, `role`, `symbol`, and all required `position_attention_codes[]`/effect rows; it is marked `template_only=true` and `ready_to_append_without_hermes_review=false`, keeps `confidence`, `reviewed_at`, and `context_review` as placeholders, and must not be appended unchanged;
 - `hermes_review_packet.py` reads `/tmp/hermes_position_judgment_audit_report.json` into `position_judgment_audit` when the file exists;
 - missing position judgment audit does not block packet generation;
 - `position_judgment_audit` warnings should keep the workflow in advisory review until high-urgency coverage is complete;

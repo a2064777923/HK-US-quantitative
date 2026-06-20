@@ -58,6 +58,7 @@ def work_item(review_id, role="user", symbol="AAPL", urgency="high"):
             "review_id": review_id,
             "review_thread_key": ":".join(str(review_id).split(":")[:3]),
             "reviewed_recommended_action": "reduce_or_exit_review",
+            "reviewed_urgency": urgency,
             "portfolio_id": 3 if role == "user" else 8,
             "role": role,
             "symbol": symbol,
@@ -137,6 +138,7 @@ class HermesPositionJudgmentWritePacketTests(unittest.TestCase):
         )
         first = payload["items"][0]
         self.assertEqual(first["required_output_fields"]["schema"], "hermes_position_judgment_v1")
+        self.assertEqual(first["required_output_fields"]["reviewed_urgency"], "high")
         self.assertTrue(first["required_output_fields"]["advisory_only"])
         self.assertFalse(first["required_output_fields"]["submits_orders"])
         self.assertIn("decision", first["must_complete_fields"])

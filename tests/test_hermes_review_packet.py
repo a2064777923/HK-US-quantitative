@@ -1890,6 +1890,10 @@ class HermesReviewPacketTests(unittest.TestCase):
             payload["position_judgment_contract"]["append_jsonl_object"],
         )
         self.assertIn(
+            "reviewed_urgency",
+            payload["position_judgment_contract"]["append_jsonl_object"],
+        )
+        self.assertIn(
             "position_attention_acknowledged",
             payload["position_judgment_contract"]["append_jsonl_object"],
         )
@@ -4245,6 +4249,7 @@ class HermesReviewPacketTests(unittest.TestCase):
         required_fields = work_item["required_output_fields"]
         self.assertEqual(required_fields["schema"], "hermes_position_judgment_v1")
         self.assertEqual(required_fields["review_thread_key"], "simulation:8:00700")
+        self.assertEqual(required_fields["reviewed_urgency"], "high")
         self.assertTrue(required_fields["context_review"]["position_context_reviewed"])
         self.assertTrue(required_fields["position_attention_acknowledged"])
         effect_codes = {row["code"] for row in required_fields["position_attention_effects"]}
@@ -4298,6 +4303,7 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(draft["review_id"], "simulation:8:00700:2026-06-12:risk_review")
         self.assertEqual(draft["review_thread_key"], "simulation:8:00700")
         self.assertEqual(draft["reviewed_recommended_action"], "risk_review")
+        self.assertEqual(draft["reviewed_urgency"], "high")
         self.assertEqual(draft["portfolio_id"], 8)
         self.assertEqual(draft["role"], "simulation")
         self.assertEqual(draft["symbol"], "00700")
