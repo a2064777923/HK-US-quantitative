@@ -566,6 +566,8 @@ When `alert.current_session_quote_evidence.score_impact.factor_count > 0`, `curr
 
 `strategy_learning_report.py` also emits `intraday_alignment_effect`, and `strategy_learning_brief.intraday_signal_alignment` copies its `evidence_status`, `evidence_reasons`, `support_vs_challenge_delta_pct`, and read-only `policy` into the Hermes packet. This is the empirical layer that answers whether past signals with intraday support actually outperformed signals challenged by 5m/15m/30m/60m/session evidence. `SUPPORTIVE` means the alignment can be used as soft confirmation and confidence capping context; it still does not grant execution permission. `INSUFFICIENT`, `MISSING`, or `NEGATIVE` means Hermes must treat intraday alignment as diagnostic only and should not promote it into a hard hold/approve rule without more resolved forward outcomes.
 
+`strategy_learning_report.py` also groups forward outcomes by `current_session_score_impact_cohort`: `no_current_session_score_impact`, `low_current_session_score_impact`, `medium_current_session_score_impact`, `high_current_session_score_impact`, `mixed_current_session_score_impact`, or `unknown_current_session_score_impact`. The cohort uses `abs(current_session_quote_evidence.score_impact.net_score_delta) / abs(full_score)` when available, and `strategy_learning_brief.current_session_score_impact` carries the compact group metrics into the Hermes packet. This is read-only cohort evidence for learning whether high intraday-quote score dependence helps or hurts; it does not change v5 thresholds, Hermes eligibility, readiness, or intake gates.
+
 The execute gate also checks confidence and judgment freshness. Defaults:
 
 - `RT_ORDER_MIN_HERMES_CONFIDENCE=0.60`

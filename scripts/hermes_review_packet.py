@@ -3699,6 +3699,44 @@ def strategy_learning_intraday_alignment_brief(strategy_learning_payload):
     }
 
 
+def strategy_learning_current_session_score_impact_brief(strategy_learning_payload):
+    payload = strategy_learning_payload if isinstance(strategy_learning_payload, dict) else {}
+    rows = (
+        payload.get("by_current_session_score_impact")
+        if isinstance(payload.get("by_current_session_score_impact"), list)
+        else []
+    )
+    groups = []
+    by_key = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("key") or "").strip()
+        if not key:
+            continue
+        compact = {
+            "key": key,
+            "count": row.get("count"),
+            "resolved_count": row.get("resolved_count"),
+            "pending_or_missing_count": row.get("pending_or_missing_count"),
+            "avg_signed_return_pct": row.get("avg_signed_return_pct"),
+            "win_rate_pct": row.get("win_rate_pct"),
+        }
+        groups.append(compact)
+        by_key[key] = compact
+    return {
+        "read_only": True,
+        "submits_orders": False,
+        "source": "strategy_learning.by_current_session_score_impact",
+        "groups": groups[:8],
+        "high_current_session_score_impact": by_key.get("high_current_session_score_impact") or {},
+        "medium_current_session_score_impact": by_key.get("medium_current_session_score_impact") or {},
+        "low_current_session_score_impact": by_key.get("low_current_session_score_impact") or {},
+        "no_current_session_score_impact": by_key.get("no_current_session_score_impact") or {},
+        "policy": "read_only_learning_context_for_intraday_quote_score_dependence",
+    }
+
+
 def local_backtest_manifest_evidence(dataset):
     dataset = dataset if isinstance(dataset, dict) else {}
     contract = dataset.get("raw_data_lake_contract") if isinstance(dataset.get("raw_data_lake_contract"), dict) else {}
@@ -4606,6 +4644,7 @@ def strategy_learning_brief(
             },
         },
         "intraday_signal_alignment": strategy_learning_intraday_alignment_brief(payload),
+        "current_session_score_impact": strategy_learning_current_session_score_impact_brief(payload),
         "sizing_blocker_remediation": {
             "status": remediation_status,
             "sizing_blocker_count": blocker_count,

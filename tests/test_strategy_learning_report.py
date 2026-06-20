@@ -31,8 +31,8 @@ def context_review(**overrides):
     return item
 
 
-def alert(signal_id="sig-1", trigger="MA"):
-    return {
+def alert(signal_id="sig-1", trigger="MA", **overrides):
+    item = {
         "signal_id": signal_id,
         "symbol": "00700",
         "market": "HK",
@@ -44,6 +44,8 @@ def alert(signal_id="sig-1", trigger="MA"):
         "watchlist_id": "wl",
         "generated_at": "2026-06-12T10:00:00",
     }
+    item.update(overrides)
+    return item
 
 
 def judgment(signal_id="sig-1", decision="approve"):
@@ -225,6 +227,73 @@ class StrategyLearningReportTests(unittest.TestCase):
         )
         self.assertTrue(payload["source"]["read_only"])
         self.assertFalse(payload["source"]["submits_orders"])
+
+    def test_build_report_groups_current_session_score_impact(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            alerts = root / "alerts.jsonl"
+            judgments = root / "judgments.jsonl"
+            state = root / "state.json"
+            outcomes = root / "outcome.json"
+            high_impact = alert(
+                "sig-high",
+                full_score=0.8,
+                current_session_quote_evidence={
+                    "schema": "current_session_quote_evidence_v1",
+                    "used_in_full_score": True,
+                    "score_impact": {
+                        "schema": "current_session_score_impact_v1",
+                        "factor_count": 1,
+                        "net_score_delta": 0.5,
+                        "score_delta_by_direction": {"BUY": 0.5},
+                    },
+                },
+            )
+            low_impact = alert(
+                "sig-low",
+                full_score=0.8,
+                current_session_quote_evidence={
+                    "schema": "current_session_quote_evidence_v1",
+                    "used_in_full_score": True,
+                    "score_impact": {
+                        "schema": "current_session_score_impact_v1",
+                        "factor_count": 1,
+                        "net_score_delta": 0.1,
+                        "score_delta_by_direction": {"BUY": 0.1},
+                    },
+                },
+            )
+            write_jsonl(alerts, [high_impact, low_impact])
+            write_jsonl(judgments, [])
+            state.write_text(json.dumps({"dry_runs": {}, "processed": {}}), encoding="utf-8")
+            outcomes.write_text(
+                json.dumps(
+                    {
+                        "schema": "rt_signal_outcome_report_v1",
+                        "evaluations": [
+                            outcome("sig-high", -1.5, "MA"),
+                            outcome("sig-low", 1.0, "MA"),
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = learning.build_report(
+                alert_queue_file=str(alerts),
+                judgment_file=str(judgments),
+                intake_state_file=str(state),
+                outcome_report_file=str(outcomes),
+                queue_scan_limit=50,
+            )
+
+        by_impact = {row["key"]: row for row in payload["by_current_session_score_impact"]}
+        self.assertEqual(by_impact["high_current_session_score_impact"]["avg_signed_return_pct"], -1.5)
+        self.assertEqual(by_impact["low_current_session_score_impact"]["avg_signed_return_pct"], 1.0)
+        rows_by_id = {row["signal_id"]: row for row in payload["recent_joined_rows"]}
+        self.assertEqual(rows_by_id["sig-high"]["current_session_score_impact_cohort"], "high_current_session_score_impact")
+        self.assertEqual(rows_by_id["sig-high"]["current_session_score_impact_ratio"], 0.625)
+        self.assertEqual(rows_by_id["sig-low"]["current_session_score_impact_cohort"], "low_current_session_score_impact")
 
     def test_context_review_effect_tracks_incomplete_approval_cohort(self):
         with tempfile.TemporaryDirectory() as td:

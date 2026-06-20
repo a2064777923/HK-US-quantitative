@@ -948,6 +948,24 @@ class HermesReviewPacketTests(unittest.TestCase):
                         "win_rate_pct": 0.0,
                     },
                 ],
+                "by_current_session_score_impact": [
+                    {
+                        "key": "high_current_session_score_impact",
+                        "count": 3,
+                        "resolved_count": 2,
+                        "pending_or_missing_count": 1,
+                        "avg_signed_return_pct": -0.4,
+                        "win_rate_pct": 50.0,
+                    },
+                    {
+                        "key": "low_current_session_score_impact",
+                        "count": 2,
+                        "resolved_count": 2,
+                        "pending_or_missing_count": 0,
+                        "avg_signed_return_pct": 0.9,
+                        "win_rate_pct": 100.0,
+                    },
+                ],
                 "intraday_alignment_effect": {
                     "schema": "intraday_alignment_effect_v1",
                     "read_only": True,
@@ -1613,6 +1631,22 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertIn(
             "intraday_alignment_samples_below_threshold",
             payload["strategy_learning_brief"]["intraday_signal_alignment"]["hermes_note"],
+        )
+        self.assertEqual(
+            payload["strategy_learning_brief"]["current_session_score_impact"]["source"],
+            "strategy_learning.by_current_session_score_impact",
+        )
+        self.assertEqual(
+            payload["strategy_learning_brief"]["current_session_score_impact"]["high_current_session_score_impact"][
+                "avg_signed_return_pct"
+            ],
+            -0.4,
+        )
+        self.assertEqual(
+            payload["strategy_learning_brief"]["current_session_score_impact"]["low_current_session_score_impact"][
+                "avg_signed_return_pct"
+            ],
+            0.9,
         )
         self.assertIn(
             "audit-pass judgment_effect",

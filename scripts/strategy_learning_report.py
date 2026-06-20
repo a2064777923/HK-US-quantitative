@@ -324,6 +324,59 @@ def intraday_signal_alignment(outcome):
     return normalize_intraday_signal_alignment(context.get("alignment"))
 
 
+def current_session_score_impact(alert):
+    current_session = (
+        (alert or {}).get("current_session_quote_evidence")
+        if isinstance((alert or {}).get("current_session_quote_evidence"), dict)
+        else {}
+    )
+    impact = (
+        current_session.get("score_impact")
+        if isinstance(current_session.get("score_impact"), dict)
+        else {}
+    )
+    factor_count = int(as_float(impact.get("factor_count")) or 0)
+    net_delta = as_float(impact.get("net_score_delta"))
+    by_direction = (
+        impact.get("score_delta_by_direction")
+        if isinstance(impact.get("score_delta_by_direction"), dict)
+        else {}
+    )
+    return {
+        "factor_count": factor_count,
+        "net_score_delta": net_delta,
+        "buy_score_delta": as_float(by_direction.get("BUY")),
+        "sell_score_delta": as_float(by_direction.get("SELL")),
+    }
+
+
+def current_session_score_impact_ratio(full_score, score_impact):
+    full_score = as_float(full_score)
+    net_delta = as_float((score_impact or {}).get("net_score_delta"))
+    if full_score is None or net_delta is None or full_score == 0:
+        return None
+    return round(abs(net_delta) / abs(full_score), 6)
+
+
+def current_session_score_impact_cohort(row):
+    impact = row.get("current_session_score_impact") if isinstance(row.get("current_session_score_impact"), dict) else {}
+    factor_count = int(as_float(impact.get("factor_count")) or 0)
+    if factor_count <= 0:
+        return "no_current_session_score_impact"
+    buy_delta = as_float(impact.get("buy_score_delta")) or 0
+    sell_delta = as_float(impact.get("sell_score_delta")) or 0
+    if buy_delta and sell_delta:
+        return "mixed_current_session_score_impact"
+    ratio = row.get("current_session_score_impact_ratio")
+    if ratio is None:
+        return "unknown_current_session_score_impact"
+    if ratio >= 0.5:
+        return "high_current_session_score_impact"
+    if ratio >= 0.2:
+        return "medium_current_session_score_impact"
+    return "low_current_session_score_impact"
+
+
 def normalize_intraday_signal_alignment(value):
     text = str(value or "unavailable_or_stale").strip() or "unavailable_or_stale"
     return INTRADAY_ALIGNMENT_ALIASES.get(text, text)
@@ -560,6 +613,9 @@ def build_join_rows(alerts, judgments, intake_decisions, outcomes, judgment_audi
         context_review = context_review_summary(judgment)
         audit_status = audit_status_for_row(judgment, audit_row)
         audit_reasons = audit_row.get("reasons") if isinstance(audit_row.get("reasons"), list) else []
+        score_impact = current_session_score_impact(alert)
+        full_score = alert.get("full_score", outcome.get("full_score"))
+        score_impact_ratio = current_session_score_impact_ratio(full_score, score_impact)
         row = {
             "signal_id": sid,
             "symbol": alert.get("symbol") or outcome.get("symbol"),
@@ -569,7 +625,10 @@ def build_join_rows(alerts, judgments, intake_decisions, outcomes, judgment_audi
             "trigger_key": trigger_key(alert, outcome),
             "signal_type": str((alert or outcome).get("signal_type") or "").upper(),
             "confirmed": alert.get("confirmed", outcome.get("confirmed")),
-            "full_score": alert.get("full_score", outcome.get("full_score")),
+            "full_score": full_score,
+            "current_session_score_impact": score_impact,
+            "current_session_score_impact_ratio": score_impact_ratio,
+            "current_session_score_impact_cohort": None,
             "judgment_decision": judgment_decision(judgment),
             "judgment_confidence": judgment.get("confidence"),
             "judgment_audit_status": audit_status,
@@ -595,6 +654,7 @@ def build_join_rows(alerts, judgments, intake_decisions, outcomes, judgment_audi
             "generated_at": alert.get("generated_at") or outcome.get("generated_at"),
         }
         row["context_review_cohort"] = context_review_cohort(row)
+        row["current_session_score_impact_cohort"] = current_session_score_impact_cohort(row)
         diagnostics = sizing_diagnostics(alert, decision)
         if diagnostics:
             row["sizing_diagnostics"] = diagnostics
@@ -1229,6 +1289,10 @@ def build_report(
         "by_context_review_cohort": grouped_summary(rows, lambda row: row["context_review_cohort"]),
         "by_intraday_signal_alignment": intraday_groups,
         "intraday_alignment_effect": intraday_alignment_effect(rows),
+        "by_current_session_score_impact": grouped_summary(
+            rows,
+            lambda row: row.get("current_session_score_impact_cohort") or "unknown_current_session_score_impact",
+        ),
         "by_intake_status": grouped_summary(rows, lambda row: row["intake_status"]),
         "by_intake_reason": sorted(grouped_summary(rows, lambda row: row["intake_reason_bucket"]), key=lambda row: (-row["count"], row["key"])),
         "by_actionability": sorted(grouped_summary(rows, lambda row: row["actionability_category"]), key=lambda row: (-row["count"], row["key"])),
