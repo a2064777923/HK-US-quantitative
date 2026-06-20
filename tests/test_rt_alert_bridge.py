@@ -618,6 +618,29 @@ class RtAlertBridgeTests(unittest.TestCase):
 
             self.assertEqual(code, 0)
             self.assertIn("Hermes審核：NO_MATCH", printed.call_args.args[0])
+            self.assertFalse(sent.exists())
+
+    def test_missing_packet_remains_unsent_for_packet_repair_retry(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "missing-packet.json"
+            queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="notify",
+            )
+
+            with patch("builtins.print") as printed, patch.object(bridge, "run_order_intake") as intake:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            printed.assert_not_called()
+            intake.assert_not_called()
+            self.assertFalse(sent.exists())
 
     def test_feishu_success_updates_sent_state(self):
         with tempfile.TemporaryDirectory() as td:
