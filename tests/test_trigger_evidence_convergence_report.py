@@ -89,7 +89,16 @@ def replay_review():
                 "policy": "tighten_thresholds",
                 "promotion_eligible": False,
                 "markets": ["HK", "US"],
-                "reasons": ["replay_execution_candidate_density_high"],
+                "reasons": ["replay_execution_candidate_density_high", "replay_gate_blocker_majority:not_confirmed"],
+                "gate_blocker_reason_counts": {"not_confirmed": 70},
+                "top_gate_blockers": [
+                    {
+                        "key": "HK:BUY:站上MA5:not_confirmed",
+                        "market": "HK",
+                        "blocked_reason": "not_confirmed",
+                        "metrics": {"blocked_count": 70, "blocked_alert_ratio_pct": 87.5},
+                    }
+                ],
                 "metrics": {
                     "alert_count": 120,
                     "alert_rate_per_100_bars": 12.0,
@@ -141,6 +150,8 @@ class TriggerEvidenceConvergenceReportTests(unittest.TestCase):
         self.assertEqual(by_key["BUY:站上MA5"]["status"], "CONVERGED_RISK")
         self.assertEqual(by_key["BUY:站上MA5"]["confidence"], "HIGH")
         self.assertIn("forward_avg_return_not_positive", by_key["BUY:站上MA5"]["reasons"])
+        self.assertEqual(by_key["BUY:站上MA5"]["replay"]["gate_blocker_reason_counts"], {"not_confirmed": 70})
+        self.assertEqual(by_key["BUY:站上MA5"]["replay"]["top_gate_blockers"][0]["blocked_reason"], "not_confirmed")
         self.assertEqual(by_key["BUY:breakout"]["status"], "REPLAY_CHALLENGES_FORWARD")
         self.assertEqual(by_key["SELL:new"]["status"], "INSUFFICIENT_FORWARD_SAMPLE")
         self.assertIn(

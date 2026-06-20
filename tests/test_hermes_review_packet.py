@@ -510,6 +510,15 @@ def trigger_evidence_convergence():
                 },
                 "replay": {
                     "policy": "tighten_thresholds",
+                    "gate_blocker_reason_counts": {"not_confirmed": 70},
+                    "top_gate_blockers": [
+                        {
+                            "key": "HK:BUY:站上MA5:not_confirmed",
+                            "market": "HK",
+                            "blocked_reason": "not_confirmed",
+                            "metrics": {"blocked_count": 70, "blocked_alert_ratio_pct": 87.5},
+                        }
+                    ],
                     "metrics": {"alert_count": 120, "execution_candidate_rate_per_100_bars": 3.0},
                 },
             }
@@ -3389,6 +3398,14 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(convergence["counts"]["converged_risk_count"], 1)
         self.assertEqual(convergence["counts"]["forward_scope_status"], "AVAILABLE")
         self.assertEqual(convergence["top_trigger_evidence"][0]["key"], "BUY:站上MA5")
+        self.assertEqual(
+            convergence["top_trigger_evidence"][0]["replay_gate_blocker_reason_counts"],
+            {"not_confirmed": 70},
+        )
+        self.assertEqual(
+            convergence["top_trigger_evidence"][0]["replay_top_gate_blockers"][0]["blocked_reason"],
+            "not_confirmed",
+        )
 
         missing = packet.strategy_learning_brief({})["local_backtest_reliability"]
         self.assertEqual(missing["status"], "MISSING")

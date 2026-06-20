@@ -125,6 +125,20 @@ def compact_replay(row):
         "promotion_eligible": row.get("promotion_eligible"),
         "markets": row.get("markets") or [],
         "reasons": row.get("reasons") or [],
+        "gate_blocker_reason_counts": row.get("gate_blocker_reason_counts") or {},
+        "top_gate_blockers": [
+            {
+                "key": item.get("key"),
+                "market": item.get("market"),
+                "blocked_reason": item.get("blocked_reason"),
+                "metrics": {
+                    "blocked_count": (item.get("metrics") or {}).get("blocked_count"),
+                    "blocked_alert_ratio_pct": (item.get("metrics") or {}).get("blocked_alert_ratio_pct"),
+                },
+            }
+            for item in (row.get("top_gate_blockers") or [])[:4]
+            if isinstance(item, dict)
+        ],
         "metrics": {
             "alert_count": metrics.get("alert_count"),
             "alert_rate_per_100_bars": metrics.get("alert_rate_per_100_bars"),

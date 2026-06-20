@@ -4207,6 +4207,11 @@ def trigger_evidence_convergence_brief(trigger_evidence_convergence_payload):
                 "replay_policy": (row.get("replay") or {}).get("policy"),
                 "forward_metrics": (row.get("forward") or {}).get("metrics") or {},
                 "replay_metrics": (row.get("replay") or {}).get("metrics") or {},
+                "replay_gate_blocker_reason_counts": (row.get("replay") or {}).get(
+                    "gate_blocker_reason_counts"
+                )
+                or {},
+                "replay_top_gate_blockers": (row.get("replay") or {}).get("top_gate_blockers") or [],
             }
             for row in rows[:8]
             if isinstance(row, dict)
