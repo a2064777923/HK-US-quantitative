@@ -146,6 +146,12 @@ def flattened_judgment_text(judgment):
     return " ".join(parts).lower()
 
 
+def list_text(value):
+    if not isinstance(value, list):
+        return ""
+    return " ".join(str(item) for item in value if str(item).strip()).lower()
+
+
 def cross_market_conflict_acknowledgement_reasons(judgment, cross_market):
     if not isinstance(cross_market, dict) or cross_market.get("alignment") != "conflicts_with_breadth":
         return []
@@ -1194,16 +1200,63 @@ def current_session_quote_evidence_attention(item):
     used_in_full_score = current_session.get("used_in_full_score") is True
     factor_basis = alert.get("factor_evidence_basis") if isinstance(alert.get("factor_evidence_basis"), dict) else {}
     current_session_factor_count = int(as_float(factor_basis.get("current_session_quote"), 0) or 0)
-    if not used_in_full_score and current_session_factor_count <= 0:
+    score_impact = (
+        current_session.get("score_impact")
+        if isinstance(current_session.get("score_impact"), dict)
+        else {}
+    )
+    score_impact_factor_count = int(as_float(score_impact.get("factor_count"), 0) or 0)
+    if not used_in_full_score and current_session_factor_count <= 0 and score_impact_factor_count <= 0:
         return {}
     return {
         "basis": basis,
         "used_in_full_score": used_in_full_score,
-        "factor_count": current_session_factor_count,
+        "factor_count": max(current_session_factor_count, score_impact_factor_count),
+        "score_impact_factor_count": score_impact_factor_count,
         "provisional": current_session.get("provisional") is True,
         "mutates_completed_daily_history": current_session.get("mutates_completed_daily_history") is True,
         "replaces_completed_daily_bar": current_session.get("replaces_completed_daily_bar") is True,
     }
+
+
+def current_session_quote_notes_discuss_score_impact(notes):
+    text = list_text(notes)
+    if not text:
+        return False
+    has_impact = any(
+        term in text
+        for term in (
+            "score",
+            "impact",
+            "score_impact",
+            "points",
+            "delta",
+            "factor",
+            "分數",
+            "得分",
+            "貢獻",
+            "贡献",
+            "因子",
+        )
+    )
+    has_weight = any(
+        term in text
+        for term in (
+            "dominat",
+            "support",
+            "supported",
+            "only supported",
+            "not dominate",
+            "主導",
+            "主导",
+            "支撐",
+            "支撑",
+            "支持",
+            "輔助",
+            "辅助",
+        )
+    )
+    return has_impact and has_weight
 
 
 def current_session_quote_evidence_acknowledgement_reasons(judgment, evidence_attention):
@@ -1223,6 +1276,11 @@ def current_session_quote_evidence_acknowledgement_reasons(judgment, evidence_at
     notes = judgment.get("current_session_quote_evidence_notes")
     if not isinstance(notes, list) or not notes:
         reasons.append("current_session_quote_evidence_notes_missing")
+    elif (
+        int(as_float(evidence_attention.get("score_impact_factor_count"), 0) or 0) > 0
+        and not current_session_quote_notes_discuss_score_impact(notes)
+    ):
+        reasons.append("current_session_quote_score_impact_notes_missing")
     return reasons
 
 
@@ -1730,6 +1788,8 @@ def build_recommendations(rows, reason_counts, empty_recommendation="no_hermes_j
         "current_session_quote_evidence_basis_missing"
     ) or reason_counts.get("current_session_quote_evidence_basis_mismatch") or reason_counts.get(
         "current_session_quote_evidence_notes_missing"
+    ) or reason_counts.get(
+        "current_session_quote_score_impact_notes_missing"
     ):
         recs.append("current_session_quote_evidence_requires_structured_acknowledgement")
     if any(reason.startswith("approval_with_") for reason in reason_counts):

@@ -718,6 +718,24 @@ def packet_with_current_session_quote_evidence(use_factor_basis=True):
         "used_for_realtime_alignment": True,
         "used_for_trigger_detection": True,
         "basis": "latest_realtime_quote_vs_previous_completed_close",
+        "score_impact": {
+            "schema": "current_session_score_impact_v1",
+            "factor_count": 1,
+            "net_score_delta": 0.4,
+            "score_delta_by_direction": {"BUY": 0.4},
+            "factor_categories": {"momentum": 1},
+            "factor_roles": {"current_session_change_pct": 1},
+            "factors": [
+                {
+                    "category": "momentum",
+                    "raw_category": "same_session_momentum",
+                    "evidence_role": "current_session_change_pct",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "當日動量+3.5%",
+                }
+            ],
+        },
         "provisional": True,
         "mutates_completed_daily_history": False,
         "replaces_completed_daily_bar": False,
@@ -1657,6 +1675,39 @@ class HermesJudgmentAuditReportTests(unittest.TestCase):
         self.assertEqual(report["status"], "FAIL")
         self.assertIn("missing_current_session_quote_evidence_acknowledgement", row["reasons"])
 
+    def test_current_session_quote_score_impact_triggers_attention_without_legacy_factor_basis(self):
+        payload = packet_with_current_session_quote_evidence(use_factor_basis=False)
+        payload["review_items"][0]["alert"]["current_session_quote_evidence"]["used_in_full_score"] = False
+
+        report = audit.build_report([judgment("sig-1")], payload)
+        row = report["judgments"][0]
+
+        self.assertEqual(report["status"], "FAIL")
+        self.assertIn("missing_current_session_quote_evidence_acknowledgement", row["reasons"])
+
+    def test_current_session_quote_evidence_notes_must_discuss_score_impact(self):
+        payload = audit.build_report(
+            [
+                judgment(
+                    "sig-1",
+                    current_session_quote_evidence_acknowledged=True,
+                    current_session_quote_evidence_basis="latest_realtime_quote_vs_previous_completed_close",
+                    current_session_quote_evidence_notes=[
+                        "Same-session quote momentum is provisional and may change before close."
+                    ],
+                )
+            ],
+            packet_with_current_session_quote_evidence(),
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertIn("current_session_quote_score_impact_notes_missing", row["reasons"])
+        self.assertIn(
+            "current_session_quote_evidence_requires_structured_acknowledgement",
+            payload["recommendations"],
+        )
+
     def test_current_session_quote_evidence_acknowledged_approval_passes(self):
         payload = audit.build_report(
             [
@@ -1665,7 +1716,7 @@ class HermesJudgmentAuditReportTests(unittest.TestCase):
                     current_session_quote_evidence_acknowledged=True,
                     current_session_quote_evidence_basis="latest_realtime_quote_vs_previous_completed_close",
                     current_session_quote_evidence_notes=[
-                        "Same-session quote momentum is provisional and may change before close; it does not replace completed daily OHLCV."
+                        "Score impact was +0.4 from same-session quote momentum; it supported but did not dominate the approval, remains provisional, and does not replace completed daily OHLCV."
                     ],
                 )
             ],
