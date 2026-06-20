@@ -377,6 +377,23 @@ def v5_local_replay(status="V5_REPLAY_RESEARCH_ONLY", promotion_ready=False):
                     },
                 }
             ],
+            "top_gate_blockers": [
+                {
+                    "key": "HK:BUY:站上MA5:not_confirmed",
+                    "market": "HK",
+                    "candidate_signal_type": "BUY",
+                    "trigger": "站上MA5",
+                    "blocked_reason": "not_confirmed",
+                    "status": "WARN",
+                    "reasons": ["gate_blocker_replay_alert_density_high"],
+                    "metrics": {
+                        "blocked_count": 80,
+                        "alert_count": 100,
+                        "blocked_alert_ratio_pct": 80.0,
+                        "alert_rate_per_100_bars": 10.0,
+                    },
+                }
+            ],
         },
         "checks": [
             {
@@ -3333,6 +3350,9 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertEqual(replay["breakdown"]["top_noisy_triggers"][0]["key"], "HK:BUY:站上MA5")
         self.assertEqual(replay["breakdown"]["top_noisy_factor_groups"][0]["key"], "HK:BUY:trend")
         self.assertEqual(replay["breakdown"]["top_noisy_factor_groups"][0]["factor_category"], "trend")
+        self.assertEqual(replay["breakdown"]["top_gate_blockers"][0]["key"], "HK:BUY:站上MA5:not_confirmed")
+        self.assertEqual(replay["breakdown"]["top_gate_blockers"][0]["blocked_reason"], "not_confirmed")
+        self.assertEqual(replay["breakdown"]["top_gate_blockers"][0]["metrics"]["blocked_count"], 80)
         self.assertFalse(replay["promotion_ready"])
         self.assertTrue(replay["storage_policy"]["raw_data_local_only"])
         replay_strategy = brief["v5_replay_strategy_review"]

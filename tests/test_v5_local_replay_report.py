@@ -191,6 +191,9 @@ class V5LocalReplayReportTests(unittest.TestCase):
                             "candidate_signal_type": "BUY",
                             "confirmed": False,
                             "execution_candidate": False,
+                            "execution_blocked_reasons": ["not_confirmed"],
+                            "risk_geometry_reason": "not_confirmed",
+                            "suppressed_directional_reason": "supporting_factor_count_below_minimum",
                             "factor_contributions": [
                                 {"category": "trend", "direction": "BUY", "score_delta": 0.4, "reason": "短均線偏強"},
                                 {"category": "rsi", "direction": "SELL", "score_delta": -0.2, "reason": "RSI偏弱(40)"},
@@ -198,6 +201,24 @@ class V5LocalReplayReportTests(unittest.TestCase):
                         },
                     )
                     for _ in range(8)
+                ]
+                + [
+                    (
+                        "2026-02-03",
+                        {
+                            "market": "HK",
+                            "symbol": "00700",
+                            "trigger": "站上MA5",
+                            "signal_type": "BUY",
+                            "candidate_signal_type": "BUY",
+                            "confirmed": True,
+                            "execution_candidate": True,
+                            "factor_contributions": [
+                                {"category": "trend", "direction": "BUY", "score_delta": 0.4, "reason": "短均線偏強"},
+                                {"category": "macd", "direction": "BUY", "score_delta": 0.2, "reason": "MACD柱轉正"},
+                            ],
+                        },
+                    )
                 ]
                 + [
                     (
@@ -226,23 +247,35 @@ class V5LocalReplayReportTests(unittest.TestCase):
 
         self.assertEqual(breakdown["schema"], "v5_local_replay_breakdown_v1")
         self.assertEqual(breakdown["summary"]["trigger_group_count"], 2)
-        self.assertEqual(alert_summary["by_factor_category"]["BUY:trend"], 8)
+        self.assertEqual(alert_summary["by_factor_category"]["BUY:trend"], 9)
         self.assertNotIn("BUY:rsi", alert_summary["by_factor_category"])
         self.assertEqual(alert_summary["by_factor_category"]["BUY:bollinger"], 3)
         self.assertEqual(breakdown["summary"]["factor_group_count"], 3)
+        self.assertEqual(breakdown["summary"]["gate_blocker_group_count"], 1)
+        self.assertEqual(breakdown["summary"]["warn_gate_blocker_group_count"], 1)
         noisy = breakdown["top_noisy_triggers"][0]
         self.assertEqual(noisy["key"], "HK:BUY:站上MA5")
         self.assertIn("trigger_replay_alert_density_high", noisy["reasons"])
         self.assertIn("trigger_directional_confirmation_ratio_low", noisy["reasons"])
         self.assertIn("trigger_directional_downgrade_ratio_high", noisy["reasons"])
-        self.assertEqual(noisy["metrics"]["alert_rate_per_100_bars"], 8.0)
+        self.assertEqual(noisy["metrics"]["alert_rate_per_100_bars"], 9.0)
         noisy_factor = breakdown["top_noisy_factor_groups"][0]
         self.assertEqual(noisy_factor["key"], "HK:BUY:trend")
         self.assertEqual(noisy_factor["factor_category"], "trend")
         self.assertNotIn("trigger", noisy_factor)
         self.assertIn("factor_replay_alert_density_high", noisy_factor["reasons"])
-        self.assertEqual(noisy_factor["metrics"]["alert_rate_per_100_bars"], 8.0)
+        self.assertEqual(noisy_factor["metrics"]["alert_rate_per_100_bars"], 9.0)
         self.assertEqual(breakdown["market_quality"][0]["market"], "HK")
+        gate_blocker = breakdown["top_gate_blockers"][0]
+        self.assertEqual(gate_blocker["key"], "HK:BUY:站上MA5:not_confirmed")
+        self.assertEqual(gate_blocker["market"], "HK")
+        self.assertEqual(gate_blocker["candidate_signal_type"], "BUY")
+        self.assertEqual(gate_blocker["trigger"], "站上MA5")
+        self.assertEqual(gate_blocker["blocked_reason"], "not_confirmed")
+        self.assertEqual(gate_blocker["metrics"]["blocked_count"], 8)
+        self.assertEqual(gate_blocker["metrics"]["alert_count"], 9)
+        self.assertEqual(gate_blocker["metrics"]["blocked_alert_ratio_pct"], 88.89)
+        self.assertEqual(gate_blocker["metrics"]["alert_rate_per_100_bars"], 9.0)
 
     def test_main_writes_report_and_text_mode(self):
         with tempfile.TemporaryDirectory() as tmp:

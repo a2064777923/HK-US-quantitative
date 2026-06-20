@@ -717,6 +717,37 @@ def factor_group_quality_row(group, counts, denominator_bars, total_alerts):
     return row
 
 
+def gate_blocker_quality_row(group, counts, denominator_bars):
+    market, candidate_signal_type, trigger_name, blocked_reason = group
+    alert_count = counts.get("alert_count", 0)
+    blocked_count = counts.get("blocked_count", 0)
+    metrics = {
+        "denominator_bars": denominator_bars,
+        "alert_count": alert_count,
+        "blocked_count": blocked_count,
+        "blocked_alert_ratio_pct": ratio_pct(blocked_count, alert_count),
+        "alert_rate_per_100_bars": ratio_pct(alert_count, denominator_bars),
+        "blocked_rate_per_100_bars": ratio_pct(blocked_count, denominator_bars),
+    }
+    reasons = []
+    alert_rate = metrics["alert_rate_per_100_bars"]
+    if alert_rate is not None and alert_rate > TRIGGER_ALERT_DENSITY_WARN_PER_100_BARS:
+        reasons.append("gate_blocker_replay_alert_density_high")
+    blocked_ratio = metrics["blocked_alert_ratio_pct"]
+    if blocked_ratio is not None and blocked_ratio >= 50.0:
+        reasons.append("gate_blocker_blocks_majority_of_trigger_alerts")
+    return {
+        "market": market,
+        "candidate_signal_type": candidate_signal_type,
+        "trigger": trigger_name,
+        "blocked_reason": blocked_reason,
+        "key": f"{market}:{candidate_signal_type}:{trigger_name}:{blocked_reason}",
+        "status": "WARN" if reasons else "OK",
+        "reasons": reasons,
+        "metrics": metrics,
+    }
+
+
 def market_quality_row(market, counts, denominator_bars):
     candidate_counts = counts.get("candidate_counts") or Counter()
     directional_candidate_count = (candidate_counts.get("BUY") or 0) + (candidate_counts.get("SELL") or 0)
@@ -762,6 +793,7 @@ def replay_breakdown(symbol_reports, total_evaluated_bars, alert_summary):
     market_counts = defaultdict(lambda: {"candidate_counts": Counter()})
     trigger_counts = defaultdict(Counter)
     factor_counts = defaultdict(Counter)
+    gate_blocker_counts = defaultdict(Counter)
     total_alerts = (alert_summary or {}).get("alert_count") or 0
     for report in symbol_reports:
         market = str(report.get("market") or "UNKNOWN")
@@ -775,6 +807,10 @@ def replay_breakdown(symbol_reports, total_evaluated_bars, alert_summary):
             trigger_counts[group]["alert_count"] += 1
             market_counts[alert_market]["alert_count"] = market_counts[alert_market].get("alert_count", 0) + 1
             market_counts[alert_market]["candidate_counts"][candidate_signal_type] += 1
+            blocked_reasons = sorted({str(reason) for reason in alert.get("execution_blocked_reasons") or [] if reason})
+            for blocked_reason in blocked_reasons:
+                gate_group = (alert_market, candidate_signal_type, trigger_name, blocked_reason)
+                gate_blocker_counts[gate_group]["blocked_count"] += 1
             factor_categories = alert_factor_categories(alert)
             for factor_category in factor_categories:
                 factor_group = (alert_market, candidate_signal_type, factor_category)
@@ -840,24 +876,50 @@ def replay_breakdown(symbol_reports, total_evaluated_bars, alert_summary):
             row["key"],
         ),
     )
+    gate_blocker_groups = [
+        gate_blocker_quality_row(
+            group,
+            Counter(
+                {
+                    "alert_count": trigger_counts[(group[0], group[1], group[2])].get("alert_count", 0),
+                    "blocked_count": counts.get("blocked_count", 0),
+                }
+            ),
+            market_bars.get(group[0]) or total_evaluated_bars,
+        )
+        for group, counts in gate_blocker_counts.items()
+    ]
+    gate_blocker_groups = sorted(
+        gate_blocker_groups,
+        key=lambda row: (
+            0 if row["status"] == "WARN" else 1,
+            -(row["metrics"].get("blocked_count") or 0),
+            row["key"],
+        ),
+    )
     return {
         "schema": "v5_local_replay_breakdown_v1",
         "market_quality": market_quality,
         "trigger_groups": trigger_groups,
         "factor_groups": factor_groups,
+        "gate_blocker_groups": gate_blocker_groups,
         "top_noisy_triggers": [row for row in trigger_groups if row["status"] == "WARN"][:12],
         "top_noisy_factor_groups": [row for row in factor_groups if row["status"] == "WARN"][:12],
+        "top_gate_blockers": [row for row in gate_blocker_groups if row["status"] == "WARN"][:12],
         "summary": {
             "trigger_group_count": len(trigger_groups),
             "warn_trigger_group_count": sum(1 for row in trigger_groups if row["status"] == "WARN"),
             "factor_group_count": len(factor_groups),
             "warn_factor_group_count": sum(1 for row in factor_groups if row["status"] == "WARN"),
+            "gate_blocker_group_count": len(gate_blocker_groups),
+            "warn_gate_blocker_group_count": sum(1 for row in gate_blocker_groups if row["status"] == "WARN"),
             "market_count": len(market_quality),
             "warn_market_count": sum(1 for row in market_quality if row["status"] == "WARN"),
         },
         "hermes_use": [
             "Use trigger_groups to identify which v5 triggers are noisy in local replay before proposing threshold changes.",
             "Use factor_groups to see which factor categories are overrepresented in replay alerts before changing multi-factor logic.",
+            "Use gate_blocker_groups to see which readiness, confirmation, factor-confluence, realtime-alignment, or risk gates most often block each trigger.",
             "Use market_quality to check whether HK and US behave differently before applying a global trigger policy.",
             "Do not treat repeated trigger groups as independent evidence without forward outcome and simulation validation.",
         ],
@@ -1185,6 +1247,13 @@ def text_report(payload):
             for row in noisy_factors[:5]
         ]
         lines.append("Top noisy factors: " + ", ".join(sample))
+    gate_blockers = breakdown.get("top_gate_blockers") or []
+    if gate_blockers:
+        sample = [
+            f"{row.get('key')}:{(row.get('metrics') or {}).get('blocked_count')}"
+            for row in gate_blockers[:5]
+        ]
+        lines.append("Top gate blockers: " + ", ".join(sample))
     warnings = [item.get("code") for item in payload.get("checks") or [] if item.get("status") in {"WARN", "FAIL"}]
     if warnings:
         lines.append("Warnings: " + ", ".join(warnings[:12]))

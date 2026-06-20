@@ -4023,6 +4023,29 @@ def v5_local_replay_brief(v5_local_replay_payload):
                 for item in (replay_breakdown.get("top_noisy_triggers") or [])[:8]
                 if isinstance(item, dict)
             ],
+            "top_gate_blockers": [
+                {
+                    "key": item.get("key"),
+                    "market": item.get("market"),
+                    "candidate_signal_type": item.get("candidate_signal_type"),
+                    "trigger": item.get("trigger"),
+                    "blocked_reason": item.get("blocked_reason"),
+                    "status": item.get("status"),
+                    "reasons": item.get("reasons") or [],
+                    "metrics": {
+                        "alert_count": (item.get("metrics") or {}).get("alert_count"),
+                        "blocked_count": (item.get("metrics") or {}).get("blocked_count"),
+                        "blocked_alert_ratio_pct": (item.get("metrics") or {}).get(
+                            "blocked_alert_ratio_pct"
+                        ),
+                        "blocked_rate_per_100_bars": (item.get("metrics") or {}).get(
+                            "blocked_rate_per_100_bars"
+                        ),
+                    },
+                }
+                for item in (replay_breakdown.get("top_gate_blockers") or [])[:8]
+                if isinstance(item, dict)
+            ],
         },
         "replay_contract": {
             "engine": replay_contract.get("engine"),
