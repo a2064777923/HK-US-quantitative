@@ -433,6 +433,30 @@ def ineligible_actionable_alerts(alerts, packet=None):
     return rows
 
 
+RETRYABLE_PACKET_REASONS = {
+    "hermes_packet_missing_or_invalid",
+    "hermes_packet_duplicate_review_items",
+    "hermes_review_item_missing",
+}
+
+
+def retryable_packet_blocked_alerts(alerts, packet=None):
+    packet = packet if isinstance(packet, dict) else {}
+    items_by_signal = review_items_by_signal(packet)
+    rows = []
+    for alert in base_actionable_alerts(alerts):
+        reasons = set(alert_review_reasons(alert, packet, items_by_signal))
+        if reasons & RETRYABLE_PACKET_REASONS:
+            rows.append(alert)
+    return rows
+
+
+def alerts_to_mark_sent(new_alerts, actionable, diagnostic_alerts, packet=None):
+    rows = new_alerts if MARK_INELIGIBLE_SENT else unique_alerts(actionable + diagnostic_alerts)
+    retryable_keys = {alert_key(alert) for alert in retryable_packet_blocked_alerts(new_alerts, packet)}
+    return [alert for alert in rows if alert_key(alert) not in retryable_keys]
+
+
 def review_items_by_signal(packet):
     if not INCLUDE_PACKET_CONTEXT or not isinstance(packet, dict):
         return {}
@@ -1311,9 +1335,9 @@ def main():
         if SEND_FEISHU and not send_feishu_text(text):
             return 2
 
-    alerts_to_mark_sent = new_alerts if MARK_INELIGIBLE_SENT else unique_alerts(actionable + diagnostic_alerts)
-    if alerts_to_mark_sent:
-        mark_alerts_sent(sent, alerts_to_mark_sent)
+    alert_sent_rows = alerts_to_mark_sent(new_alerts, actionable, diagnostic_alerts, packet)
+    if alert_sent_rows:
+        mark_alerts_sent(sent, alert_sent_rows)
     if pending_reviews:
         mark_position_reviews_sent(position_sent, pending_reviews)
     if pending_operator:

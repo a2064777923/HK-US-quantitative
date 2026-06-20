@@ -543,7 +543,31 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertNotIn("Hermes可審操作候選", text)
             self.assertIn("Hermes審核：DUPLICATE_REVIEW_ITEMS", text)
             self.assertIn("duplicate_count=2", text)
-            self.assertTrue(sent.exists())
+            self.assertFalse(sent.exists())
+
+    def test_duplicate_packet_review_items_remain_unsent_for_packet_repair_retry(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "packet.json"
+            queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            packet = self.packet_with_eligible_signal_review()
+            packet["review_items"].append(dict(packet["review_items"][0]))
+            packet_file.write_text(json.dumps(packet), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="alert-sim",
+                RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS="1",
+            )
+
+            with patch("builtins.print"):
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            self.assertFalse(sent.exists())
 
     def test_eligible_signal_notification_uses_review_candidate_title(self):
         with tempfile.TemporaryDirectory() as td:
