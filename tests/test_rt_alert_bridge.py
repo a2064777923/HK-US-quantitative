@@ -82,6 +82,24 @@ class RtAlertBridgeTests(unittest.TestCase):
             "current_session_quote_evidence": {
                 "schema": "current_session_quote_evidence_v1",
                 "used_in_full_score": True,
+                "score_impact": {
+                    "schema": "current_session_score_impact_v1",
+                    "factor_count": 1,
+                    "net_score_delta": 0.4,
+                    "score_delta_by_direction": {"BUY": 0.4},
+                    "factor_categories": {"momentum": 1},
+                    "factor_roles": {"current_session_change_pct": 1},
+                    "factors": [
+                        {
+                            "category": "momentum",
+                            "raw_category": "same_session_momentum",
+                            "evidence_role": "current_session_change_pct",
+                            "direction": "BUY",
+                            "score_delta": 0.4,
+                            "reason": "當日動量+1.2%",
+                        }
+                    ],
+                },
                 "mutates_completed_daily_history": False,
                 "replaces_completed_daily_bar": False,
             },
@@ -100,6 +118,13 @@ class RtAlertBridgeTests(unittest.TestCase):
         line = bridge.factor_evidence_roles_line(self.fresh_alert())
         self.assertIn("completed_daily_threshold_with_current_quote=2", line)
         self.assertIn("current_session_change_pct=1", line)
+
+    def test_current_session_score_impact_line_summarizes_quote_impact(self):
+        bridge = self.load_bridge()
+        line = bridge.current_session_score_impact_line(self.fresh_alert())
+        self.assertIn("盤中分數：factors=1 net=+0.4", line)
+        self.assertIn("BUY=+0.4", line)
+        self.assertIn("roles=current_session_change_pct=1", line)
 
     def packet_with_position_review(self):
         return {
@@ -510,6 +535,7 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertNotIn("實時操作信號", text)
             self.assertIn("Hermes審核：eligible=True", text)
             self.assertIn("證據來源：completed_daily_ohlcv=2 current_session_quote=1 quote_in_score=true", text)
+            self.assertIn("盤中分數：factors=1 net=+0.4 BUY=+0.4", text)
 
     def test_signal_notification_marks_missing_packet_match(self):
         with tempfile.TemporaryDirectory() as td:

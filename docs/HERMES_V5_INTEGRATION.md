@@ -147,6 +147,8 @@ Improvements:
 
 By default, the bridge also reads the latest `/tmp/hermes_signal_review_packet.json` and appends the matching signal's Hermes context digest to the notification text: market regime, intraday confirmation and 5m/15m/30m/60m rolling-window coverage, news/macro summaries, event risk and event support, sentiment, fundamentals availability, source reliability, simulation-performance metrics, execution-readiness blocker details, and required judgment attention. This is read-only display context. It does not write judgments, update DB rows, change alert queues, or submit simulation orders. Set `RT_ALERT_INCLUDE_PACKET_CONTEXT=0` to return to the old compact alert text.
 
+The bridge also renders `current_session_quote_evidence.score_impact` as a compact `盤中分數` line when the realtime quote contributed to `full_score`, for example `factors=1 net=+0.4 BUY=+0.4 roles=current_session_change_pct=1`. This gives the operator and Hermes reviewer the same quick visibility into whether a signal is being carried by fresh intraday movement. It is display-only and does not change alert eligibility, Hermes packet eligibility, or order intake.
+
 When the bridge runs from cron on the same server that produces `/tmp/rt_signal_alerts.jsonl` and `/tmp/hermes_signal_review_packet.json`, set `RT_ALERT_REMOTE=local`. In local mode the bridge reads alert, packet, and sent-state files directly instead of self-SSHing to `root@38.76.164.106`. This preserves the same notify-only behavior while removing a fragile dependency on server SSH key setup. The recommended read-only notification cron is:
 
 ```cron

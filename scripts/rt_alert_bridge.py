@@ -489,6 +489,40 @@ def factor_evidence_roles_line(alert):
     return "├─ 證據角色：" + " ".join(parts[:4])
 
 
+def fmt_signed(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "?"
+    return f"{number:+g}"
+
+
+def current_session_score_impact_line(alert):
+    current_session = alert.get("current_session_quote_evidence") if isinstance(alert, dict) else {}
+    if not isinstance(current_session, dict):
+        return ""
+    impact = current_session.get("score_impact")
+    if not isinstance(impact, dict):
+        return ""
+    factor_count = impact.get("factor_count")
+    try:
+        factor_count_int = int(float(factor_count or 0))
+    except (TypeError, ValueError):
+        factor_count_int = 0
+    if factor_count_int <= 0:
+        return ""
+    parts = [f"factors={factor_count_int}", f"net={fmt_signed(impact.get('net_score_delta'))}"]
+    by_direction = impact.get("score_delta_by_direction") if isinstance(impact.get("score_delta_by_direction"), dict) else {}
+    for direction in ("BUY", "SELL"):
+        if by_direction.get(direction) not in (None, "", 0):
+            parts.append(f"{direction}={fmt_signed(by_direction.get(direction))}")
+    roles = impact.get("factor_roles") if isinstance(impact.get("factor_roles"), dict) else {}
+    role_parts = [f"{key}={value}" for key, value in sorted(roles.items()) if value not in (None, "", 0)]
+    if role_parts:
+        parts.append("roles=" + ",".join(role_parts[:3]))
+    return "├─ 盤中分數：" + " ".join(parts)
+
+
 def compact_source_components(source_limits):
     components = source_limits.get("components") if isinstance(source_limits, dict) else []
     rows = []
@@ -1100,6 +1134,9 @@ def build_output(actionable, execution_mode, packet=None, title=None, run_intake
         role_line = factor_evidence_roles_line(alert)
         if role_line:
             lines.append(role_line)
+        score_impact_line = current_session_score_impact_line(alert)
+        if score_impact_line:
+            lines.append(score_impact_line)
         lines.extend(build_hermes_context_lines(alert, packet, items_by_signal))
         lines.append(
             f"└─ 當前：${float(alert.get('price', alert['entry_price'])):.2f} "
