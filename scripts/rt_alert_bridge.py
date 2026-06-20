@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
 
 
 REMOTE_HOST = os.environ.get("RT_ALERT_REMOTE", "root@38.76.164.106")
@@ -23,6 +24,7 @@ INCLUDE_POSITION_REVIEW = os.environ.get("RT_ALERT_INCLUDE_POSITION_REVIEW", "1"
 REQUIRE_PACKET_ELIGIBLE = os.environ.get("RT_ALERT_REQUIRE_PACKET_ELIGIBLE", "1") != "0"
 NOTIFY_INELIGIBLE_SIGNALS = os.environ.get("RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS", "0") == "1"
 MARK_INELIGIBLE_SENT = os.environ.get("RT_ALERT_MARK_INELIGIBLE_SENT", "1") != "0"
+MAX_PACKET_CONTEXT_AGE_MINUTES = int(os.environ.get("RT_ALERT_MAX_PACKET_CONTEXT_AGE_MINUTES", "10"))
 POSITION_REVIEW_URGENCY = {
     item.strip().lower()
     for item in os.environ.get("RT_POSITION_REVIEW_URGENCY", "high,medium").split(",")
@@ -377,11 +379,47 @@ def base_actionable_alerts(alerts):
     return rows
 
 
+def parse_packet_timestamp(value):
+    if value in (None, ""):
+        return None
+    try:
+        text = str(value).strip().replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except Exception:
+        return None
+
+
+def packet_freshness_reasons(packet, now=None):
+    if not REQUIRE_PACKET_ELIGIBLE:
+        return []
+    if not isinstance(packet, dict) or packet.get("schema") != "hermes_signal_review_packet_v1":
+        return []
+    generated_at_raw = packet.get("generated_at")
+    if not generated_at_raw:
+        return ["hermes_packet_generated_at_missing"]
+    generated_at = parse_packet_timestamp(generated_at_raw)
+    if generated_at is None:
+        return ["hermes_packet_generated_at_invalid"]
+    now = now or datetime.now()
+    age = now - generated_at
+    if age.total_seconds() < -300:
+        return ["hermes_packet_generated_at_in_future"]
+    if age > timedelta(minutes=MAX_PACKET_CONTEXT_AGE_MINUTES):
+        return ["hermes_packet_stale"]
+    return []
+
+
 def packet_readiness_reasons(packet):
     if not REQUIRE_PACKET_ELIGIBLE:
         return []
     if not isinstance(packet, dict) or packet.get("schema") != "hermes_signal_review_packet_v1":
         return ["hermes_packet_missing_or_invalid"]
+    freshness_reasons = packet_freshness_reasons(packet)
+    if freshness_reasons:
+        return freshness_reasons
     readiness = packet.get("execution_readiness") if isinstance(packet.get("execution_readiness"), dict) else {}
     reasons = []
     if readiness.get("schema") and readiness.get("schema") != "execution_readiness_report_v1":
@@ -435,6 +473,10 @@ def ineligible_actionable_alerts(alerts, packet=None):
 
 RETRYABLE_PACKET_REASONS = {
     "hermes_packet_missing_or_invalid",
+    "hermes_packet_generated_at_missing",
+    "hermes_packet_generated_at_invalid",
+    "hermes_packet_generated_at_in_future",
+    "hermes_packet_stale",
     "hermes_packet_duplicate_review_items",
     "hermes_review_item_missing",
 }
@@ -593,6 +635,15 @@ def build_hermes_context_lines(alert, packet, items_by_signal):
         return []
     if not isinstance(packet, dict) or packet.get("schema") != "hermes_signal_review_packet_v1":
         return ["├─ Hermes審核狀態：MISSING"]
+    freshness_reasons = packet_freshness_reasons(packet)
+    if "hermes_packet_stale" in freshness_reasons:
+        return ["├─ Hermes審核狀態：STALE（packet過期，僅技術信號，等待新Hermes packet）"]
+    if "hermes_packet_generated_at_missing" in freshness_reasons:
+        return ["├─ Hermes審核狀態：INVALID（packet缺少generated_at，等待新Hermes packet）"]
+    if "hermes_packet_generated_at_invalid" in freshness_reasons:
+        return ["├─ Hermes審核狀態：INVALID（packet generated_at無法解析，等待新Hermes packet）"]
+    if "hermes_packet_generated_at_in_future" in freshness_reasons:
+        return ["├─ Hermes審核狀態：INVALID（packet generated_at在未來，等待新Hermes packet）"]
     duplicate_count = review_item_duplicate_counts(packet).get(str(signal_id(alert)), 0)
     if duplicate_count:
         return [f"├─ Hermes審核：DUPLICATE_REVIEW_ITEMS duplicate_count={duplicate_count}（packet signal_id不唯一，禁止按此通知審批/執行）"]

@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -299,7 +300,7 @@ class RtAlertBridgeTests(unittest.TestCase):
         return {
             "schema": "hermes_signal_review_packet_v1",
             "packet_id": "packet-signal",
-            "generated_at": "2026-06-12T10:01:00",
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
             "execution_readiness": {"status": "WARN", "ready_for_execute": False},
             "simulation_performance": {"status": "FAIL", "reason_codes": ["recent_closed_trades_negative"]},
             "strategy_learning_brief": {
@@ -594,6 +595,35 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("Hermes審核：eligible=True", text)
             self.assertIn("證據來源：completed_daily_ohlcv=2 current_session_quote=1 quote_in_score=true", text)
             self.assertIn("盤中分數：factors=1 net=+0.4 BUY=+0.4", text)
+
+    def test_stale_packet_is_diagnostic_not_actionable_and_remains_unsent(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "packet.json"
+            queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            packet = self.packet_with_eligible_signal_review()
+            packet["generated_at"] = "2026-01-01T00:00:00"
+            packet_file.write_text(json.dumps(packet), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="alert-sim",
+                RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS="1",
+            )
+
+            with patch("builtins.print") as printed, patch.object(bridge, "run_order_intake") as intake:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            intake.assert_not_called()
+            text = printed.call_args.args[0]
+            self.assertIn("候選信號（安全門未放行）", text)
+            self.assertNotIn("Hermes可審操作候選", text)
+            self.assertIn("Hermes審核狀態：STALE", text)
+            self.assertFalse(sent.exists())
 
     def test_signal_notification_marks_missing_packet_match(self):
         with tempfile.TemporaryDirectory() as td:
