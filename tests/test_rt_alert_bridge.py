@@ -511,6 +511,40 @@ class RtAlertBridgeTests(unittest.TestCase):
             self.assertIn("事件審核：challenge=1 support=0", text)
             self.assertIn("來源可靠性：DEGRADED fundamentals_context:partial_metric_coverage", text)
 
+    def test_duplicate_packet_review_items_are_diagnostic_not_actionable(self):
+        with tempfile.TemporaryDirectory() as td:
+            queue = Path(td) / "alerts.jsonl"
+            sent = Path(td) / "sent.json"
+            packet_file = Path(td) / "packet.json"
+            queue.write_text(json.dumps(self.fresh_alert()) + "\n", encoding="utf-8")
+            packet = self.packet_with_eligible_signal_review()
+            duplicate = dict(packet["review_items"][0])
+            duplicate["eligible_for_approval"] = False
+            duplicate["recommended_judgment"] = "reject_or_hold"
+            duplicate["blocking_reasons"] = ["conflicting_duplicate_review_item"]
+            packet["review_items"].append(duplicate)
+            packet_file.write_text(json.dumps(packet), encoding="utf-8")
+            bridge = self.load_bridge(
+                RT_ALERT_REMOTE="local",
+                RT_ALERT_QUEUE_FILE=str(queue),
+                RT_ALERT_SENT_FILE=str(sent),
+                HERMES_REVIEW_PACKET_FILE=str(packet_file),
+                RT_ALERT_EXECUTION_MODE="alert-sim",
+                RT_ALERT_NOTIFY_INELIGIBLE_SIGNALS="1",
+            )
+
+            with patch("builtins.print") as printed, patch.object(bridge, "run_order_intake") as intake:
+                code = bridge.main()
+
+            self.assertEqual(code, 0)
+            intake.assert_not_called()
+            text = printed.call_args.args[0]
+            self.assertIn("候選信號（安全門未放行）", text)
+            self.assertNotIn("Hermes可審操作候選", text)
+            self.assertIn("Hermes審核：DUPLICATE_REVIEW_ITEMS", text)
+            self.assertIn("duplicate_count=2", text)
+            self.assertTrue(sent.exists())
+
     def test_eligible_signal_notification_uses_review_candidate_title(self):
         with tempfile.TemporaryDirectory() as td:
             queue = Path(td) / "alerts.jsonl"

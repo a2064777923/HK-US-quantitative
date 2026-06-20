@@ -397,6 +397,10 @@ def alert_review_reasons(alert, packet, items_by_signal):
     reasons = packet_readiness_reasons(packet)
     if not REQUIRE_PACKET_ELIGIBLE:
         return reasons
+    duplicate_counts = review_item_duplicate_counts(packet)
+    duplicate_count = duplicate_counts.get(str(signal_id(alert)), 0)
+    if duplicate_count:
+        reasons.append("hermes_packet_duplicate_review_items")
     item = matching_review_item(alert, items_by_signal)
     if not item:
         reasons.append("hermes_review_item_missing")
@@ -440,6 +444,21 @@ def review_items_by_signal(packet):
         for item in rows
         if isinstance(item, dict) and item.get("signal_id")
     }
+
+
+def review_item_duplicate_counts(packet):
+    if not INCLUDE_PACKET_CONTEXT or not isinstance(packet, dict):
+        return {}
+    rows = packet.get("review_items")
+    if not isinstance(rows, list):
+        return {}
+    counts = {}
+    for item in rows:
+        if not isinstance(item, dict) or not item.get("signal_id"):
+            continue
+        sid = str(item.get("signal_id"))
+        counts[sid] = counts.get(sid, 0) + 1
+    return {sid: count for sid, count in counts.items() if count > 1}
 
 
 def short_list(values, limit=4):
@@ -550,6 +569,9 @@ def build_hermes_context_lines(alert, packet, items_by_signal):
         return []
     if not isinstance(packet, dict) or packet.get("schema") != "hermes_signal_review_packet_v1":
         return ["├─ Hermes審核狀態：MISSING"]
+    duplicate_count = review_item_duplicate_counts(packet).get(str(signal_id(alert)), 0)
+    if duplicate_count:
+        return [f"├─ Hermes審核：DUPLICATE_REVIEW_ITEMS duplicate_count={duplicate_count}（packet signal_id不唯一，禁止按此通知審批/執行）"]
     item = matching_review_item(alert, items_by_signal)
     if not item:
         return ["├─ Hermes審核：NO_MATCH（僅技術信號，未匹配Hermes packet review_item）"]
