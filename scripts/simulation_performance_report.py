@@ -232,12 +232,12 @@ def stable_hash(payload):
 def order_result_ids(result):
     ids = []
     if isinstance(result, dict):
-        for key in ("order_id", "id"):
+        for key in ("order_id", "id", "client_order_id", "clientOrderId"):
             ids.append(result.get(key))
-        for nested_key in ("data", "order"):
+        for nested_key in ("data", "order", "result"):
             nested = result.get(nested_key)
             if isinstance(nested, dict):
-                for key in ("order_id", "id"):
+                for key in ("order_id", "id", "client_order_id", "clientOrderId"):
                     ids.append(nested.get(key))
     elif result is not None:
         ids.append(result)
@@ -293,11 +293,27 @@ def trade_order_ids(trade):
     exit_ids = []
     entry_ids.extend(values_from_field(trade.get("entry_order_ids")))
     entry_ids.extend(values_from_field(trade.get("entry_order_id")))
+    entry_ids.extend(values_from_field(trade.get("entry_client_order_ids")))
+    entry_ids.extend(values_from_field(trade.get("entry_client_order_id")))
     for leg in trade.get("entry_legs") or []:
         if isinstance(leg, dict):
             entry_ids.extend(values_from_field(leg.get("order_id")))
+            entry_ids.extend(values_from_field(leg.get("id")))
+            entry_ids.extend(values_from_field(leg.get("client_order_id")))
+            entry_ids.extend(values_from_field(leg.get("clientOrderId")))
     exit_ids.extend(values_from_field(trade.get("exit_order_id")))
+    exit_ids.extend(values_from_field(trade.get("exit_order_ids")))
+    exit_ids.extend(values_from_field(trade.get("exit_client_order_id")))
+    exit_ids.extend(values_from_field(trade.get("exit_client_order_ids")))
     exit_ids.extend(values_from_field(trade.get("order_id")))
+    exit_ids.extend(values_from_field(trade.get("client_order_id")))
+    exit_ids.extend(values_from_field(trade.get("clientOrderId")))
+    for leg in trade.get("exit_legs") or []:
+        if isinstance(leg, dict):
+            exit_ids.extend(values_from_field(leg.get("order_id")))
+            exit_ids.extend(values_from_field(leg.get("id")))
+            exit_ids.extend(values_from_field(leg.get("client_order_id")))
+            exit_ids.extend(values_from_field(leg.get("clientOrderId")))
     entry_ids = unique_text(entry_ids)
     exit_ids = unique_text(exit_ids)
     return {"entry": entry_ids, "exit": exit_ids, "all": unique_text(entry_ids + exit_ids)}

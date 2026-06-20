@@ -96,6 +96,22 @@ def processed_decision(signal_id, order_id, symbol="00700", side="BUY"):
     }
 
 
+def processed_client_order_decision(signal_id, client_order_id, symbol="AAPL", side="BUY"):
+    item = processed_decision(signal_id, None, symbol=symbol, side=side)
+    item["order_result"] = {
+        "id": "",
+        "client_order_id": client_order_id,
+        "broker": "alpaca-paper",
+    }
+    item["plan"] = {
+        "symbol": symbol,
+        "side": side.lower(),
+        "quantity": 1,
+        "client_order_id": client_order_id,
+    }
+    return item
+
+
 def traceable_order_state():
     return {
         "processed": {
@@ -298,6 +314,56 @@ class SimulationPerformanceReportTests(unittest.TestCase):
         self.assertEqual(payload["v5_hermes_evidence"]["excluded_untraceable_count"], 1)
         self.assertFalse(payload["v5_hermes_evidence"]["promotion_eligible"])
         self.assertIn("closed_trade_lineage_not_full_scope", payload["v5_hermes_evidence"]["promotion_blockers"])
+
+    def test_alpaca_client_order_ids_are_traceable_for_closed_trade_lineage(self):
+        payload_input = portfolio_payload(return_pct=1.5, closed_pnl=120.0, win_rate=100.0)
+        payload_input["portfolio_reports"][0]["positions"] = []
+        payload_input["simulation_trade_review"] = {
+            "portfolio_id": 8,
+            "closed_trade_count": 1,
+            "closed_win_rate_pct": 100.0,
+            "closed_pnl_hkd_est": 120.0,
+            "review_notes": [],
+            "recent_closed": [
+                {
+                    "symbol": "AAPL",
+                    "pnl_hkd_est": 120.0,
+                    "entry_client_order_id": "qm-sig-aapl-buy",
+                    "exit_client_order_id": "qm-sig-aapl-sell",
+                    "closed_at": "2026-06-12T10:00:00",
+                }
+            ],
+        }
+
+        payload = report.build_report(
+            payload_input,
+            order_state_payload={
+                "processed": {
+                    "sig-aapl-buy": processed_client_order_decision(
+                        "sig-aapl-buy",
+                        "qm-sig-aapl-buy",
+                        symbol="AAPL",
+                        side="BUY",
+                    ),
+                    "sig-aapl-sell": processed_client_order_decision(
+                        "sig-aapl-sell",
+                        "qm-sig-aapl-sell",
+                        symbol="AAPL",
+                        side="SELL",
+                    ),
+                },
+                "dry_runs": {},
+            },
+        )
+
+        traceability = payload["closed_trade_signal_traceability"]
+        self.assertEqual(traceability["status"], "OK")
+        self.assertEqual(traceability["fully_traceable_count"], 1)
+        self.assertEqual(traceability["sample"][0]["trace_status"], "FULL")
+        self.assertEqual(traceability["sample"][0]["entry_order_ids"], ["qm-sig-aapl-buy"])
+        self.assertEqual(traceability["sample"][0]["exit_order_ids"], ["qm-sig-aapl-sell"])
+        self.assertEqual(payload["v5_hermes_evidence"]["status"], "OK")
+        self.assertEqual(payload["v5_hermes_evidence"]["sample"][0]["entry_signal_ids"], ["sig-aapl-buy"])
 
 
 if __name__ == "__main__":
