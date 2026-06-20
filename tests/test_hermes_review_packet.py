@@ -199,7 +199,15 @@ def factor_contract_alignment(status="PARTIAL_ALIGNMENT_REQUIRES_CAUTION", promo
                 "name": "rt_signal_engine_v5",
                 "scoring_method": "IncrementalIndicator.get_score",
                 "thresholds": {"buy_confirmation_min_score": 0.45, "sell_confirmation_max_score": -0.45},
-                "trigger_model": {"event_triggered": True, "score_confirmation": True},
+                "trigger_model": {
+                    "event_triggered": True,
+                    "score_confirmation": True,
+                    "factor_confluence_gate": True,
+                    "structured_factor_contributions": True,
+                    "opposing_factor_gate": True,
+                    "default_min_supporting_factor_count": {"BUY": 2, "SELL": 2},
+                    "default_max_opposing_factor_count": {"BUY": 1, "SELL": 1},
+                },
                 "risk_model": {"execution_candidate": True, "min_rr_ratio": True},
                 "data_basis": {"completed_daily_with_realtime_quote": True},
             },
@@ -224,7 +232,13 @@ def factor_contract_alignment(status="PARTIAL_ALIGNMENT_REQUIRES_CAUTION", promo
                 "status": "WARN",
                 "code": "portfolio_backtest_realistic:factor_confluence_contract_drift",
                 "detail": "Backtest does not model all v5 factor-confluence confirmation requirements.",
-                "data": {"missing_from_backtest": ["factor_confluence_gate", "structured_factor_contributions"]},
+                "data": {
+                    "missing_from_backtest": [
+                        "factor_confluence_gate",
+                        "structured_factor_contributions",
+                        "opposing_factor_conflict_gate",
+                    ]
+                },
             }
         ],
     }
@@ -3299,7 +3313,7 @@ class HermesReviewPacketTests(unittest.TestCase):
         drift_by_code = {row["code"]: row for row in alignment["contract_drift_summary"]}
         self.assertEqual(
             drift_by_code["portfolio_backtest_realistic:factor_confluence_contract_drift"]["missing_from_backtest"],
-            ["factor_confluence_gate", "structured_factor_contributions"],
+            ["factor_confluence_gate", "structured_factor_contributions", "opposing_factor_conflict_gate"],
         )
         replay = brief["v5_local_replay"]
         self.assertTrue(replay["read_only"])

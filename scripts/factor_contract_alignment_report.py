@@ -110,6 +110,7 @@ def regex_any(source, patterns):
 def extract_v5_contract(source):
     constants = assigned_numbers(source)
     min_supporting_factor_count = assigned_constant_dict(source, "MIN_SUPPORTING_FACTOR_COUNT")
+    max_opposing_factor_count = assigned_constant_dict(source, "MAX_OPPOSING_FACTOR_COUNT")
     factors = {
         "trend_ma_stack": has_any(source, ["c > ma5 > ma10 > ma20", "c>ma5>ma10>ma20"]),
         "rsi": "rsi_14" in source and regex_any(source, [r"rsi_14\s*>\s*70", r"rsi_14\s*<\s*30"]),
@@ -139,7 +140,13 @@ def extract_v5_contract(source):
             and "factor_confluence_valid" in source,
             "structured_factor_contributions": "factor_contributions" in source
             and "score_contribution" in source,
+            "opposing_factor_gate": "max_opposing_factor_count" in source
+            and (
+                "opposing_factor_conflict" in source
+                or "factor_confluence_opposing_categories" in source
+            ),
             "default_min_supporting_factor_count": min_supporting_factor_count,
+            "default_max_opposing_factor_count": max_opposing_factor_count,
         },
         "risk_model": {
             "execution_candidate": "execution_candidate" in source,
@@ -159,6 +166,8 @@ def extract_v5_contract(source):
 
 def extract_backtest_contract(name, source):
     constants = assigned_numbers(source)
+    min_supporting_factor_count = assigned_constant_dict(source, "MIN_SUPPORTING_FACTOR_COUNT")
+    max_opposing_factor_count = assigned_constant_dict(source, "MAX_OPPOSING_FACTOR_COUNT")
     factors = {
         "trend_ma_stack": has_any(source, ["c>ma5>ma10>ma20", "c > ma5 > ma10 > ma20"]),
         "rsi": regex_any(source, [r"def\s+rsi", r"\br\s*=\s*rsi"]),
@@ -188,7 +197,13 @@ def extract_backtest_contract(name, source):
             "factor_confluence_gate": "min_supporting_factor_count" in source
             or "factor_confluence_valid" in source,
             "structured_factor_contributions": "factor_contributions" in source,
-            "default_min_supporting_factor_count": constants.get("MIN_SUPPORTING_FACTOR_COUNT"),
+            "opposing_factor_gate": "max_opposing_factor_count" in source
+            and (
+                "opposing_factor_conflict" in source
+                or "factor_confluence_opposing_categories" in source
+            ),
+            "default_min_supporting_factor_count": min_supporting_factor_count,
+            "default_max_opposing_factor_count": max_opposing_factor_count,
         },
         "risk_model": {
             "execution_candidate": "execution_candidate" in source,
@@ -324,6 +339,8 @@ def compare_factor_confluence(v5, backtests):
             missing.append("factor_confluence_gate")
         if v5_trigger.get("structured_factor_contributions") and not bt_trigger.get("structured_factor_contributions"):
             missing.append("structured_factor_contributions")
+        if v5_trigger.get("opposing_factor_gate") and not bt_trigger.get("opposing_factor_gate"):
+            missing.append("opposing_factor_conflict_gate")
         checks.append(
             check(
                 "WARN" if missing else "OK",
@@ -401,7 +418,7 @@ def recommendations(checks):
             {
                 "priority": "MEDIUM",
                 "code": "backtest_v5_factor_confluence_gate",
-                "action": "Model v5 structured factor_contributions and min supporting factor-category requirements before using replay/backtest results as trigger-quality evidence.",
+                "action": "Model v5 structured factor_contributions, min supporting factor-category requirements, and opposing-factor conflict downgrades before using replay/backtest results as trigger-quality evidence.",
             }
         )
     return recs
