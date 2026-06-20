@@ -668,7 +668,18 @@ def base_payloads():
                     "confidence": "LOW",
                     "reasons": ["forward_allows_but_replay_flags_noise"],
                     "forward": {"policy": "candidate_allow_after_other_gates"},
-                    "replay": {"policy": "tighten_thresholds"},
+                    "replay": {
+                        "policy": "tighten_thresholds",
+                        "gate_blocker_reason_counts": {"not_confirmed": 80},
+                        "top_gate_blockers": [
+                            {
+                                "key": "HK:BUY:站上MA5:not_confirmed",
+                                "market": "HK",
+                                "blocked_reason": "not_confirmed",
+                                "metrics": {"blocked_count": 80, "blocked_alert_ratio_pct": 88.89},
+                            }
+                        ],
+                    },
                 },
                 {
                     "key": "SELL:跌破MA5",
@@ -718,6 +729,16 @@ class OperatorActionQueueReportTests(unittest.TestCase):
         self.assertEqual(convergence_action["priority"], "P1")
         self.assertEqual(convergence_action["evidence"]["summary"]["replay_challenges_forward_count"], 1)
         self.assertEqual(convergence_action["evidence"]["top_trigger_evidence"][0]["key"], "BUY:站上MA5")
+        self.assertEqual(
+            convergence_action["evidence"]["top_trigger_evidence"][0]["replay_gate_blocker_reason_counts"],
+            {"not_confirmed": 80},
+        )
+        self.assertEqual(
+            convergence_action["evidence"]["top_trigger_evidence"][0]["replay_top_gate_blockers"][0][
+                "blocked_reason"
+            ],
+            "not_confirmed",
+        )
         self.assertFalse(convergence_action["operator_effect"]["submits_orders"])
         self.assertFalse(convergence_action["operator_effect"]["changes_strategy"])
         self.assertIn("Do not promote strategy_config", convergence_action["recommended_next_step"])

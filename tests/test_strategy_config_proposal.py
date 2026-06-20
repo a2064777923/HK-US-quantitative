@@ -227,7 +227,22 @@ def trigger_evidence_convergence(
                 "confidence": "LOW",
                 "reasons": ["forward_allows_but_replay_flags_noise"] if replay_challenges_forward_count else [],
                 "forward": {"policy": "candidate_allow_after_other_gates"},
-                "replay": {"policy": "tighten_thresholds" if replay_challenges_forward_count else "candidate_allow_after_other_gates"},
+                "replay": {
+                    "policy": "tighten_thresholds"
+                    if replay_challenges_forward_count
+                    else "candidate_allow_after_other_gates",
+                    "gate_blocker_reason_counts": {"not_confirmed": 8} if replay_challenges_forward_count else {},
+                    "top_gate_blockers": [
+                        {
+                            "key": "HK:BUY:weak:not_confirmed",
+                            "market": "HK",
+                            "blocked_reason": "not_confirmed",
+                            "metrics": {"blocked_count": 8, "blocked_alert_ratio_pct": 80.0},
+                        }
+                    ]
+                    if replay_challenges_forward_count
+                    else [],
+                },
             },
             {
                 "key": "SELL:breakdown",
@@ -650,6 +665,8 @@ class StrategyConfigProposalTests(unittest.TestCase):
         self.assertEqual(context["replay_challenges_forward_count"], 1)
         self.assertEqual(context["insufficient_forward_sample_count"], 1)
         self.assertEqual(context["top_risk_triggers"][0]["key"], "BUY:weak")
+        self.assertEqual(context["top_risk_triggers"][0]["replay_gate_blocker_reason_counts"], {"not_confirmed": 8})
+        self.assertEqual(context["top_risk_triggers"][0]["replay_top_gate_blockers"][0]["blocked_reason"], "not_confirmed")
         self.assertFalse(context["operator_contract"]["submits_orders"])
         self.assertFalse(context["operator_contract"]["changes_strategy_config"])
 

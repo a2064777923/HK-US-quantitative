@@ -608,6 +608,11 @@ def compact_trigger_evidence_convergence_context(trigger_evidence_convergence):
                 if isinstance(row.get("forward"), dict)
                 else None,
                 "replay_policy": (row.get("replay") or {}).get("policy") if isinstance(row.get("replay"), dict) else None,
+                "replay_gate_blocker_reason_counts": (row.get("replay") or {}).get(
+                    "gate_blocker_reason_counts"
+                )
+                or {},
+                "replay_top_gate_blockers": (row.get("replay") or {}).get("top_gate_blockers") or [],
             }
         )
     return {

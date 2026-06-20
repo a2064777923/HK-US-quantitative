@@ -1316,6 +1316,13 @@ def replay_convergence_actions(strategy_review, v5_local_replay, v5_replay_strat
                     "reasons": safe_list(row.get("reasons")),
                     "forward_policy": safe_dict(row.get("forward")).get("policy"),
                     "replay_policy": safe_dict(row.get("replay")).get("policy"),
+                    "replay_gate_blocker_reason_counts": safe_dict(row.get("replay")).get(
+                        "gate_blocker_reason_counts"
+                    )
+                    or {},
+                    "replay_top_gate_blockers": safe_list(
+                        safe_dict(row.get("replay")).get("top_gate_blockers")
+                    )[:4],
                 }
             )
         actions.append(
@@ -1363,6 +1370,13 @@ def replay_convergence_actions(strategy_review, v5_local_replay, v5_replay_strat
                         "reasons": safe_list(row.get("reasons")),
                         "forward_policy": safe_dict(row.get("forward")).get("policy"),
                         "replay_policy": safe_dict(row.get("replay")).get("policy"),
+                        "replay_gate_blocker_reason_counts": safe_dict(row.get("replay")).get(
+                            "gate_blocker_reason_counts"
+                        )
+                        or {},
+                        "replay_top_gate_blockers": safe_list(
+                            safe_dict(row.get("replay")).get("top_gate_blockers")
+                        )[:4],
                     }
                 )
         actions.append(
