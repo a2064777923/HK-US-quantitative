@@ -1331,6 +1331,7 @@ def build_judgment_request(alert, plan, context):
         "schema": "hermes_trade_judgment_v1",
         "required_fields": {
             "signal_id": signal_id(alert),
+            "packet_id": "copy from current hermes_signal_review_packet_v1.packet_id",
             "decision": "approve|reject|reduce|hold",
             "confidence": "0.0-1.0",
             "reviewed_at": "ISO-8601 datetime",
@@ -1391,7 +1392,7 @@ def build_judgment_request(alert, plan, context):
     }
 
 
-def evaluate_hermes_judgment(alert, plan, context, mode, judgment_file):
+def evaluate_hermes_judgment(alert, plan, context, mode, judgment_file, hermes_packet=None):
     sid = signal_id(alert)
     request = build_judgment_request(alert, plan, context)
     if mode != "execute" and os.environ.get("RT_ORDER_SHOW_HERMES_REQUEST", "1") == "0":
@@ -1412,6 +1413,14 @@ def evaluate_hermes_judgment(alert, plan, context, mode, judgment_file):
         }
 
     reasons = []
+    packet_id = str((hermes_packet or {}).get("packet_id") or "").strip()
+    judgment_packet_id = str(judgment.get("packet_id") or "").strip()
+    if packet_id:
+        if not judgment_packet_id:
+            reasons.append("judgment_missing_packet_id")
+        elif judgment_packet_id != packet_id:
+            reasons.append("judgment_packet_id_mismatch")
+
     decision = str(judgment.get("decision", "")).strip().lower()
     if decision not in ("approve", "reduce"):
         reasons.append(f"decision_{decision or 'missing'}")
@@ -1854,13 +1863,13 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
     if backend == "alpaca-paper":
         plan["client_order_id"] = alpaca_client_order_id(sid)
 
-    hermes_ok, plan, hermes_gate = evaluate_hermes_judgment(alert, plan, context, mode, judgment_file)
-    if not hermes_ok:
+    packet_ok, hermes_packet = hermes_packet_gate(alert, mode)
+    if not packet_ok:
         decision = {
             "signal_id": sid,
             "status": "rejected",
-            "reasons": ["hermes_judgment_gate_failed"],
-            "hermes": hermes_gate,
+            "reasons": ["hermes_packet_gate_failed"],
+            "hermes_packet": hermes_packet,
             "symbol_conflict": conflict_gate,
             "context": {
                 "cash_hkd": context["cash_hkd"],
@@ -1872,15 +1881,22 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
         record_decision(state, sid, decision, state_file, mode)
         return decision
 
-    packet_ok, hermes_packet = hermes_packet_gate(alert, mode)
-    if not packet_ok:
+    hermes_ok, plan, hermes_gate = evaluate_hermes_judgment(
+        alert,
+        plan,
+        context,
+        mode,
+        judgment_file,
+        hermes_packet,
+    )
+    if not hermes_ok:
         decision = {
             "signal_id": sid,
             "status": "rejected",
-            "reasons": ["hermes_packet_gate_failed"],
+            "reasons": ["hermes_judgment_gate_failed"],
             "hermes_packet": hermes_packet,
-            "symbol_conflict": conflict_gate,
             "hermes": hermes_gate,
+            "symbol_conflict": conflict_gate,
             "context": {
                 "cash_hkd": context["cash_hkd"],
                 "equity_hkd": context["equity_hkd"],
@@ -1941,6 +1957,7 @@ def _process_alert_unlocked(alert, mode, state, state_file, judgment_file=JUDGME
             "execution_readiness": execution_readiness,
             "strategy_evidence": strategy_gate,
             "symbol_conflict": conflict_gate,
+            "hermes_packet": hermes_packet,
             "hermes": hermes_gate,
             "context": {
                 "cash_hkd": context["cash_hkd"],

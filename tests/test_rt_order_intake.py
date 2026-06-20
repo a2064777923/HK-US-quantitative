@@ -45,6 +45,7 @@ def fresh_sell_alert(signal_id="sig-sell", symbol="00700"):
 def judgment(signal_id, decision="approve", **extra):
     item = {
         "schema": "hermes_trade_judgment_v1",
+        "packet_id": "packet-test",
         "signal_id": signal_id,
         "decision": decision,
         "confidence": 0.8,
@@ -385,6 +386,67 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertEqual(result["status"], "submitted")
             self.assertEqual(result["hermes_packet"]["status"], "PASS")
             submit.assert_called_once()
+
+    def test_execute_requires_judgment_packet_id_to_match_current_eligible_packet(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            packet_file = Path(td) / "packet.json"
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-packet-id-mismatch")
+            self.write_judgments(
+                judgment_file,
+                judgment(alert["signal_id"], packet_id="old-packet"),
+            )
+            packet_file.write_text(
+                json.dumps(hermes_packet(alert["signal_id"], packet_id="current-packet")),
+                encoding="utf-8",
+            )
+
+            with patch.object(intake, "HERMES_REVIEW_PACKET_FILE", str(packet_file)):
+                result, submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                    submit_result={"order_id": "should-not-submit"},
+                    hermes_packet_gate=None,
+                )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("hermes_judgment_gate_failed", result["reasons"])
+            self.assertIn("judgment_packet_id_mismatch", result["hermes"]["reasons"])
+            self.assertEqual(result["hermes_packet"]["packet_id"], "current-packet")
+            submit.assert_not_called()
+
+    def test_execute_requires_judgment_packet_id_when_packet_gate_is_enabled(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            packet_file = Path(td) / "packet.json"
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-packet-id-missing")
+            approved = judgment(alert["signal_id"])
+            approved.pop("packet_id")
+            self.write_judgments(judgment_file, approved)
+            packet_file.write_text(json.dumps(hermes_packet(alert["signal_id"])), encoding="utf-8")
+
+            with patch.object(intake, "HERMES_REVIEW_PACKET_FILE", str(packet_file)):
+                result, submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                    submit_result={"order_id": "should-not-submit"},
+                    hermes_packet_gate=None,
+                )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("hermes_judgment_gate_failed", result["reasons"])
+            self.assertIn("judgment_missing_packet_id", result["hermes"]["reasons"])
+            submit.assert_not_called()
 
     def test_dry_run_reports_hermes_packet_would_block_execute_without_rejecting(self):
         with tempfile.TemporaryDirectory() as td:
