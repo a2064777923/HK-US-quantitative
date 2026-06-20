@@ -935,6 +935,19 @@ def review_items_by_signal(packet):
     }
 
 
+def duplicate_review_item_signal_counts(packet):
+    rows = packet.get("review_items") if isinstance(packet, dict) else []
+    if not isinstance(rows, list):
+        return {}
+    counts = {}
+    for item in rows:
+        if not isinstance(item, dict) or not item.get("signal_id"):
+            continue
+        sid = str(item.get("signal_id"))
+        counts[sid] = counts.get(sid, 0) + 1
+    return {sid: count for sid, count in counts.items() if count > 1}
+
+
 def packet_allows_risk_reduction_review(alert, item, packet):
     """Let the later SELL risk-reduction override review sample/readiness blockers."""
     if str((alert or {}).get("signal_type") or "").strip().upper() != "SELL":
@@ -977,6 +990,11 @@ def hermes_packet_gate(alert, mode, packet_file=None):
         elif age > timedelta(minutes=MAX_HERMES_PACKET_AGE_MINUTES):
             reasons.append("hermes_packet_stale")
 
+    duplicate_review_items = duplicate_review_item_signal_counts(packet) if packet else {}
+    duplicate_review_item_count = duplicate_review_items.get(str(sid), 0)
+    if duplicate_review_item_count:
+        reasons.append("hermes_packet_duplicate_review_items")
+
     item = review_items_by_signal(packet).get(str(sid)) if packet else None
     if packet and not item:
         reasons.append("hermes_review_item_missing")
@@ -1007,6 +1025,7 @@ def hermes_packet_gate(alert, mode, packet_file=None):
         "eligible_for_approval": item.get("eligible_for_approval") if isinstance(item, dict) else None,
         "recommended_judgment": item.get("recommended_judgment") if isinstance(item, dict) else None,
         "blocking_reasons": item.get("blocking_reasons") if isinstance(item, dict) else None,
+        "duplicate_review_item_count": duplicate_review_item_count,
         "max_packet_age_minutes": MAX_HERMES_PACKET_AGE_MINUTES,
         "reasons": reasons,
     }

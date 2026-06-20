@@ -337,6 +337,38 @@ class RtOrderIntakeTests(unittest.TestCase):
             )
             submit.assert_not_called()
 
+    def test_execute_rejects_duplicate_hermes_packet_review_items_for_signal(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            packet_file = Path(td) / "packet.json"
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-packet-duplicate")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+            payload = hermes_packet(alert["signal_id"], eligible=True)
+            duplicate = dict(payload["review_items"][0])
+            duplicate["eligible_for_approval"] = False
+            duplicate["blocking_reasons"] = ["duplicate-conflicting-review-item"]
+            payload["review_items"].append(duplicate)
+            packet_file.write_text(json.dumps(payload), encoding="utf-8")
+
+            with patch.object(intake, "HERMES_REVIEW_PACKET_FILE", str(packet_file)):
+                result, submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                    submit_result={"order_id": "should-not-submit"},
+                    hermes_packet_gate=None,
+                )
+
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("hermes_packet_gate_failed", result["reasons"])
+            self.assertIn("hermes_packet_duplicate_review_items", result["hermes_packet"]["reasons"])
+            self.assertEqual(result["hermes_packet"]["duplicate_review_item_count"], 2)
+            submit.assert_not_called()
+
     def test_execute_blocks_when_hermes_packet_missing(self):
         with tempfile.TemporaryDirectory() as td:
             state_file = str(Path(td) / "state.json")
@@ -510,6 +542,32 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertEqual(result["hermes_packet"]["status"], "DRY_RUN_ONLY")
             self.assertTrue(result["hermes_packet"]["would_block_execute"])
             self.assertIn("hermes_review_item_not_eligible", result["hermes_packet"]["reasons"])
+
+    def test_dry_run_reports_duplicate_hermes_packet_review_items_would_block_execute(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            packet_file = Path(td) / "packet.json"
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-packet-duplicate-dry")
+            payload = hermes_packet(alert["signal_id"], eligible=True)
+            payload["review_items"].append(dict(payload["review_items"][0]))
+            packet_file.write_text(json.dumps(payload), encoding="utf-8")
+
+            with patch.object(intake, "HERMES_REVIEW_PACKET_FILE", str(packet_file)):
+                result, _submit = self.run_with_common_patches(
+                    alert,
+                    "dry-run",
+                    state,
+                    state_file,
+                    judgment_file,
+                    hermes_packet_gate=None,
+                )
+
+            self.assertEqual(result["status"], "dry_run")
+            self.assertEqual(result["hermes_packet"]["status"], "DRY_RUN_ONLY")
+            self.assertTrue(result["hermes_packet"]["would_block_execute"])
+            self.assertIn("hermes_packet_duplicate_review_items", result["hermes_packet"]["reasons"])
 
     def test_hermes_packet_gate_rejects_stale_packet(self):
         alert = fresh_alert("sig-stale-packet")

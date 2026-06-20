@@ -96,6 +96,18 @@ def packet_review_maps(packet):
     return by_id, eligible
 
 
+def packet_review_item_duplicate_counts(packet):
+    items = packet.get("review_items") if isinstance(packet, dict) else []
+    counts = Counter()
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        sid = str(item.get("signal_id", "")).strip()
+        if sid:
+            counts[sid] += 1
+    return {sid: count for sid, count in counts.items() if count > 1}
+
+
 def packet_for_judgment(judgment, latest_packet, archive_dir=PACKET_ARCHIVE_DIR):
     packet_id = str(judgment.get("packet_id", "")).strip()
     if not packet_id:
@@ -1434,11 +1446,23 @@ def reviewed_alert_identity_reasons(judgment, alert):
     return reasons
 
 
-def audit_judgment(judgment, packet, review_by_id, eligible_ids, now=None, packet_source="latest_packet", packet_reasons=None):
+def audit_judgment(
+    judgment,
+    packet,
+    review_by_id,
+    eligible_ids,
+    now=None,
+    packet_source="latest_packet",
+    packet_reasons=None,
+    packet_duplicate_review_items=None,
+):
     now = now or datetime.now()
     sid = str(judgment.get("signal_id", "")).strip()
     reasons = validate_judgment_contract(judgment)
     reasons.extend(packet_reasons or [])
+    duplicate_count = (packet_duplicate_review_items or {}).get(sid, 0)
+    if duplicate_count:
+        reasons.append("packet_duplicate_review_items")
     item = review_by_id.get(sid)
     approval = decision_is_approval(judgment)
     if not item:
@@ -1576,6 +1600,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
     latest_packet = load_json_file(PACKET_FILE, {}) if packet is None else packet
     latest_packet_id = latest_packet.get("packet_id") if isinstance(latest_packet, dict) else None
     latest_review_by_id, latest_eligible_ids = packet_review_maps(latest_packet)
+    latest_packet_duplicate_review_items = packet_review_item_duplicate_counts(latest_packet)
     rows = []
     packet_source_counts = Counter()
     for judgment in judgments:
@@ -1586,6 +1611,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
         )
         packet_source_counts[packet_source] += 1
         review_by_id, eligible_ids = packet_review_maps(judgment_packet)
+        packet_duplicates = packet_review_item_duplicate_counts(judgment_packet)
         rows.append(
             audit_judgment(
                 judgment,
@@ -1595,6 +1621,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
                 now=now,
                 packet_source=packet_source,
                 packet_reasons=packet_reasons,
+                packet_duplicate_review_items=packet_duplicates,
             )
         )
     current_rows = []
@@ -1677,6 +1704,7 @@ def build_report(judgments=None, packet=None, now=None, packet_archive_dir=PACKE
             "historical_reason_counts": dict(historical_reason_counts),
             "duplicate_signal_ids": duplicates,
             "historical_duplicate_signal_ids": historical_duplicates,
+            "packet_duplicate_review_item_ids": latest_packet_duplicate_review_items,
             "packet_source_counts": dict(packet_source_counts),
             "current_packet_scope_count": len(current_rows),
             "historical_packet_scope_count": len(historical_rows),
@@ -1697,9 +1725,12 @@ def build_recommendations(rows, reason_counts, empty_recommendation="no_hermes_j
         "approval_for_unconfirmed_alert",
         "approval_while_health_fail",
         "orphan_judgment_not_in_latest_packet",
+        "packet_duplicate_review_items",
     ]
     for reason in critical:
-        if reason_counts.get(reason):
+        if reason == "packet_duplicate_review_items" and reason_counts.get(reason):
+            recs.append("fix_hermes_packet_duplicate_review_items")
+        elif reason_counts.get(reason):
             recs.append(f"fix_or_reject_judgments:{reason}")
     if any("risk_off_buy_approval_without_exception" in reason for reason in reason_counts):
         recs.append("risk_off_buy_approvals_require_market_regime_exception")

@@ -777,6 +777,23 @@ class HermesJudgmentAuditReportTests(unittest.TestCase):
         self.assertIn("approval_with_overall_outcome_sample_below_30", row["reasons"])
         self.assertIn("approval_with_trigger_outcome_missing", row["reasons"])
 
+    def test_duplicate_packet_review_items_for_signal_fail_audit(self):
+        first = review_item("sig-1", eligible=True)
+        second = review_item("sig-1", eligible=False)
+        second["blocking_reasons"] = ["conflicting_duplicate_review_item"]
+
+        payload = audit.build_report(
+            [judgment("sig-1")],
+            packet(items=[first, second], market_regime="risk_on", outcome_ok=True),
+        )
+        row = payload["judgments"][0]
+
+        self.assertEqual(payload["status"], "FAIL")
+        self.assertEqual(row["status"], "FAIL")
+        self.assertIn("packet_duplicate_review_items", row["reasons"])
+        self.assertEqual(payload["counts"]["packet_duplicate_review_item_ids"], {"sig-1": 2})
+        self.assertIn("fix_hermes_packet_duplicate_review_items", payload["recommendations"])
+
     def test_clean_approval_passes_when_packet_gates_are_consistent(self):
         payload = audit.build_report([judgment("sig-1")], packet(market_regime="risk_on", outcome_ok=True))
         row = payload["judgments"][0]
