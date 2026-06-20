@@ -1792,8 +1792,41 @@ def record_dry_run(state, sid, payload, state_file):
     save_json_atomic(state_file, state)
 
 
+RETRYABLE_EXECUTE_REJECTION_REASONS = {
+    "hermes_packet_missing_or_invalid",
+    "hermes_packet_generated_at_missing",
+    "hermes_packet_generated_at_invalid",
+    "hermes_packet_generated_at_in_future",
+    "hermes_packet_stale",
+    "hermes_packet_duplicate_review_items",
+    "hermes_review_item_missing",
+    "missing_hermes_judgment",
+    "judgment_missing_packet_id",
+    "judgment_packet_id_mismatch",
+    "judgment_reviewed_symbol_mismatch",
+    "judgment_reviewed_signal_type_mismatch",
+    "judgment_reviewed_trigger_mismatch",
+    "missing_reviewed_at",
+    "judgment_expired",
+}
+
+
+def retryable_execute_rejection(payload):
+    if not isinstance(payload, dict) or payload.get("status") != "rejected":
+        return False
+    reasons = set()
+    hermes_packet = payload.get("hermes_packet") if isinstance(payload.get("hermes_packet"), dict) else {}
+    hermes = payload.get("hermes") if isinstance(payload.get("hermes"), dict) else {}
+    reasons.update(str(reason or "") for reason in hermes_packet.get("reasons") or [])
+    reasons.update(str(reason or "") for reason in hermes.get("reasons") or [])
+    return bool(reasons & RETRYABLE_EXECUTE_REJECTION_REASONS)
+
+
 def record_decision(state, sid, payload, state_file, mode):
     if mode == "execute":
+        if retryable_execute_rejection(payload):
+            record_dry_run(state, sid, payload, state_file)
+            return
         record_processed(state, sid, payload, state_file)
     else:
         record_dry_run(state, sid, payload, state_file)

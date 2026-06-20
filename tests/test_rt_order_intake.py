@@ -293,6 +293,40 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertIn("hermes_judgment_gate_failed", result["reasons"])
             submit.assert_not_called()
 
+    def test_execute_missing_hermes_judgment_remains_retryable_after_judgment_arrives(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-missing-judgment-retry")
+
+            first, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "should-not-submit"},
+            )
+
+            self.assertEqual(first["status"], "rejected")
+            self.assertIn("missing_hermes_judgment", first["hermes"]["reasons"])
+            self.assertNotIn(alert["signal_id"], intake.load_state(state_file)["processed"])
+            submit.assert_not_called()
+
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+            second, submit = self.run_with_common_patches(
+                alert,
+                "execute",
+                state,
+                state_file,
+                judgment_file,
+                submit_result={"order_id": "ok-after-judgment"},
+            )
+
+            self.assertEqual(second["status"], "submitted")
+            submit.assert_called_once()
+
     def test_execute_requires_matching_eligible_hermes_packet_item(self):
         with tempfile.TemporaryDirectory() as td:
             state_file = str(Path(td) / "state.json")
@@ -393,6 +427,46 @@ class RtOrderIntakeTests(unittest.TestCase):
             self.assertIn("hermes_packet_gate_failed", result["reasons"])
             self.assertIn("hermes_packet_missing_or_invalid", result["hermes_packet"]["reasons"])
             submit.assert_not_called()
+
+    def test_execute_missing_hermes_packet_remains_retryable_after_packet_arrives(self):
+        with tempfile.TemporaryDirectory() as td:
+            state_file = str(Path(td) / "state.json")
+            judgment_file = str(Path(td) / "judgments.jsonl")
+            packet_file = Path(td) / "packet.json"
+            state = intake.load_state(state_file)
+            alert = fresh_alert("sig-missing-packet-retry")
+            self.write_judgments(judgment_file, judgment(alert["signal_id"]))
+
+            with patch.object(intake, "HERMES_REVIEW_PACKET_FILE", str(packet_file)):
+                first, submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                    submit_result={"order_id": "should-not-submit"},
+                    hermes_packet_gate=None,
+                )
+
+            self.assertEqual(first["status"], "rejected")
+            self.assertIn("hermes_packet_missing_or_invalid", first["hermes_packet"]["reasons"])
+            self.assertNotIn(alert["signal_id"], intake.load_state(state_file)["processed"])
+            submit.assert_not_called()
+
+            packet_file.write_text(json.dumps(hermes_packet(alert["signal_id"])), encoding="utf-8")
+            with patch.object(intake, "HERMES_REVIEW_PACKET_FILE", str(packet_file)):
+                second, submit = self.run_with_common_patches(
+                    alert,
+                    "execute",
+                    state,
+                    state_file,
+                    judgment_file,
+                    submit_result={"order_id": "ok-after-packet"},
+                    hermes_packet_gate=None,
+                )
+
+            self.assertEqual(second["status"], "submitted")
+            submit.assert_called_once()
 
     def test_execute_allows_eligible_hermes_packet_and_judgment(self):
         with tempfile.TemporaryDirectory() as td:
