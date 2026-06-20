@@ -53,6 +53,10 @@ MIN_SUPPORTING_FACTOR_COUNT = {
     "BUY": 2,
     "SELL": 2,
 }
+MAX_OPPOSING_FACTOR_COUNT = {
+    "BUY": 1,
+    "SELL": 1,
+}
 MIN_AVG_DAILY_TURNOVER = {
     "HK": 100_000.0,
     "US": 100_000.0,
@@ -114,8 +118,14 @@ def default_strategy_config():
             "SELL": {"max_full_score": SELL_CONFIRMATION_MAX_SCORE}
         },
         "confirmation_requirements": {
-            "BUY": {"min_supporting_factor_count": MIN_SUPPORTING_FACTOR_COUNT["BUY"]},
-            "SELL": {"min_supporting_factor_count": MIN_SUPPORTING_FACTOR_COUNT["SELL"]}
+            "BUY": {
+                "min_supporting_factor_count": MIN_SUPPORTING_FACTOR_COUNT["BUY"],
+                "max_opposing_factor_count": MAX_OPPOSING_FACTOR_COUNT["BUY"],
+            },
+            "SELL": {
+                "min_supporting_factor_count": MIN_SUPPORTING_FACTOR_COUNT["SELL"],
+                "max_opposing_factor_count": MAX_OPPOSING_FACTOR_COUNT["SELL"],
+            },
         },
         "momentum_breakout_model": {
             "enabled": True,
@@ -667,6 +677,12 @@ def normalize_strategy_config(config):
             warnings.append(f"invalid_{side.lower()}_min_supporting_factor_count_using_default")
             count = default
         side_req["min_supporting_factor_count"] = count
+        opposing_default = MAX_OPPOSING_FACTOR_COUNT[side]
+        opposing_count = as_int(side_req.get("max_opposing_factor_count"), opposing_default)
+        if opposing_count is None or opposing_count < 0 or opposing_count > opposing_default:
+            warnings.append(f"invalid_{side.lower()}_max_opposing_factor_count_using_default")
+            opposing_count = opposing_default
+        side_req["max_opposing_factor_count"] = opposing_count
 
     momentum_breakout = config.setdefault("momentum_breakout_model", {})
     momentum_breakout["enabled"] = as_bool(momentum_breakout.get("enabled"), True)
@@ -2236,6 +2252,22 @@ def supporting_factor_categories(signal_type, contributions=None, reasons=None):
         return categories
     return legacy_reason_factor_categories(signal_type, reasons)
 
+
+def opposite_signal_type(signal_type):
+    signal_type = str(signal_type or "").upper()
+    if signal_type == "BUY":
+        return "SELL"
+    if signal_type == "SELL":
+        return "BUY"
+    return ""
+
+
+def opposing_factor_categories(signal_type, contributions=None, reasons=None):
+    opposite = opposite_signal_type(signal_type)
+    if not opposite:
+        return []
+    return supporting_factor_categories(opposite, contributions=contributions, reasons=reasons)
+
 def alert_signal_date(quote_time=None, generated_at=None, market=None):
     parsed_quote_time = parse_quote_datetime(quote_time, market=market)
     if parsed_quote_time is not None:
@@ -2451,6 +2483,18 @@ class TriggerEngine:
         requirements = self.strategy_config.get("confirmation_requirements") or {}
         side_req = requirements.get(signal_type) if isinstance(requirements.get(signal_type), dict) else {}
         return as_int(side_req.get("min_supporting_factor_count"), default) or default
+
+    def max_opposing_factor_count(self, signal_type):
+        signal_type = str(signal_type or "").upper()
+        default = MAX_OPPOSING_FACTOR_COUNT.get(signal_type)
+        if default is None:
+            return None
+        requirements = self.strategy_config.get("confirmation_requirements") or {}
+        side_req = requirements.get(signal_type) if isinstance(requirements.get(signal_type), dict) else {}
+        configured = as_int(side_req.get("max_opposing_factor_count"), default)
+        if configured is None:
+            return default
+        return min(configured, default)
 
     def min_avg_daily_turnover(self, market):
         liquidity = self.strategy_config.get("liquidity_model") or {}
@@ -2687,16 +2731,29 @@ class TriggerEngine:
                 factor_contributions,
                 reasons=full_reasons,
             )
+            factor_confluence_opposing_categories = opposing_factor_categories(
+                signal_type,
+                factor_contributions,
+                reasons=full_reasons,
+            )
             non_momentum_buy_factor_categories = non_momentum_factor_categories(
                 factor_confluence_categories if signal_type == "BUY" else []
             )
             min_factor_count = self.min_supporting_factor_count(signal_type)
+            max_opposing_factor_count = self.max_opposing_factor_count(signal_type)
             if signal_type in ("BUY", "SELL"):
                 factor_confluence_valid = (
                     min_factor_count is not None
                     and len(factor_confluence_categories) >= min_factor_count
+                    and max_opposing_factor_count is not None
+                    and len(factor_confluence_opposing_categories) <= max_opposing_factor_count
                 )
-                factor_confluence_reason = None if factor_confluence_valid else "supporting_factor_count_below_minimum"
+                if factor_confluence_valid:
+                    factor_confluence_reason = None
+                elif min_factor_count is not None and len(factor_confluence_categories) < min_factor_count:
+                    factor_confluence_reason = "supporting_factor_count_below_minimum"
+                else:
+                    factor_confluence_reason = "opposing_factor_conflict"
             else:
                 factor_confluence_valid = False
                 factor_confluence_reason = "not_directional_candidate"
@@ -2903,6 +2960,8 @@ class TriggerEngine:
                     "factor_confluence_valid": factor_confluence_valid,
                     "factor_confluence_reason": factor_confluence_reason,
                     "factor_confluence_categories": factor_confluence_categories,
+                    "factor_confluence_opposing_categories": factor_confluence_opposing_categories,
+                    "max_opposing_factor_count": max_opposing_factor_count,
                     "non_momentum_buy_factor_categories": non_momentum_buy_factor_categories,
                     "min_factor_count": min_factor_count,
                     "market_breadth_blocked": market_breadth_blocked,
@@ -2958,6 +3017,8 @@ class TriggerEngine:
             factor_confluence_valid = row["factor_confluence_valid"]
             factor_confluence_reason = row["factor_confluence_reason"]
             factor_confluence_categories = row["factor_confluence_categories"]
+            factor_confluence_opposing_categories = row["factor_confluence_opposing_categories"]
+            max_opposing_factor_count = row["max_opposing_factor_count"]
             non_momentum_buy_factor_categories = row["non_momentum_buy_factor_categories"]
             min_factor_count = row["min_factor_count"]
             market_breadth_signal_status = row["market_breadth_signal_status"]
@@ -3063,6 +3124,9 @@ class TriggerEngine:
                 "factor_confluence_categories": factor_confluence_categories,
                 "factor_confluence_supporting_count": len(factor_confluence_categories),
                 "factor_confluence_min_count": min_factor_count,
+                "factor_confluence_opposing_categories": factor_confluence_opposing_categories,
+                "factor_confluence_opposing_count": len(factor_confluence_opposing_categories),
+                "factor_confluence_max_opposing_count": max_opposing_factor_count,
                 "non_momentum_buy_factor_categories": non_momentum_buy_factor_categories,
                 "non_momentum_buy_factor_count": len(non_momentum_buy_factor_categories),
                 "large_move_non_momentum_min_count": large_move_non_momentum_min_count,

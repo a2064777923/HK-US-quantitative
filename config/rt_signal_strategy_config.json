@@ -1,7 +1,7 @@
 {
   "schema": "rt_signal_strategy_config_v1",
-  "version": "v5.7-intraday-breadth-and-momentum-discipline-20260619",
-  "description": "Realtime v5.7 keeps completed daily OHLCV as the stable technical base while using current-session quote evidence only as a provisional overlay. BUY execution candidates now fail closed to WATCH when same-market realtime breadth context is missing/insufficient or risk-off, and large positive same-session moves require at least two non-momentum supporting factor families before they can remain executable. Noisy or underperforming BUY triggers remain diagnostic, downgraded SELL diagnostics stay summary-only, same-scan execution candidate ranking is unchanged, and Hermes/readiness/liquidity/RR/intake gates remain unchanged.",
+  "version": "v5.8-factor-conflict-discipline-20260620",
+  "description": "Realtime v5.8 keeps completed daily OHLCV as the stable technical base while using current-session quote evidence only as a provisional overlay. BUY execution candidates still fail closed to WATCH when same-market realtime breadth context is missing/insufficient or risk-off, large positive same-session moves require at least two non-momentum supporting factor families, and any directional execution candidate with more than one opposing factor family is downgraded to diagnostic WATCH. Noisy or underperforming BUY triggers remain diagnostic, downgraded SELL diagnostics stay summary-only, same-scan execution candidate ranking is unchanged, and Hermes/readiness/liquidity/RR/intake gates remain unchanged.",
   "signal_cooldown_seconds": 1800,
   "volume_anomaly_ratio": 3.0,
   "confirmation_thresholds": {
@@ -14,10 +14,12 @@
   },
   "confirmation_requirements": {
     "BUY": {
-      "min_supporting_factor_count": 2
+      "min_supporting_factor_count": 2,
+      "max_opposing_factor_count": 1
     },
     "SELL": {
-      "min_supporting_factor_count": 2
+      "min_supporting_factor_count": 2,
+      "max_opposing_factor_count": 1
     }
   },
   "momentum_breakout_model": {

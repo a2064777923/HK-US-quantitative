@@ -2218,6 +2218,36 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertNotIn("invalid_buy_min_supporting_factor_count_using_default", warnings)
         self.assertNotIn("invalid_sell_min_supporting_factor_count_using_default", warnings)
 
+    def test_strategy_config_does_not_allow_looser_opposing_factor_limit(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "confirmation_requirements": {
+                    "BUY": {"max_opposing_factor_count": 2},
+                    "SELL": {"max_opposing_factor_count": 2},
+                }
+            }
+        )
+
+        self.assertEqual(config["confirmation_requirements"]["BUY"]["max_opposing_factor_count"], 1)
+        self.assertEqual(config["confirmation_requirements"]["SELL"]["max_opposing_factor_count"], 1)
+        self.assertIn("invalid_buy_max_opposing_factor_count_using_default", warnings)
+        self.assertIn("invalid_sell_max_opposing_factor_count_using_default", warnings)
+
+    def test_strategy_config_allows_stricter_opposing_factor_limit(self):
+        config, warnings = rt.normalize_strategy_config(
+            {
+                "confirmation_requirements": {
+                    "BUY": {"max_opposing_factor_count": 0},
+                    "SELL": {"max_opposing_factor_count": 0},
+                }
+            }
+        )
+
+        self.assertEqual(config["confirmation_requirements"]["BUY"]["max_opposing_factor_count"], 0)
+        self.assertEqual(config["confirmation_requirements"]["SELL"]["max_opposing_factor_count"], 0)
+        self.assertNotIn("invalid_buy_max_opposing_factor_count_using_default", warnings)
+        self.assertNotIn("invalid_sell_max_opposing_factor_count_using_default", warnings)
+
     def test_strategy_config_does_not_allow_looser_large_move_non_momentum_requirement(self):
         config, warnings = rt.normalize_strategy_config(
             {
@@ -2476,7 +2506,9 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         config = self.repo_strategy_config()
         normalized, warnings = rt.normalize_strategy_config(config)
         self.assertEqual(warnings, [])
-        self.assertEqual(normalized["version"], "v5.7-intraday-breadth-and-momentum-discipline-20260619")
+        self.assertEqual(normalized["version"], "v5.8-factor-conflict-discipline-20260620")
+        self.assertEqual(normalized["confirmation_requirements"]["BUY"]["max_opposing_factor_count"], 1)
+        self.assertEqual(normalized["confirmation_requirements"]["SELL"]["max_opposing_factor_count"], 1)
 
         expected_modes = {
             "BUY:布林下軌突破": "disabled_pending_rework",
@@ -3335,6 +3367,55 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertTrue(alert["factor_confluence_valid"])
         self.assertEqual(alert["factor_confluence_categories"], ["macd", "trend"])
         self.assertEqual(alert["factor_confluence_supporting_count"], 2)
+
+    def test_opposing_factor_conflict_blocks_execution_candidate(self):
+        engine = rt.TriggerEngine(
+            strategy_config={
+                "emission": {"emit_unconfirmed_directional_as_watch": False},
+            }
+        )
+        indicators = FakeIndicators(
+            score=0.8,
+            reasons=["多頭排列", "MACD金叉+正值", "RSI偏弱(40)", "放量下跌2.5倍"],
+            factor_contributions=[
+                {"category": "trend", "direction": "BUY", "score_delta": 0.8, "reason": "多頭排列"},
+                {"category": "macd", "direction": "BUY", "score_delta": 0.3, "reason": "MACD金叉+正值"},
+                {"category": "rsi", "direction": "SELL", "score_delta": -0.2, "reason": "RSI偏弱(40)"},
+                {"category": "volume", "direction": "SELL", "score_delta": -0.2, "reason": "放量下跌2.5倍"},
+            ],
+        )
+        indicators.rsi_14 = 20
+        indicators.ma5 = None
+        indicators.ma10 = None
+        indicators.ma20 = None
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 100,
+                "volume": 0,
+                "market": "US",
+                "time": "2026-06-11 10:00:00",
+                "change_pct": 0,
+            },
+        )
+
+        alert = [item for item in engine.alerts if item["trigger"] == "RSI超賣"][0]
+        self.assertTrue(alert["confirmed"])
+        self.assertEqual(alert["candidate_signal_type"], "BUY")
+        self.assertEqual(alert["signal_type"], "WATCH")
+        self.assertFalse(alert["execution_candidate"])
+        self.assertFalse(alert["factor_confluence_valid"])
+        self.assertEqual(alert["factor_confluence_reason"], "opposing_factor_conflict")
+        self.assertEqual(alert["factor_confluence_categories"], ["macd", "trend"])
+        self.assertEqual(alert["factor_confluence_opposing_categories"], ["rsi", "volume"])
+        self.assertEqual(alert["factor_confluence_opposing_count"], 2)
+        self.assertEqual(alert["factor_confluence_max_opposing_count"], 1)
+        self.assertIn(
+            "factor_confluence_invalid:opposing_factor_conflict",
+            alert["execution_blocked_reasons"],
+        )
 
     def test_factor_confluence_prefers_structured_contributions_over_reasons(self):
         engine = rt.TriggerEngine(

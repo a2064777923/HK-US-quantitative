@@ -123,7 +123,7 @@ class V5LocalReplayReportTests(unittest.TestCase):
 
         self.assertEqual(
             payload["replay_contract"]["strategy_config_version"],
-            "v5.7-intraday-breadth-and-momentum-discipline-20260619",
+            "v5.8-factor-conflict-discipline-20260620",
         )
         self.assertEqual(payload["replay_contract"]["strategy_config_source"], "file")
         self.assertIn(
