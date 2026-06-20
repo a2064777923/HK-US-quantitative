@@ -624,6 +624,15 @@ class HermesReviewPacketTests(unittest.TestCase):
                     "schema": "current_session_quote_evidence_v1",
                     "used_in_full_score": False,
                     "change_pct": 0.5,
+                    "score_impact": {
+                        "schema": "current_session_score_impact_v1",
+                        "factor_count": 0,
+                        "net_score_delta": 0,
+                        "score_delta_by_direction": {},
+                        "factor_categories": {},
+                        "factor_roles": {},
+                        "factors": [],
+                    },
                     "provisional": True,
                     "mutates_completed_daily_history": False,
                     "replaces_completed_daily_bar": False,
@@ -675,6 +684,7 @@ class HermesReviewPacketTests(unittest.TestCase):
             summary["factor_evidence_roles"],
             {"completed_daily_threshold_with_current_quote": 1},
         )
+        self.assertEqual(summary["current_session_quote_evidence"]["score_impact"]["factor_count"], 0)
         self.assertFalse(summary["current_session_quote_evidence"]["mutates_completed_daily_history"])
         self.assertFalse(summary["current_session_quote_evidence"]["replaces_completed_daily_bar"])
 

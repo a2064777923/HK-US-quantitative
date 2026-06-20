@@ -326,12 +326,48 @@ def factor_evidence_role_summary(contributions):
     return dict(sorted(counts.items()))
 
 
-def has_current_session_factor(contributions):
-    return any(
-        isinstance(contribution, dict)
-        and str(contribution.get("evidence_basis") or "").strip() == "current_session_quote"
-        for contribution in contributions or []
-    )
+def current_session_score_impact(factor_contributions=None):
+    factors = []
+    score_delta_by_direction = defaultdict(float)
+    role_counts = defaultdict(int)
+    category_counts = defaultdict(int)
+    for contribution in factor_contributions or []:
+        if not isinstance(contribution, dict):
+            continue
+        if str(contribution.get("evidence_basis") or "").strip() != "current_session_quote":
+            continue
+        score_delta = as_float(contribution.get("score_delta"))
+        direction = str(contribution.get("direction") or "").upper()
+        if score_delta is None or direction not in ("BUY", "SELL"):
+            continue
+        role = str(contribution.get("evidence_role") or "unspecified").strip() or "unspecified"
+        category = str(contribution.get("category") or "unspecified").strip() or "unspecified"
+        raw_category = str(contribution.get("raw_category") or category).strip() or category
+        score_delta_by_direction[direction] += score_delta
+        role_counts[role] += 1
+        category_counts[category] += 1
+        factors.append(
+            {
+                "category": category,
+                "raw_category": raw_category,
+                "evidence_role": role,
+                "direction": direction,
+                "score_delta": round(score_delta, 4),
+                "reason": str(contribution.get("reason") or ""),
+            }
+        )
+    return {
+        "schema": "current_session_score_impact_v1",
+        "factor_count": len(factors),
+        "net_score_delta": round(sum(score_delta_by_direction.values()), 4),
+        "score_delta_by_direction": {
+            direction: round(score_delta_by_direction[direction], 4)
+            for direction in sorted(score_delta_by_direction)
+        },
+        "factor_categories": dict(sorted(category_counts.items())),
+        "factor_roles": dict(sorted(role_counts.items())),
+        "factors": factors,
+    }
 
 
 def current_session_quote_evidence(quote, factor_contributions=None):
@@ -339,9 +375,10 @@ def current_session_quote_evidence(quote, factor_contributions=None):
     change_pct = as_float(quote.get("change_pct"))
     prev_close = as_float(quote.get("prev_close"))
     price = as_float(quote.get("price"))
+    score_impact = current_session_score_impact(factor_contributions)
     return {
         "schema": "current_session_quote_evidence_v1",
-        "used_in_full_score": has_current_session_factor(factor_contributions),
+        "used_in_full_score": score_impact["factor_count"] > 0,
         "used_for_realtime_alignment": True,
         "used_for_trigger_detection": True,
         "basis": "latest_realtime_quote_vs_previous_completed_close",
@@ -349,6 +386,7 @@ def current_session_quote_evidence(quote, factor_contributions=None):
         "price": price,
         "prev_close": prev_close if prev_close is not None and prev_close > 0 else None,
         "change_pct": change_pct,
+        "score_impact": score_impact,
         "provisional": True,
         "mutates_completed_daily_history": False,
         "replaces_completed_daily_bar": False,

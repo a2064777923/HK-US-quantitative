@@ -516,6 +516,87 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         self.assertEqual(contributions[1]["raw_category"], "momentum")
         self.assertEqual(contributions[1]["evidence_basis"], "completed_daily_ohlcv")
 
+    def test_current_session_quote_evidence_summarizes_score_impact(self):
+        contributions = rt.normalize_score_contributions(
+            [
+                {
+                    "category": "momentum",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "當日動量+7.2%",
+                },
+                {
+                    "category": "trend",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "短均線偏強",
+                    "evidence_basis": "current_session_quote",
+                },
+                {
+                    "category": "macd",
+                    "direction": "BUY",
+                    "score_delta": 0.3,
+                    "reason": "MACD金叉+正值",
+                },
+            ]
+        )
+
+        evidence = rt.current_session_quote_evidence(
+            {
+                "price": 107.2,
+                "prev_close": 100,
+                "change_pct": 7.2,
+                "time": "2026-06-11 14:00:00",
+            },
+            contributions,
+        )
+
+        impact = evidence["score_impact"]
+        self.assertTrue(evidence["used_in_full_score"])
+        self.assertEqual(impact["factor_count"], 2)
+        self.assertEqual(impact["net_score_delta"], 0.8)
+        self.assertEqual(impact["score_delta_by_direction"], {"BUY": 0.8})
+        self.assertEqual(impact["factor_categories"], {"momentum": 1, "trend": 1})
+        self.assertEqual(
+            impact["factor_roles"],
+            {
+                "completed_daily_threshold_with_current_quote": 1,
+                "current_session_change_pct": 1,
+            },
+        )
+        self.assertEqual(
+            [(item["raw_category"], item["score_delta"]) for item in impact["factors"]],
+            [("same_session_momentum", 0.4), ("trend", 0.4)],
+        )
+
+    def test_current_session_quote_evidence_reports_no_score_impact_for_completed_daily_only(self):
+        contributions = rt.normalize_score_contributions(
+            [
+                {
+                    "category": "trend",
+                    "direction": "BUY",
+                    "score_delta": 0.8,
+                    "reason": "多頭排列",
+                },
+            ]
+        )
+
+        evidence = rt.current_session_quote_evidence({"price": 100, "change_pct": 0.5}, contributions)
+
+        self.assertFalse(evidence["used_in_full_score"])
+        self.assertEqual(
+            evidence["score_impact"],
+            {
+                "schema": "current_session_score_impact_v1",
+                "factor_count": 0,
+                "net_score_delta": 0,
+                "score_delta_by_direction": {},
+                "factor_categories": {},
+                "factor_roles": {},
+                "factors": [],
+            },
+        )
+
     def test_momentum_uses_true_five_bar_lookback_not_four_bar_window(self):
         ind = rt.IncrementalIndicators("AAPL")
         ind.closes = [100] * 24 + [100, 99, 100, 100, 100, 105]
@@ -2056,6 +2137,62 @@ class RtSignalEngineV5Tests(unittest.TestCase):
         )
         self.assertFalse(alert["completed_daily_mutation_allowed"])
         self.assertFalse(alert["partial_daily_bar_used_as_completed_daily"])
+
+    def test_trigger_alert_exposes_current_session_score_impact(self):
+        engine = rt.TriggerEngine()
+        indicators = FakeIndicators(
+            avg_volume=1000,
+            score=0.8,
+            reasons=["當日動量+3.5%", "短均線偏強", "MACD金叉+正值"],
+            factor_contributions=[
+                {
+                    "category": "same_session_momentum",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "當日動量+3.5%",
+                },
+                {
+                    "category": "trend",
+                    "direction": "BUY",
+                    "score_delta": 0.4,
+                    "reason": "短均線偏強",
+                    "evidence_basis": "current_session_quote",
+                },
+                {
+                    "category": "macd",
+                    "direction": "BUY",
+                    "score_delta": 0.3,
+                    "reason": "MACD金叉+正值",
+                },
+            ],
+        )
+
+        engine.check(
+            "AAPL",
+            indicators,
+            {
+                "price": 103.5,
+                "volume": 4000,
+                "market": "US",
+                "time": "2026-06-11 14:00:00",
+                "change_pct": 3.5,
+            },
+        )
+
+        impact = engine.alerts[0]["current_session_quote_evidence"]["score_impact"]
+        self.assertEqual(impact["factor_count"], 2)
+        self.assertEqual(impact["score_delta_by_direction"], {"BUY": 0.8})
+        self.assertEqual(
+            impact["factor_roles"],
+            {
+                "completed_daily_threshold_with_current_quote": 1,
+                "current_session_change_pct": 1,
+            },
+        )
+        self.assertEqual(
+            [item["raw_category"] for item in impact["factors"]],
+            ["same_session_momentum", "trend"],
+        )
 
     def test_load_strategy_config_from_json_file(self):
         with tempfile.TemporaryDirectory() as td:
