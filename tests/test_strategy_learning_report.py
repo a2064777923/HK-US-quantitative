@@ -290,6 +290,11 @@ class StrategyLearningReportTests(unittest.TestCase):
         by_impact = {row["key"]: row for row in payload["by_current_session_score_impact"]}
         self.assertEqual(by_impact["high_current_session_score_impact"]["avg_signed_return_pct"], -1.5)
         self.assertEqual(by_impact["low_current_session_score_impact"]["avg_signed_return_pct"], 1.0)
+        self.assertEqual(payload["current_session_score_impact_effect"]["status"], "INSUFFICIENT")
+        self.assertIn(
+            "high_current_session_score_impact_sample_below_minimum",
+            payload["current_session_score_impact_effect"]["reasons"],
+        )
         rows_by_id = {row["signal_id"]: row for row in payload["recent_joined_rows"]}
         self.assertEqual(rows_by_id["sig-high"]["current_session_score_impact_cohort"], "high_current_session_score_impact")
         self.assertEqual(rows_by_id["sig-high"]["current_session_score_impact_ratio"], 0.625)
@@ -835,6 +840,99 @@ class StrategyLearningReportTests(unittest.TestCase):
         self.assertIn("conflicting_timeframes", group_keys)
         self.assertIn("unavailable_or_stale", group_keys)
         self.assertNotIn("conflicting_intraday_context", group_keys)
+
+    def test_current_session_score_impact_effect_classifies_supportive_forward_evidence(self):
+        rows = [
+            {
+                "signal_id": "high-1",
+                "signed_return_pct": 1.2,
+                "current_session_score_impact_cohort": "high_current_session_score_impact",
+            },
+            {
+                "signal_id": "high-2",
+                "signed_return_pct": 1.0,
+                "current_session_score_impact_cohort": "high_current_session_score_impact",
+            },
+            {
+                "signal_id": "low-1",
+                "signed_return_pct": 0.1,
+                "current_session_score_impact_cohort": "low_current_session_score_impact",
+            },
+            {
+                "signal_id": "none-1",
+                "signed_return_pct": 0.3,
+                "current_session_score_impact_cohort": "no_current_session_score_impact",
+            },
+        ]
+
+        effect = learning.current_session_score_impact_effect(rows, minimum_sample=2)
+
+        self.assertEqual(effect["schema"], "current_session_score_impact_effect_v1")
+        self.assertEqual(effect["status"], "SUPPORTIVE")
+        self.assertEqual(effect["high_current_session_score_impact"]["avg_signed_return_pct"], 1.1)
+        self.assertEqual(effect["low_or_no_current_session_score_impact"]["avg_signed_return_pct"], 0.2)
+        self.assertEqual(effect["high_vs_low_or_no_delta_pct"], 0.9)
+        self.assertEqual(effect["reasons"], [])
+        self.assertEqual(
+            effect["policy"],
+            "use_high_current_session_score_impact_as_soft_timing_context_only",
+        )
+        self.assertFalse(effect["submits_orders"])
+
+    def test_current_session_score_impact_effect_flags_high_dependency_underperformance(self):
+        rows = [
+            {
+                "signal_id": "high-1",
+                "signed_return_pct": -0.8,
+                "current_session_score_impact_cohort": "high_current_session_score_impact",
+            },
+            {
+                "signal_id": "high-2",
+                "signed_return_pct": -0.4,
+                "current_session_score_impact_cohort": "high_current_session_score_impact",
+            },
+            {
+                "signal_id": "low-1",
+                "signed_return_pct": 0.2,
+                "current_session_score_impact_cohort": "low_current_session_score_impact",
+            },
+            {
+                "signal_id": "none-1",
+                "signed_return_pct": 0.4,
+                "current_session_score_impact_cohort": "no_current_session_score_impact",
+            },
+        ]
+
+        effect = learning.current_session_score_impact_effect(rows, minimum_sample=2)
+
+        self.assertEqual(effect["status"], "NEGATIVE")
+        self.assertIn("high_current_session_score_impact_avg_return_not_positive", effect["reasons"])
+        self.assertIn("high_current_session_score_impact_not_outperforming_low_or_no", effect["reasons"])
+        self.assertEqual(
+            effect["policy"],
+            "cap_confidence_for_high_current_session_score_dependence_until_forward_evidence_improves",
+        )
+
+    def test_current_session_score_impact_negative_effect_recommends_capping_dependency(self):
+        payload = {
+            "overall": {"resolved_count": learning.MIN_LEARNING_SAMPLE},
+            "judgment_effect": {
+                "approved_or_reduced": {"avg_signed_return_pct": None},
+                "rejected_or_held": {"avg_signed_return_pct": None},
+            },
+            "by_trigger": [],
+            "by_intraday_signal_alignment": [],
+            "intraday_alignment_effect": {"status": "INSUFFICIENT"},
+            "current_session_score_impact_effect": {"status": "NEGATIVE"},
+            "by_intake_reason": [],
+            "by_actionability": [],
+            "intake_coverage": {"directional": {}},
+            "sizing_blocker_diagnostics": {"by_binding_limit": []},
+        }
+
+        recs = learning.build_recommendations(payload)
+
+        self.assertIn("current_session_score_impact_effect_negative_cap_intraday_quote_dependence", recs)
 
     def test_recommends_collecting_when_resolved_sample_is_small(self):
         payload = learning.build_report(

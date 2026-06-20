@@ -28,6 +28,10 @@ MIN_LEARNING_SAMPLE = int(os.environ.get("STRATEGY_LEARNING_MIN_SAMPLE", "5"))
 DEFAULT_SAMPLE_SCOPE_MODE = os.environ.get("STRATEGY_LEARNING_SAMPLE_SCOPE", "current")
 INTRADAY_SUPPORT_ALIGNMENTS = ("supports_signal", "supports_with_limits")
 INTRADAY_CHALLENGE_ALIGNMENTS = ("challenges_signal",)
+CURRENT_SESSION_BASELINE_IMPACT_COHORTS = (
+    "no_current_session_score_impact",
+    "low_current_session_score_impact",
+)
 INTRADAY_ALIGNMENT_ALIASES = {
     "conflicting_intraday_context": "conflicting_timeframes",
     "insufficient_intraday_context": "neutral_or_insufficient",
@@ -782,6 +786,97 @@ def intraday_alignment_effect(rows, minimum_sample=MIN_LEARNING_SAMPLE):
     }
 
 
+def current_session_score_impact_rows(rows, cohorts):
+    wanted = set(cohorts or [])
+    return [
+        row
+        for row in rows
+        if (row.get("current_session_score_impact_cohort") or "unknown_current_session_score_impact") in wanted
+    ]
+
+
+def current_session_score_impact_effect(rows, minimum_sample=MIN_LEARNING_SAMPLE):
+    groups = grouped_summary(
+        rows,
+        lambda row: row.get("current_session_score_impact_cohort") or "unknown_current_session_score_impact",
+    )
+    high = metric_summary(
+        current_session_score_impact_rows(rows, ("high_current_session_score_impact",))
+    )
+    low_or_no = metric_summary(
+        current_session_score_impact_rows(rows, CURRENT_SESSION_BASELINE_IMPACT_COHORTS)
+    )
+    high_avg = high.get("avg_signed_return_pct")
+    baseline_avg = low_or_no.get("avg_signed_return_pct")
+    delta = round(high_avg - baseline_avg, 6) if high_avg is not None and baseline_avg is not None else None
+    reasons = []
+    if not rows:
+        reasons.append("current_session_score_impact_learning_rows_missing")
+    if high.get("resolved_count", 0) < minimum_sample:
+        reasons.append("high_current_session_score_impact_sample_below_minimum")
+    if low_or_no.get("resolved_count", 0) < minimum_sample:
+        reasons.append("low_or_no_current_session_score_impact_sample_below_minimum")
+    if high_avg is None:
+        reasons.append("high_current_session_score_impact_avg_return_missing")
+    elif high_avg <= 0:
+        reasons.append("high_current_session_score_impact_avg_return_not_positive")
+    if baseline_avg is None:
+        reasons.append("low_or_no_current_session_score_impact_avg_return_missing")
+    if delta is None:
+        reasons.append("high_vs_low_or_no_current_session_score_delta_missing")
+    elif delta <= 0:
+        reasons.append("high_current_session_score_impact_not_outperforming_low_or_no")
+
+    insufficient_reasons = {
+        "current_session_score_impact_learning_rows_missing",
+        "high_current_session_score_impact_sample_below_minimum",
+        "low_or_no_current_session_score_impact_sample_below_minimum",
+        "high_current_session_score_impact_avg_return_missing",
+        "low_or_no_current_session_score_impact_avg_return_missing",
+        "high_vs_low_or_no_current_session_score_delta_missing",
+    }
+    negative_reasons = {
+        "high_current_session_score_impact_avg_return_not_positive",
+        "high_current_session_score_impact_not_outperforming_low_or_no",
+    }
+    if "current_session_score_impact_learning_rows_missing" in reasons:
+        status = "MISSING"
+    elif any(reason in reasons for reason in insufficient_reasons):
+        status = "INSUFFICIENT"
+    elif any(reason in reasons for reason in negative_reasons):
+        status = "NEGATIVE"
+    else:
+        status = "SUPPORTIVE"
+
+    if status == "SUPPORTIVE":
+        hermes_note = "current_session_score_impact_supportive_as_timing_context_not_execution_permission"
+        policy = "use_high_current_session_score_impact_as_soft_timing_context_only"
+    elif status == "NEGATIVE":
+        hermes_note = "high_current_session_score_impact_underperforms_reduce_intraday_quote_dependence"
+        policy = "cap_confidence_for_high_current_session_score_dependence_until_forward_evidence_improves"
+    elif status == "MISSING":
+        hermes_note = "current_session_score_impact_learning_missing_keep_quote_evidence_diagnostic_only"
+        policy = "collect_current_session_score_impact_before_using_as_policy"
+    else:
+        hermes_note = "current_session_score_impact_samples_below_threshold_keep_collecting_before_using_as_rule"
+        policy = "keep_current_session_score_impact_read_only_until_samples_mature"
+
+    return {
+        "schema": "current_session_score_impact_effect_v1",
+        "read_only": True,
+        "submits_orders": False,
+        "status": status,
+        "minimum_sample": minimum_sample,
+        "high_current_session_score_impact": high,
+        "low_or_no_current_session_score_impact": low_or_no,
+        "high_vs_low_or_no_delta_pct": delta,
+        "groups": groups,
+        "reasons": reasons,
+        "hermes_note": hermes_note,
+        "policy": policy,
+    }
+
+
 def compare_judgment_effect(rows):
     approved = [row for row in rows if row["judgment_decision"] in ("approve", "reduce")]
     rejected = [row for row in rows if row["judgment_decision"] in ("reject", "hold")]
@@ -1142,6 +1237,9 @@ def build_recommendations(payload):
     intraday_effect = payload.get("intraday_alignment_effect") or {}
     if intraday_effect.get("status") == "NEGATIVE":
         recs.append("intraday_alignment_effect_negative_keep_diagnostic_only")
+    current_session_effect = payload.get("current_session_score_impact_effect") or {}
+    if current_session_effect.get("status") == "NEGATIVE":
+        recs.append("current_session_score_impact_effect_negative_cap_intraday_quote_dependence")
     challenged = intraday_alignment.get("challenges_signal") or {}
     if challenged.get("resolved_count", 0) >= MIN_LEARNING_SAMPLE:
         challenged_avg = challenged.get("avg_signed_return_pct")
@@ -1293,6 +1391,7 @@ def build_report(
             rows,
             lambda row: row.get("current_session_score_impact_cohort") or "unknown_current_session_score_impact",
         ),
+        "current_session_score_impact_effect": current_session_score_impact_effect(rows),
         "by_intake_status": grouped_summary(rows, lambda row: row["intake_status"]),
         "by_intake_reason": sorted(grouped_summary(rows, lambda row: row["intake_reason_bucket"]), key=lambda row: (-row["count"], row["key"])),
         "by_actionability": sorted(grouped_summary(rows, lambda row: row["actionability_category"]), key=lambda row: (-row["count"], row["key"])),
@@ -1330,6 +1429,10 @@ def build_text_report(payload):
         (
             "intraday_alignment_effect="
             + json.dumps(payload.get("intraday_alignment_effect") or {}, ensure_ascii=False, sort_keys=True)
+        ),
+        (
+            "current_session_score_impact_effect="
+            + json.dumps(payload.get("current_session_score_impact_effect") or {}, ensure_ascii=False, sort_keys=True)
         ),
         (
             "audit_pass_judgment_effect="

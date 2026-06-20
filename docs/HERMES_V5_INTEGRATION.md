@@ -568,6 +568,8 @@ When `alert.current_session_quote_evidence.score_impact.factor_count > 0`, `curr
 
 `strategy_learning_report.py` also groups forward outcomes by `current_session_score_impact_cohort`: `no_current_session_score_impact`, `low_current_session_score_impact`, `medium_current_session_score_impact`, `high_current_session_score_impact`, `mixed_current_session_score_impact`, or `unknown_current_session_score_impact`. The cohort uses `abs(current_session_quote_evidence.score_impact.net_score_delta) / abs(full_score)` when available, and `strategy_learning_brief.current_session_score_impact` carries the compact group metrics into the Hermes packet. This is read-only cohort evidence for learning whether high intraday-quote score dependence helps or hurts; it does not change v5 thresholds, Hermes eligibility, readiness, or intake gates.
 
+`strategy_learning_report.py` also emits `current_session_score_impact_effect`, comparing the forward returns of `high_current_session_score_impact` alerts against the combined `low_current_session_score_impact` and `no_current_session_score_impact` baseline. Hermes receives this as `strategy_learning_brief.current_session_score_impact.evidence_status`, `evidence_reasons`, `high_vs_low_or_no_delta_pct`, and `hermes_note`. `SUPPORTIVE` means high current-session quote dependence may be treated as soft timing context only; `NEGATIVE`, `INSUFFICIENT`, or `MISSING` means Hermes should cap confidence or keep collecting outcomes before relying on intraday quote dependence. This remains read-only learning context and does not submit orders, relax gates, or mutate strategy parameters automatically.
+
 The execute gate also checks confidence and judgment freshness. Defaults:
 
 - `RT_ORDER_MIN_HERMES_CONFIDENCE=0.60`

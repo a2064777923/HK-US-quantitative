@@ -3701,6 +3701,11 @@ def strategy_learning_intraday_alignment_brief(strategy_learning_payload):
 
 def strategy_learning_current_session_score_impact_brief(strategy_learning_payload):
     payload = strategy_learning_payload if isinstance(strategy_learning_payload, dict) else {}
+    effect = (
+        payload.get("current_session_score_impact_effect")
+        if isinstance(payload.get("current_session_score_impact_effect"), dict)
+        else {}
+    )
     rows = (
         payload.get("by_current_session_score_impact")
         if isinstance(payload.get("by_current_session_score_impact"), list)
@@ -3724,16 +3729,54 @@ def strategy_learning_current_session_score_impact_brief(strategy_learning_paylo
         }
         groups.append(compact)
         by_key[key] = compact
+    minimum_resolved_sample = effect.get("minimum_sample") or 5
+    high_effect = effect.get("high_current_session_score_impact") if isinstance(effect.get("high_current_session_score_impact"), dict) else {}
+    low_or_no_effect = (
+        effect.get("low_or_no_current_session_score_impact")
+        if isinstance(effect.get("low_or_no_current_session_score_impact"), dict)
+        else {}
+    )
+    if effect:
+        minimum_sample_met = (
+            (high_effect.get("resolved_count") or 0) >= minimum_resolved_sample
+            and (low_or_no_effect.get("resolved_count") or 0) >= minimum_resolved_sample
+        )
+    else:
+        low_or_no_resolved = (
+            (by_key.get("low_current_session_score_impact") or {}).get("resolved_count") or 0
+        ) + (
+            (by_key.get("no_current_session_score_impact") or {}).get("resolved_count") or 0
+        )
+        minimum_sample_met = (
+            ((by_key.get("high_current_session_score_impact") or {}).get("resolved_count") or 0)
+            >= minimum_resolved_sample
+            and low_or_no_resolved >= minimum_resolved_sample
+        )
     return {
         "read_only": True,
         "submits_orders": False,
         "source": "strategy_learning.by_current_session_score_impact",
+        "effect_source": "strategy_learning.current_session_score_impact_effect",
+        "evidence_status": effect.get("status") or ("INSUFFICIENT" if groups else "MISSING"),
+        "evidence_reasons": effect.get("reasons") or [],
+        "minimum_resolved_sample": minimum_resolved_sample,
+        "minimum_sample_met": minimum_sample_met,
+        "high_vs_low_or_no_delta_pct": effect.get("high_vs_low_or_no_delta_pct"),
         "groups": groups[:8],
-        "high_current_session_score_impact": by_key.get("high_current_session_score_impact") or {},
+        "high_current_session_score_impact": (
+            high_effect
+            or by_key.get("high_current_session_score_impact")
+            or {}
+        ),
+        "low_or_no_current_session_score_impact": low_or_no_effect,
         "medium_current_session_score_impact": by_key.get("medium_current_session_score_impact") or {},
         "low_current_session_score_impact": by_key.get("low_current_session_score_impact") or {},
         "no_current_session_score_impact": by_key.get("no_current_session_score_impact") or {},
-        "policy": "read_only_learning_context_for_intraday_quote_score_dependence",
+        "policy": effect.get("policy") or "read_only_learning_context_for_intraday_quote_score_dependence",
+        "hermes_note": (
+            effect.get("hermes_note")
+            or "current_session_score_impact_learning_not_available_for_legacy_or_empty_report"
+        ),
     }
 
 

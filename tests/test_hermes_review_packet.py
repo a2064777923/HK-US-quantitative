@@ -966,6 +966,36 @@ class HermesReviewPacketTests(unittest.TestCase):
                         "win_rate_pct": 100.0,
                     },
                 ],
+                "current_session_score_impact_effect": {
+                    "schema": "current_session_score_impact_effect_v1",
+                    "read_only": True,
+                    "submits_orders": False,
+                    "status": "NEGATIVE",
+                    "minimum_sample": 5,
+                    "high_current_session_score_impact": {
+                        "count": 3,
+                        "resolved_count": 2,
+                        "pending_or_missing_count": 1,
+                        "avg_signed_return_pct": -0.4,
+                        "win_rate_pct": 50.0,
+                    },
+                    "low_or_no_current_session_score_impact": {
+                        "count": 2,
+                        "resolved_count": 2,
+                        "pending_or_missing_count": 0,
+                        "avg_signed_return_pct": 0.9,
+                        "win_rate_pct": 100.0,
+                    },
+                    "high_vs_low_or_no_delta_pct": -1.3,
+                    "reasons": [
+                        "high_current_session_score_impact_sample_below_minimum",
+                        "low_or_no_current_session_score_impact_sample_below_minimum",
+                        "high_current_session_score_impact_avg_return_not_positive",
+                        "high_current_session_score_impact_not_outperforming_low_or_no",
+                    ],
+                    "policy": "cap_confidence_for_high_current_session_score_dependence_until_forward_evidence_improves",
+                    "hermes_note": "high_current_session_score_impact_underperforms_reduce_intraday_quote_dependence",
+                },
                 "intraday_alignment_effect": {
                     "schema": "intraday_alignment_effect_v1",
                     "read_only": True,
@@ -1637,16 +1667,37 @@ class HermesReviewPacketTests(unittest.TestCase):
             "strategy_learning.by_current_session_score_impact",
         )
         self.assertEqual(
+            payload["strategy_learning_brief"]["current_session_score_impact"]["effect_source"],
+            "strategy_learning.current_session_score_impact_effect",
+        )
+        self.assertEqual(
+            payload["strategy_learning_brief"]["current_session_score_impact"]["evidence_status"],
+            "NEGATIVE",
+        )
+        self.assertIn(
+            "high_current_session_score_impact_not_outperforming_low_or_no",
+            payload["strategy_learning_brief"]["current_session_score_impact"]["evidence_reasons"],
+        )
+        self.assertEqual(
+            payload["strategy_learning_brief"]["current_session_score_impact"]["high_vs_low_or_no_delta_pct"],
+            -1.3,
+        )
+        self.assertFalse(payload["strategy_learning_brief"]["current_session_score_impact"]["minimum_sample_met"])
+        self.assertEqual(
             payload["strategy_learning_brief"]["current_session_score_impact"]["high_current_session_score_impact"][
                 "avg_signed_return_pct"
             ],
             -0.4,
         )
         self.assertEqual(
-            payload["strategy_learning_brief"]["current_session_score_impact"]["low_current_session_score_impact"][
+            payload["strategy_learning_brief"]["current_session_score_impact"]["low_or_no_current_session_score_impact"][
                 "avg_signed_return_pct"
             ],
             0.9,
+        )
+        self.assertEqual(
+            payload["strategy_learning_brief"]["current_session_score_impact"]["hermes_note"],
+            "high_current_session_score_impact_underperforms_reduce_intraday_quote_dependence",
         )
         self.assertIn(
             "audit-pass judgment_effect",
