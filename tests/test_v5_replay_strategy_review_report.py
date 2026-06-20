@@ -19,6 +19,38 @@ def replay_payload():
         "replay_quality": {"status": "WARN"},
         "replay_breakdown": {
             "schema": "v5_local_replay_breakdown_v1",
+            "gate_blocker_groups": [
+                {
+                    "key": "HK:BUY:站上MA5:not_confirmed",
+                    "market": "HK",
+                    "candidate_signal_type": "BUY",
+                    "trigger": "站上MA5",
+                    "blocked_reason": "not_confirmed",
+                    "status": "WARN",
+                    "reasons": ["gate_blocker_blocks_majority_of_trigger_alerts"],
+                    "metrics": {
+                        "alert_count": 80,
+                        "blocked_count": 70,
+                        "blocked_alert_ratio_pct": 87.5,
+                        "blocked_rate_per_100_bars": 14.0,
+                    },
+                },
+                {
+                    "key": "US:BUY:站上MA5:factor_confluence_invalid:opposing_factor_conflict",
+                    "market": "US",
+                    "candidate_signal_type": "BUY",
+                    "trigger": "站上MA5",
+                    "blocked_reason": "factor_confluence_invalid:opposing_factor_conflict",
+                    "status": "WARN",
+                    "reasons": ["gate_blocker_blocks_majority_of_trigger_alerts"],
+                    "metrics": {
+                        "alert_count": 40,
+                        "blocked_count": 30,
+                        "blocked_alert_ratio_pct": 75.0,
+                        "blocked_rate_per_100_bars": 6.0,
+                    },
+                },
+            ],
             "trigger_groups": [
                 {
                     "key": "HK:BUY:站上MA5",
@@ -107,9 +139,21 @@ class V5ReplayStrategyReviewReportTests(unittest.TestCase):
         self.assertEqual(ma5["policy"], "tighten_thresholds")
         self.assertEqual(ma5["metrics"]["alert_count"], 120)
         self.assertEqual(ma5["metrics"]["execution_candidate_count"], 32)
+        self.assertEqual(ma5["gate_blocker_reason_counts"]["not_confirmed"], 70)
+        self.assertEqual(ma5["gate_blocker_reason_counts"]["factor_confluence_invalid:opposing_factor_conflict"], 30)
+        self.assertEqual(ma5["top_gate_blockers"][0]["blocked_reason"], "not_confirmed")
+        self.assertIn("replay_gate_blocker_majority:not_confirmed", ma5["reasons"])
+        self.assertIn(
+            "replay_gate_blocker_majority:factor_confluence_invalid:opposing_factor_conflict",
+            ma5["reasons"],
+        )
         self.assertEqual(bollinger["policy"], "shadow_only")
         self.assertIn("replay_noisy_directional_candidates_should_stay_shadow", bollinger["reasons"])
         self.assertEqual(payload["overall_policy"]["policy"], "keep_shadow_or_dry_run")
+        ma5_market_rows = [
+            row for row in payload["replay_trigger_policies"] if row["strategy_key"] == "BUY:站上MA5"
+        ]
+        self.assertEqual(ma5_market_rows[0]["gate_blockers"][0]["blocked_reason"], "not_confirmed")
 
     def test_missing_replay_report_is_not_promotable(self):
         payload = report.build_report({})

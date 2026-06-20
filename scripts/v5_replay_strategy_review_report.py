@@ -127,9 +127,66 @@ def replay_policy_for_trigger(row):
     return "candidate_allow_after_other_gates", []
 
 
-def trigger_policy_row(row):
+def compact_gate_blocker(row):
+    metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
+    return {
+        "key": row.get("key"),
+        "market": row.get("market"),
+        "candidate_signal_type": row.get("candidate_signal_type"),
+        "trigger": row.get("trigger"),
+        "blocked_reason": row.get("blocked_reason"),
+        "status": row.get("status"),
+        "reasons": row.get("reasons") or [],
+        "metrics": {
+            "alert_count": metrics.get("alert_count"),
+            "blocked_count": metrics.get("blocked_count"),
+            "blocked_alert_ratio_pct": metrics.get("blocked_alert_ratio_pct"),
+            "blocked_rate_per_100_bars": metrics.get("blocked_rate_per_100_bars"),
+        },
+    }
+
+
+def trigger_group_key(row):
+    return (
+        str(row.get("market") or "UNKNOWN"),
+        str(row.get("candidate_signal_type") or "UNKNOWN").upper(),
+        row.get("trigger") or "UNKNOWN",
+    )
+
+
+def gate_blocker_lookup(replay_payload):
+    breakdown = replay_payload.get("replay_breakdown") if isinstance(replay_payload.get("replay_breakdown"), dict) else {}
+    groups = breakdown.get("gate_blocker_groups") if isinstance(breakdown.get("gate_blocker_groups"), list) else []
+    lookup = defaultdict(list)
+    for row in groups:
+        if not isinstance(row, dict):
+            continue
+        lookup[trigger_group_key(row)].append(compact_gate_blocker(row))
+    for key, rows in lookup.items():
+        rows.sort(
+            key=lambda item: (
+                0 if item.get("status") == "WARN" else 1,
+                -as_int((item.get("metrics") or {}).get("blocked_count")),
+                item.get("key") or "",
+            )
+        )
+    return lookup
+
+
+def gate_blocker_policy_reasons(gate_blockers):
+    reasons = []
+    for row in (gate_blockers or [])[:3]:
+        blocked_reason = row.get("blocked_reason")
+        ratio = as_float((row.get("metrics") or {}).get("blocked_alert_ratio_pct"))
+        if blocked_reason and ratio is not None and ratio >= 50.0:
+            reasons.append(f"replay_gate_blocker_majority:{blocked_reason}")
+    return reasons
+
+
+def trigger_policy_row(row, gate_blockers=None):
     metrics = row.get("metrics") if isinstance(row.get("metrics"), dict) else {}
     policy, policy_reasons = replay_policy_for_trigger(row)
+    policy_reasons = policy_reasons + gate_blocker_policy_reasons(gate_blockers)
     candidate_signal_type = str(row.get("candidate_signal_type") or "UNKNOWN").upper()
     trigger = row.get("trigger") or "UNKNOWN"
     return {
@@ -144,6 +201,7 @@ def trigger_policy_row(row):
         "promotion_eligible": False,
         "reasons": policy_reasons,
         "replay_reasons": row.get("reasons") or [],
+        "gate_blockers": (gate_blockers or [])[:4],
         "metrics": {
             "denominator_bars": metrics.get("denominator_bars"),
             "alert_count": metrics.get("alert_count"),
@@ -177,6 +235,8 @@ def strategy_trigger_summary(trigger_policies):
         denominator_bars = 0
         markets = []
         reasons = Counter()
+        gate_blocker_reason_counts = Counter()
+        gate_blockers = []
         for row in rows:
             metrics = row.get("metrics") or {}
             counts["alert_count"] += as_int(metrics.get("alert_count"))
@@ -186,6 +246,19 @@ def strategy_trigger_summary(trigger_policies):
             denominator_bars += as_int(metrics.get("denominator_bars"))
             markets.append(row.get("market"))
             reasons.update(row.get("reasons") or [])
+            for blocker in row.get("gate_blockers") or []:
+                blocked_reason = blocker.get("blocked_reason")
+                blocked_count = as_int((blocker.get("metrics") or {}).get("blocked_count"))
+                if blocked_reason:
+                    gate_blocker_reason_counts[blocked_reason] += blocked_count
+                gate_blockers.append(blocker)
+        gate_blockers = sorted(
+            gate_blockers,
+            key=lambda item: (
+                -as_int((item.get("metrics") or {}).get("blocked_count")),
+                item.get("key") or "",
+            ),
+        )
         signal_type, trigger = key.split(":", 1) if ":" in key else ("UNKNOWN", key)
         policy = combined_policy(rows)
         summaries.append(
@@ -199,6 +272,8 @@ def strategy_trigger_summary(trigger_policies):
                 "markets": sorted(set(markets)),
                 "market_policy_keys": [row.get("key") for row in rows],
                 "reasons": sorted(reasons),
+                "gate_blocker_reason_counts": dict(gate_blocker_reason_counts.most_common(8)),
+                "top_gate_blockers": gate_blockers[:6],
                 "metrics": {
                     "denominator_bars": denominator_bars,
                     "alert_count": counts["alert_count"],
@@ -298,7 +373,12 @@ def build_report(v5_local_replay=None):
         )
         breakdown = replay_payload.get("replay_breakdown") if isinstance(replay_payload.get("replay_breakdown"), dict) else {}
         trigger_groups = breakdown.get("trigger_groups") if isinstance(breakdown.get("trigger_groups"), list) else []
-        trigger_policies = [trigger_policy_row(row) for row in trigger_groups if isinstance(row, dict)]
+        blockers_by_trigger = gate_blocker_lookup(replay_payload)
+        trigger_policies = [
+            trigger_policy_row(row, blockers_by_trigger.get(trigger_group_key(row), []))
+            for row in trigger_groups
+            if isinstance(row, dict)
+        ]
 
     trigger_policies = sorted(
         trigger_policies,

@@ -448,7 +448,16 @@ def v5_replay_strategy_review():
                 "policy": "tighten_thresholds",
                 "promotion_eligible": False,
                 "markets": ["HK", "US"],
-                "reasons": ["replay_execution_candidate_density_high"],
+                "reasons": ["replay_execution_candidate_density_high", "replay_gate_blocker_majority:not_confirmed"],
+                "gate_blocker_reason_counts": {"not_confirmed": 70},
+                "top_gate_blockers": [
+                    {
+                        "key": "HK:BUY:站上MA5:not_confirmed",
+                        "market": "HK",
+                        "blocked_reason": "not_confirmed",
+                        "metrics": {"blocked_count": 70, "blocked_alert_ratio_pct": 87.5},
+                    }
+                ],
                 "metrics": {
                     "alert_count": 180,
                     "alert_rate_per_100_bars": 11.3,
@@ -3363,6 +3372,14 @@ class HermesReviewPacketTests(unittest.TestCase):
         self.assertFalse(replay_strategy["promotion_eligible"])
         self.assertEqual(replay_strategy["policy_counts"]["tighten_thresholds_count"], 2)
         self.assertEqual(replay_strategy["top_strategy_trigger_policies"][0]["strategy_key"], "BUY:站上MA5")
+        self.assertEqual(
+            replay_strategy["top_strategy_trigger_policies"][0]["gate_blocker_reason_counts"],
+            {"not_confirmed": 70},
+        )
+        self.assertEqual(
+            replay_strategy["top_strategy_trigger_policies"][0]["top_gate_blockers"][0]["blocked_reason"],
+            "not_confirmed",
+        )
         self.assertFalse(replay_strategy["operator_contract"]["promotion_eligible"])
         convergence = brief["trigger_evidence_convergence"]
         self.assertTrue(convergence["read_only"])
